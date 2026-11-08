@@ -1,9 +1,0 @@
-name: probe
-on:
-  push:
-    branches: [ main ]
-jobs:
-  p:
-    runs-on: macos-13
-    steps:
-      - run: echo "mac runner ok"; sw_vers; xcodebuild -version
