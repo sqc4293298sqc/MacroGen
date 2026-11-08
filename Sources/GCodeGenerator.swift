@@ -32,8 +32,8 @@ struct PocketSpec {
     // 锥孔
     var taperDia: Double = 50        // 大头
     var taperDiaSmall: Double = 34   // 小头
-    var taperDepth: Double = 38
-    var spiralDia: Double = 50      // 螺旋铣圆直径
+    var taperDepth: Double = 38      // 深度
+    var spiralDia: Double = 50       // 螺旋铣圆直径
     var taperRatio: Double = 2.38    // 锥度 1:N
     var taperAngle: Double = 22.83   // 全角（度）
 
@@ -61,6 +61,16 @@ struct PocketSpec {
         }
     }
 
+    private var faceIssues: [String] {
+        var out: [String] = []
+        if length <= 0 || width <= 0 { out.append("长宽必须大于 0") }
+        if toolDia <= 0 { out.append("刀具直径必须大于 0") }
+        if depth <= 0 { out.append("要去掉的总深度必须大于 0") }
+        if stepDown <= 0 { out.append("每层切深必须大于 0") }
+        if stepDown > depth { out.append("每层切深大于总深度，改小一点") }
+        return out
+    }
+
     private var spiralIssues: [String] {
         var out: [String] = []
         if spiralDia <= 0 { out.append("圆直径必须大于 0") }
@@ -69,16 +79,6 @@ struct PocketSpec {
         if depth <= 0 { out.append("要去掉的总深度必须大于 0") }
         if stepDown <= 0 { out.append("每圈下刀量必须大于 0") }
         if stepDown > depth { out.append("每圈下刀量大于总深度，改小一点") }
-        return out
-    }
-
-    private var faceIssues: [String] {
-        var out: [String] = []
-        if length <= 0 || width <= 0 { out.append("长宽必须大于 0") }
-        if toolDia <= 0 { out.append("刀具直径必须大于 0") }
-        if depth <= 0 { out.append("要去掉的总深度必须大于 0") }
-        if stepDown <= 0 { out.append("每层切深必须大于 0") }
-        if stepDown > depth { out.append("每层切深大于总深度，改小一点") }
         return out
     }
 
@@ -133,42 +133,7 @@ enum GCodeGenerator {
         }
     }
 
-    // 螺旋铣：圆形面/圆孔，一圈一圈螺旋下刀
-    private static func generateSpiral(_ s: PocketSpec) -> String {
-        var L: [String] = []
-        L.append("%")
-        L.append("O1004 (螺旋铣宏程序)")
-        L.append("G21 G40 G49 G80 G90 G\(s.coord)")
-        L.append("G52 X\(fmt(s.cx)) Y\(fmt(s.cy)) (平移到圆心)")
-        L.append("G43 H\(s.hNo) Z\(fmt(s.safeZ, 1))")
-        L.append("M3 S\(s.spindle)")
-        L.append("M8")
-        L.append("#1=\(fmt(s.spiralDia, 1)) (圆直径)")
-        L.append("#2=\(fmt(s.toolDia, 1)) (刀具直径)")
-        L.append("#3=0 (起始Z)")
-        L.append("#4=\(fmt(-s.depth, 3)) (终点Z)")
-        L.append("#5=\(fmt(s.stepDown, 2)) (每圈下刀)")
-        L.append("#6=[#1/2.-#2/2.] (刀心圆半径)")
-        L.append("#7=#3 (当前Z)")
-        L.append("G0 X-#6 Y0 (进到圆上)")
-        L.append("G1 Z#3 F\(s.feed / 2)")
-        L.append("WHILE[#7GT#4]DO1")
-        L.append("#7=#7-#5")
-        L.append("IF[#7LT#4]THEN#7=#4")
-        L.append("G3 I#6 Z#7 F\(s.feed)")
-        L.append("END1")
-        L.append("G0 Z\(fmt(s.safeZ, 1))")
-        L.append("G52 X0 Y0")
-        L.append("M5")
-        L.append("M9")
-        L.append("G28 G91 Z0")
-        L.append("G28 G91 Y0")
-        L.append("M30")
-        L.append("%")
-        return join(L)
-    }
-
-    // 铣飞面：长宽刀径、起止Z、每层都可改，Z0 起刀逐层往复
+    // MARK: - 铣飞面
     private static func generateFace(_ s: PocketSpec) -> String {
         var L: [String] = []
         L.append("%")
@@ -213,7 +178,176 @@ enum GCodeGenerator {
         return join(L)
     }
 
-    // 各模式的新手使用说明（App 里显示在程序下方）
+    // MARK: - 螺旋铣
+    private static func generateSpiral(_ s: PocketSpec) -> String {
+        var L: [String] = []
+        L.append("%")
+        L.append("O1004 (螺旋铣宏程序)")
+        L.append("G21 G40 G49 G80 G90 G\(s.coord)")
+        L.append("G52 X\(fmt(s.cx)) Y\(fmt(s.cy)) (平移到圆心)")
+        L.append("G43 H\(s.hNo) Z\(fmt(s.safeZ, 1))")
+        L.append("M3 S\(s.spindle)")
+        L.append("M8")
+        L.append("#1=\(fmt(s.spiralDia, 1)) (圆直径)")
+        L.append("#2=\(fmt(s.toolDia, 1)) (刀具直径)")
+        L.append("#3=0 (起始Z)")
+        L.append("#4=\(fmt(-s.depth, 3)) (终点Z)")
+        L.append("#5=\(fmt(s.stepDown, 2)) (每圈下刀)")
+        L.append("#6=[#1/2.-#2/2.] (刀心圆半径)")
+        L.append("#7=#3 (当前Z)")
+        L.append("G0 X-#6 Y0 (进到圆上)")
+        L.append("G1 Z#3 F\(s.feed / 2)")
+        L.append("WHILE[#7GT#4]DO1")
+        L.append("#7=#7-#5")
+        L.append("IF[#7LT#4]THEN#7=#4")
+        L.append("G3 I#6 Z#7 F\(s.feed)")
+        L.append("END1")
+        L.append("G0 Z\(fmt(s.safeZ, 1))")
+        L.append("G52 X0 Y0")
+        L.append("M5")
+        L.append("M9")
+        L.append("G28 G91 Z0")
+        L.append("G28 G91 Y0")
+        L.append("M30")
+        L.append("%")
+        return join(L)
+    }
+
+    // MARK: - 方形型腔
+    private static func generatePocket(_ s: PocketSpec) -> String {
+        var L: [String] = []
+
+        L.append("%")
+        L.append("O1001 (型腔宏程序)")
+        L.append("( 长=\(fmt(s.length)) 宽=\(fmt(s.width)) 深=\(fmt(s.depth)) )")
+        L.append("( 四角=\(cornerDesc(s)) 刀具=\(fmt(s.toolDia)) )")
+        L.append("( 切深=\(fmt(s.stepDown)) 行距=\(fmt(s.stepOver)) 转速=\(s.spindle) 进给=\(s.feed) )")
+        L.append("( 坐标 G\(s.coord)  中心X=\(fmt(s.cx)) 中心Y=\(fmt(s.cy))  Z0=工件顶面 )")
+        L.append("( 由 MacroGen 生成 上机前请核对 )")
+        L.append("G21 G40 G49 G80 G90 G\(s.coord)")
+        L.append("#31=\(fmt(s.cx)) (中心X)")
+        L.append("#32=\(fmt(s.cy)) (中心Y)")
+        L.append("G52 X#31 Y#32 (平移到型腔中心)")
+        L.append("G43 H\(s.hNo) Z\(fmt(s.safeZ))")
+        L.append("M3 S\(s.spindle)")
+        L.append("M8")
+        L.append("#20=\(fmt(s.length / 2)) (半长)")
+        L.append("#21=\(fmt(s.width / 2)) (半宽)")
+        L.append("#22=\(fmt(s.toolDia / 2)) (刀具半径)")
+        L.append("#3=\(fmt(s.depth)) (深)")
+        L.append("#4=\(fmt(s.cornerValue)) (圆角或倒角)")
+        L.append("#6=\(fmt(s.stepDown)) (每层切深)")
+        L.append("#7=\(fmt(s.stepOver)) (行距)")
+        L.append("#9=\(s.feed) (进给)")
+        L.append("#10=\(fmt(s.safeZ)) (安全高度)")
+        L.append("#23=0. (当前深度)")
+        L.append("( === 分层粗铣 === )")
+        L.append("WHILE[#23LT#3]DO1")
+        L.append("#23=#23+#6")
+        L.append("IF[#23GT#3]THEN#23=#3")
+        L.append("#26=-#23")
+        L.append("( 斜插下刀 )")
+        L.append("G00 X0 Y0")
+        L.append("G01 Z[#26+1.5] F[#9]")
+        L.append("G01 X[#20/3.] Z#26 F[#9/2.]")
+        L.append("#24=0 (环号)")
+        L.append("WHILE[[#22+#24*#7]LE[#21-0.5]]DO2")
+        L.append("#30=[#22+#24*#7] (内缩量)")
+        L.append("#27=[#20-#30] (环半长)")
+        L.append("#28=[#21-#30] (环半宽)")
+        L.append("#29=[#4-#30] (环圆角)")
+        L.append("IF[#29LT0.]THEN#29=0.")
+        if s.cornerType == .radius {
+            L.append("IF[#29LT0.001]THEN#29=0.001")
+        }
+        L.append("#24=#24+1")
+        if s.compact {
+            L.append(contentsOf: ringBlocksCompact(s, skipFirst: false))
+        } else {
+            L.append(contentsOf: ringBlocks(type: s.cornerType, approach: "G01 X#27 Y0 F[#9]"))
+        }
+        L.append("END2")
+        L.append("END1")
+        L.append("( === 精修壁面 G41 === )")
+        L.append("#27=#20")
+        L.append("#28=#21")
+        L.append("#29=#4")
+        L.append("G00 Z[#26+2.]")
+        L.append("G00 X[#27+6.] Y0")
+        L.append("G01 Z#26 F[#9]")
+        L.append("G41 D\(s.hNo) G01 X#27 Y0 F[#9]")
+        if s.compact {
+            L.append(contentsOf: ringBlocksCompact(s, skipFirst: true))
+        } else {
+            L.append(contentsOf: ringBlocks(type: s.cornerType))
+        }
+        L.append("G40 G01 X[#27+6.] Y0")
+        L.append("G00 Z#10")
+        L.append("G52 X0 Y0 (取消局部坐标)")
+        L.append("M5")
+        L.append("M9")
+        L.append("G28 G91 Z0")
+        L.append("G28 G91 Y0")
+        L.append("M30")
+        L.append("%")
+        return join(L)
+    }
+
+    // MARK: - 锥孔
+    private static func generateTaper(_ s: PocketSpec) -> String {
+        var L: [String] = []
+        let taperN = s.taperDepth / (s.taperDia - s.taperDiaSmall)
+
+        L.append("%")
+        L.append("O1002(锥孔)")
+        L.append("( 小头\(fmt(s.taperDiaSmall)) 大头\(fmt(s.taperDia)) 深\(fmt(s.taperDepth)) )")
+        L.append("( 半角\(fmt(s.halfAngle)) 锥度1:\(fmt(taperN, 2)) 全角\(fmt(s.halfAngle * 2, 2)) )")
+        L.append("( 刀\(fmt(s.toolDia)) 刀尖R\(fmt(s.toolCornerR)) 层\(fmt(s.stepDown)) )")
+        L.append("( G\(s.coord) 中心X\(fmt(s.cx)) Y\(fmt(s.cy)) Z0=顶面 )")
+        L.append("G\(s.coord) G80 G90 G40 G49 G17")
+        L.append("#31=\(fmt(s.cx))(中心X)")
+        L.append("#32=\(fmt(s.cy))(中心Y)")
+        L.append("G52 X#31 Y#32")
+        L.append("G0 X0 Y0")
+        L.append("G43 H\(s.hNo) Z\(fmt(s.safeZ))")
+        L.append("M3 S\(s.spindle)")
+        L.append("Z10.")
+        L.append("M8")
+        L.append("#1=\(fmt(s.taperDiaSmall))(小头)")
+        L.append("#2=\(fmt(s.taperDia))(大头)")
+        L.append("#3=\(fmt(s.halfAngle, 4))(半角)")
+        L.append("#4=\(fmt(s.toolDia))(刀直径)")
+        L.append("#5=\(fmt(s.toolCornerR))(刀尖R)")
+        L.append("#16=\(fmt(s.stepDown))(层深)")
+        L.append("#21=\(fmt(s.taperDepth))(总深)")
+        L.append("#9=\(s.feed)(进给)")
+        L.append("#6=0(当前深度)")
+        L.append("#11=[#2/2.](大头半径)")
+        L.append("#7=#5*[1-COS[#3]](刀尖R径向补偿)")
+        L.append("#8=#5*SIN[#3]")
+        L.append("WHILE[#6LE#21]DO2")
+        L.append("#12=#11+#7-#4/2-#6*TAN[#3](刀心半径)")
+        L.append("#13=#8-#5-#6(Z)")
+        L.append("IF[#12LT.001]THEN#12=.001")
+        L.append("G0 X0 Y0")
+        L.append("G1 Z[#13+#5]F[#9/2.]")
+        L.append("G1 X#12 F[#9]")
+        L.append("G3 I-#12 F[#9]")
+        L.append("G1 X0 Y0")
+        L.append("#6=#6+#16")
+        L.append("END2")
+        L.append("G0 Z\(fmt(s.safeZ))")
+        L.append("G52 X0 Y0")
+        L.append("M5")
+        L.append("M9")
+        L.append("G28 G91 Z0")
+        L.append("G28 G91 Y0")
+        L.append("M1")
+        L.append("%")
+        return join(L)
+    }
+
+    // MARK: - 新手使用说明
     static func manual(_ s: PocketSpec) -> String {
         switch s.mode {
         case .taper:
@@ -237,7 +371,7 @@ enum GCodeGenerator {
             #9 = 进给
 
             【不用管的变量】
-            #6 当前深度、#11 大头半径、#7 刀尖R补偿、#8 Z向补偿、#12 刀心半径、#13 下刀 Z 都是程序自己算的。
+            #6 当前深度、#11 大头半径、#7 刀尖R补偿、#8 Z向补偿、#12 刀心半径、#13 下刀Z 都是程序自己算的。
 
             【改法举例】
             想把小头改到 30：只改 #1=30。

@@ -4,6 +4,7 @@ import Foundation
 struct ContentView: View {
     @State private var spec = PocketSpec()
     @State private var result: String = ""
+    @State private var manual: String = ""
     @State private var fileURL: URL? = nil
     @State private var showResult = false
 
