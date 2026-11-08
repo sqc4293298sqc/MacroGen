@@ -23,6 +23,8 @@ struct PocketSpec {
     var compNo: Int = 1
     var compact: Bool = true
     var coord: Int = 54
+    var cx: Double = 0
+    var cy: Double = 0
 
     var toolRadius: Double { toolDia / 2 }
 
@@ -65,10 +67,13 @@ enum GCodeGenerator {
         L.append("( 长=\(fmt(s.length)) 宽=\(fmt(s.width)) 深=\(fmt(s.depth)) )")
         L.append("( 四角=\(cornerDesc(s)) 刀具=\(fmt(s.toolDia)) )")
         L.append("( 切深=\(fmt(s.stepDown)) 行距=\(fmt(s.stepOver)) 转速=\(s.spindle) 进给=\(s.feed) )")
-        L.append("( 坐标 G\(s.coord)  X0Y0=型腔中心  Z0=工件顶面 )")
+        L.append("( 坐标 G\(s.coord)  中心X=\(fmt(s.cx)) 中心Y=\(fmt(s.cy))  Z0=工件顶面 )")
         L.append("( 由 MacroGen 生成 上机前请核对 )")
         L.append("")
         L.append("G21 G40 G49 G80 G90 G\(s.coord)")
+        L.append("#31=\(fmt(s.cx)) (中心X)")
+        L.append("#32=\(fmt(s.cy)) (中心Y)")
+        L.append("G52 X#31 Y#32 (平移到型腔中心)")
         L.append("G00 Z\(fmt(s.safeZ))")
         L.append("M03 S\(s.spindle)")
         L.append("")
@@ -130,6 +135,7 @@ enum GCodeGenerator {
         }
         L.append("G40 G01 X[#27+6.] Y0")
         L.append("G00 Z#10")
+        L.append("G52 X0 Y0 (取消局部坐标)")
         L.append("M05")
         L.append("M30")
         L.append("%")

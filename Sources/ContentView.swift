@@ -35,7 +35,9 @@ struct ContentView: View {
                             Text("G\(c)").tag(c)
                         }
                     }
-                    Text("X0Y0 = 型腔中心，Z0 = 工件顶面")
+                    numRow("中心 X", value: $spec.cx)
+                    numRow("中心 Y", value: $spec.cy)
+                    Text("中心为型腔中心在该坐标系下的位置，程序用 G52 平移；Z0 = 工件顶面")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
