@@ -13,6 +13,7 @@ enum MachiningMode: String, CaseIterable, Identifiable {
     case taper = "锥孔"
     case face = "铣飞面"
     case spiral = "螺旋铣"
+    case key = "铣键槽"
 
     var id: String { rawValue }
 }
@@ -34,6 +35,8 @@ struct PocketSpec {
     var taperDiaSmall: Double = 34   // 小头
     var taperDepth: Double = 38      // 深度
     var spiralDia: Double = 50       // 螺旋铣圆直径
+    var keyLength: Double = 40       // 键槽槽长（含圆弧）
+    var keyWidth: Double = 12        // 键槽槽宽
     var taperRatio: Double = 2.38    // 锥度 1:N
     var taperAngle: Double = 22.83   // 全角（度）
 
@@ -57,6 +60,7 @@ struct PocketSpec {
         case .taper: return taperIssues
         case .face: return faceIssues
         case .spiral: return spiralIssues
+        case .key: return keyIssues
         default: return pocketIssues
         }
     }
@@ -68,6 +72,19 @@ struct PocketSpec {
         if depth <= 0 { out.append("要去掉的总深度必须大于 0") }
         if stepDown <= 0 { out.append("每层切深必须大于 0") }
         if stepDown > depth { out.append("每层切深大于总深度，改小一点") }
+        return out
+    }
+
+    private var keyIssues: [String] {
+        var out: [String] = []
+        if keyLength <= 0 { out.append("槽长必须大于 0") }
+        if keyWidth <= 0 { out.append("槽宽必须大于 0") }
+        if toolDia <= 0 { out.append("刀具直径必须大于 0") }
+        if toolDia > keyWidth { out.append("刀径不能大于槽宽，否则铣出来比槽宽") }
+        if toolDia > keyLength { out.append("刀径不能大于槽长") }
+        if depth <= 0 { out.append("总深必须大于 0") }
+        if stepDown <= 0 { out.append("每层切深必须大于 0") }
+        if stepDown > depth { out.append("每层切深大于总深，改小一点") }
         return out
     }
 
@@ -129,6 +146,7 @@ enum GCodeGenerator {
         case .taper: return generateTaper(s)
         case .face: return generateFace(s)
         case .spiral: return generateSpiral(s)
+        case .key: return generateKey(s)
         default: return generatePocket(s)
         }
     }
@@ -166,6 +184,54 @@ enum GCodeGenerator {
         L.append("#10=-#10")
         L.append("#12=#12+#9")
         L.append("END2")
+        L.append("END1")
+        L.append("G0 Z\(fmt(s.safeZ, 1))")
+        L.append("G52 X0 Y0")
+        L.append("M5")
+        L.append("M9")
+        L.append("G28 G91 Z0")
+        L.append("G28 G91 Y0")
+        L.append("M30")
+        L.append("%")
+        return join(L)
+    }
+
+    // MARK: - 铣键槽
+    private static func generateKey(_ s: PocketSpec) -> String {
+        var L: [String] = []
+        L.append("%")
+        L.append("O1005 (键槽宏程序)")
+        L.append("G21 G40 G49 G80 G90 G\(s.coord)")
+        L.append("G52 X\(fmt(s.cx)) Y\(fmt(s.cy)) (平移到键槽中心)")
+        L.append("G43 H\(s.hNo) Z\(fmt(s.safeZ, 1))")
+        L.append("M3 S\(s.spindle)")
+        L.append("M8")
+        L.append("#1=\(fmt(s.keyLength, 1)) (槽长含圆弧)")
+        L.append("#2=\(fmt(s.keyWidth, 1)) (槽宽)")
+        L.append("#3=\(fmt(s.toolDia, 1)) (刀具直径)")
+        L.append("#4=\(fmt(s.depth, 3)) (总深)")
+        L.append("#5=\(fmt(s.stepDown, 2)) (每层)")
+        L.append("#6=0 (起始Z)")
+        L.append("#7=-#4 (终点Z)")
+        L.append("#8=[#1/2.-#3/2.] (X行程)")
+        L.append("#9=[#2/2.-#3/2.] (Y半行程)")
+        L.append("#10=[#3*0.7] (行距)")
+        L.append("#11=-#9 (Y起点)")
+        L.append("#12=0 (行完成标志)")
+        L.append("WHILE[#12EQ0]DO1")
+        L.append("#13=#6 (当前Z)")
+        L.append("WHILE[#13GT#7]DO2")
+        L.append("#13=#13-#5")
+        L.append("IF[#13LT#7]THEN#13=#7")
+        L.append("G0 X-#8 Y#11")
+        L.append("G0 Z[#13+2.]")
+        L.append("G1 Z#13 F\(s.feed / 2)")
+        L.append("G1 X#8 F\(s.feed)")
+        L.append("G1 X-#8 F\(s.feed)")
+        L.append("END2")
+        L.append("IF[#11GE#9]THEN#12=1")
+        L.append("#11=#11+#10")
+        L.append("IF[#11GT#9]THEN#11=#9")
         L.append("END1")
         L.append("G0 Z\(fmt(s.safeZ, 1))")
         L.append("G52 X0 Y0")
@@ -383,6 +449,44 @@ enum GCodeGenerator {
             - 刀半径不能大于小头半径，否则下不到底，程序会让你换小刀
             - #12 那行有 IF 保护，刀心半径算出来小于 0 时会自动取 0.001，防止 I 值为负报警
             - 走刀方向是 G3（逆时针），想改顺铣要改成 G2，I 值同时变正号
+            """
+        case .key:
+            return """
+            【干什么用】
+            键槽。沿槽长方向一刀一刀往复，每走完一遍下一层，槽的两端由刀具半径自然形成圆弧。
+
+            【上机前必须做】
+            1. Z0 对在工件顶面
+            2. G54 的 X0 Y0 对在键槽中心（槽长的中点），程序自动 G52 平移
+            3. 刀径按实际填，槽宽/行程都是靠它算的
+
+            【可以改的变量】
+            #1 = 槽长（含两端圆弧的总长）
+            #2 = 槽宽
+            #3 = 刀具直径
+            #4 = 总深
+            #5 = 每层切深
+            #6 = 起始 Z
+            #7 = 终点 Z（自动=-#4）
+
+            【自动算的】
+            #8 X 行程 = 槽长/2 - 刀径/2
+            #9 Y 半行程 = 槽宽/2 - 刀径/2
+            #10 行距 = 70% 刀径
+            #11 当前行 Y
+            #12 行完成标志
+            #13 当前 Z
+
+            【改法举例】
+            槽宽 12、用 Ø12 键槽刀：
+            #2=12  #3=12 → #9=0，只走中间一刀，宽度正好 12
+            槽宽 20、用 Ø12 刀：
+            #2=20  #3=12 → 自动分 2~3 行走完 20 宽
+
+            【注意】
+            - 刀径不能大于槽宽，程序会直接拦下来
+            - 每层 #5 建议 ≤1mm（键槽刀可直扎）；用普通立铣刀请减到 0.3
+            - 槽长 #1 是含圆弧的总长，不是直线段长度
             """
         case .face:
             return """

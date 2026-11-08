@@ -7,6 +7,28 @@ struct ContentView: View {
     @State private var manual: String = ""
     @State private var fileURL: URL? = nil
     @State private var showResult = false
+    @State private var showSim = false
+    @State private var showRef = false
+
+    private var toolpathImage: String {
+        switch spec.mode {
+        case .pocket: return "ToolpathPocket"
+        case .taper: return "ToolpathTaper"
+        case .face: return "ToolpathFace"
+        case .spiral: return "ToolpathSpiral"
+        case .key: return "ToolpathKey"
+        }
+    }
+
+    private var toolpathText: String {
+        switch spec.mode {
+        case .pocket: return "外圈一圈圈向内缩，逐层把腔掏空，最后 G41 精修侧壁"
+        case .taper: return "一圈圈逐渐缩小的圆弧沿锥面盘旋下到底"
+        case .face: return "Y 向往复走平行线，一层走满整张面再下一层"
+        case .spiral: return "刀心圆上 G3 连续下降，每圈吃一层"
+        case .key: return "沿槽长来回走，两端由刀径形成圆弧；槽宽大于刀径时自动分行"
+        }
+    }
 
     private enum SyncSource { case small, ratio, angle }
     @State private var syncSource: SyncSource = .small
@@ -21,6 +43,25 @@ struct ContentView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                }
+
+                Section("刀路示意") {
+                    Image(toolpathImage)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 190)
+                    Text(toolpathText)
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+
+                if spec.mode == .key {
+                    Section("键槽参数 (mm)") {
+                        numRow("槽长 L（含圆弧）", value: $spec.keyLength)
+                        numRow("槽宽 W", value: $spec.keyWidth)
+                        numRow("总深 H", value: $spec.depth)
+                    }
                 }
 
                 if spec.mode == .spiral {
@@ -130,6 +171,27 @@ struct ContentView: View {
 
                 Section {
                     Button {
+                        showSim = true
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Label("刀路仿真", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                            Spacer()
+                        }
+                    }
+                    .disabled(!spec.canGenerate)
+
+                    Button {
+                        showRef = true
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Label("编程代码大全", systemImage: "book")
+                            Spacer()
+                        }
+                    }
+
+                    Button {
                         self.build()
                     } label: {
                         HStack {
@@ -142,6 +204,12 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("宏程序生成器")
+            .sheet(isPresented: $showRef) {
+                CodeRefView()
+            }
+            .sheet(isPresented: $showSim) {
+                ToolpathSimView(spec: spec)
+            }
             .navigationDestination(isPresented: $showResult) {
                 ResultView(code: result, manual: manual, fileURL: fileURL)
             }
@@ -203,6 +271,8 @@ struct ContentView: View {
             name = "face_L\(Int(spec.length))_W\(Int(spec.width))_H\(Int(spec.depth)).nc"
         } else if spec.mode == .spiral {
             name = "spiral_D\(Int(spec.spiralDia))_H\(Int(spec.depth)).nc"
+        } else if spec.mode == .key {
+            name = "key_L\(Int(spec.keyLength))_W\(Int(spec.keyWidth))_H\(Int(spec.depth)).nc"
         } else {
             name = "pocket_L\(Int(spec.length))_W\(Int(spec.width))_D\(Int(spec.depth)).nc"
         }
