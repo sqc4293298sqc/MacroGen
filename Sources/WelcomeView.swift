@@ -41,6 +41,12 @@ struct WelcomeView: View {
                 .padding(.top, 30)
                 .padding(.horizontal, 28)
 
+                Text("当里个当制作")
+                    .font(.system(size: 12))
+                    .kerning(1.2)
+                    .foregroundStyle(Color(red: 0.478, green: 0.522, blue: 0.584))
+                    .padding(.top, 18)
+
                 Spacer(minLength: 36)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
