@@ -29,6 +29,24 @@ struct ContentView: View {
                     }
                 }
 
+                Section("坐标系") {
+                    Picker("工件坐标系", selection: $spec.coord) {
+                        ForEach([54, 55, 56, 57, 58, 59], id: \.self) { c in
+                            Text("G\(c)").tag(c)
+                        }
+                    }
+                    Text("X0Y0 = 型腔中心，Z0 = 工件顶面")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("输出") {
+                    Toggle("精简写法（,R / ,C 自动倒圆倒角）", isOn: $spec.compact)
+                    Text("0i-MF 需参数 No.3405 第 4 位（CCR）= 1")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("刀具与切削") {
                     numRow("刀具直径", value: $spec.toolDia)
                     numRow("每层切深 AP", value: $spec.stepDown)
