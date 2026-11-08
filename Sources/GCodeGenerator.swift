@@ -21,6 +21,7 @@ struct PocketSpec {
     var feed: Int = 400
     var safeZ: Double = 100
     var compNo: Int = 1
+    var compact: Bool = true
 
     var toolRadius: Double { toolDia / 2 }
 
@@ -104,7 +105,11 @@ enum GCodeGenerator {
             L.append("IF[#29LT0.001]THEN#29=0.001")
         }
         L.append("#24=#24+1")
-        L.append(contentsOf: ringBlocks(type: s.cornerType, approach: "G01 X#27 Y0 F[#9]"))
+        if s.compact {
+            L.append(contentsOf: ringBlocksCompact(s))
+        } else {
+            L.append(contentsOf: ringBlocks(type: s.cornerType, approach: "G01 X#27 Y0 F[#9]"))
+        }
         L.append("END2")
         L.append("END1")
         L.append("")
@@ -116,13 +121,28 @@ enum GCodeGenerator {
         L.append("G00 X[#27+6.] Y0")
         L.append("G01 Z#26 F[#9]")
         L.append("G41 D\(s.compNo) G01 X#27 Y0 F[#9]")
-        L.append(contentsOf: ringBlocks(type: s.cornerType))
+        if s.compact {
+            L.append(contentsOf: ringBlocksCompact(s))
+        } else {
+            L.append(contentsOf: ringBlocks(type: s.cornerType))
+        }
         L.append("G40 G01 X[#27+6.] Y0")
         L.append("G00 Z#10")
         L.append("M05")
         L.append("M30")
         L.append("%")
-        return L.joined(separator: "\n")
+
+        guard s.compact else { return L.joined(separator: "\n") }
+        var lean: [String] = []
+        for line in L {
+            var t = line
+            if let r = t.range(of: "\\([^)]*\\)", options: .regularExpression) {
+                t.removeSubrange(r)
+            }
+            t = t.trimmingCharacters(in: .whitespaces)
+            if !t.isEmpty { lean.append(t) }
+        }
+        return lean.joined(separator: "\n")
     }
 
     private static func cornerDesc(_ s: PocketSpec) -> String {
@@ -131,6 +151,21 @@ enum GCodeGenerator {
         case .chamfer: return "C\(fmt(s.cornerValue, 2))"
         case .square: return "NONE"
         }
+    }
+
+    /// 精简写法：用 FANUC 自动倒圆/倒角 ,R / ,C
+    private static func ringBlocksCompact(_ s: PocketSpec) -> [String] {
+        var sfx = ""
+        if s.cornerType == .radius { sfx = ",R[#29]" }
+        else if s.cornerType == .chamfer { sfx = ",C[#29]" }
+        var out: [String] = []
+        out.append("G01X#27Y0F[#9]")
+        out.append("G01X#27Y#28" + sfx)
+        out.append("G01X[-#27]Y#28" + sfx)
+        out.append("G01X[-#27]Y[-#28]" + sfx)
+        out.append("G01X#27Y[-#28]" + sfx)
+        out.append("G01X#27Y0" + sfx)
+        return out
     }
 
     /// 逆时针轮廓，从 (A,0) 出发；与 G41 左补偿配合=内腔顺铣
