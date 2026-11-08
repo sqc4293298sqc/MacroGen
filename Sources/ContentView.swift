@@ -22,13 +22,22 @@ struct ContentView: View {
                     .pickerStyle(.segmented)
                 }
 
-                if spec.mode == .pocket {
-                    Section("型腔尺寸 (mm)") {
+                if spec.mode == .spiral {
+                    Section("螺旋参数 (mm)") {
+                        numRow("圆直径 D", value: $spec.spiralDia)
+                        numRow("去量 H", value: $spec.depth)
+                    }
+                }
+
+                if spec.mode == .pocket || spec.mode == .face {
+                    Section(spec.mode == .face ? "平面尺寸 (mm)" : "型腔尺寸 (mm)") {
                         numRow("长 L", value: $spec.length)
                         numRow("宽 W", value: $spec.width)
-                        numRow("深 D", value: $spec.depth)
+                        numRow(spec.mode == .face ? "去量 H" : "深 D", value: $spec.depth)
                     }
+                }
 
+                if spec.mode == .pocket {
                     Section("四角形状") {
                         Picker("类型", selection: $spec.cornerType) {
                             ForEach(CornerType.allCases) { t in
@@ -88,6 +97,11 @@ struct ContentView: View {
                     if spec.mode == .pocket {
                         numRow("行距 AE", value: $spec.stepOver)
                     }
+                    if spec.mode == .face {
+                        Text("飞面行距固定取刀具直径的 75%，不用填")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     intRow("转速 S", value: $spec.spindle)
                     intRow("进给 F", value: $spec.feed)
                     numRow("安全高度 Z", value: $spec.safeZ)
@@ -128,7 +142,7 @@ struct ContentView: View {
             }
             .navigationTitle("宏程序生成器")
             .navigationDestination(isPresented: $showResult) {
-                ResultView(code: result, fileURL: fileURL)
+                ResultView(code: result, manual: manual, fileURL: fileURL)
             }
         }
     }
@@ -184,12 +198,17 @@ struct ContentView: View {
         let name: String
         if spec.mode == .taper {
             name = "taper_D\(Int(spec.taperDia))d\(Int(spec.taperDiaSmall))_H\(Int(spec.taperDepth)).nc"
+        } else if spec.mode == .face {
+            name = "face_L\(Int(spec.length))_W\(Int(spec.width))_H\(Int(spec.depth)).nc"
+        } else if spec.mode == .spiral {
+            name = "spiral_D\(Int(spec.spiralDia))_H\(Int(spec.depth)).nc"
         } else {
             name = "pocket_L\(Int(spec.length))_W\(Int(spec.width))_D\(Int(spec.depth)).nc"
         }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
         try? code.write(to: url, atomically: true, encoding: .utf8)
         result = code
+        manual = GCodeGenerator.manual(spec)
         fileURL = url
         showResult = true
     }
@@ -197,16 +216,28 @@ struct ContentView: View {
 
 struct ResultView: View {
     let code: String
+    let manual: String
     let fileURL: URL?
     @State private var didCopy = false
 
     var body: some View {
         ScrollView {
-            Text(code)
-                .font(.system(size: 12, design: .monospaced))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 12) {
+                Text(code)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+
+                DisclosureGroup("使用说明（每个变量怎么改）") {
+                    Text(manual)
+                        .font(.system(size: 13))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 6)
+                }
                 .padding(12)
+            }
         }
         .background(Color(uiColor: .secondarySystemBackground))
         .navigationTitle("宏程序")

@@ -42,10 +42,10 @@ struct WelcomeView: View {
                 .padding(.horizontal, 28)
 
                 Text("当里个当制作")
-                    .font(.system(size: 12))
-                    .kerning(1.2)
-                    .foregroundStyle(Color(red: 0.478, green: 0.522, blue: 0.584))
-                    .padding(.top, 18)
+                    .font(.system(size: 17, weight: .bold))
+                    .kerning(2.6)
+                    .foregroundStyle(Color(red: 0.2, green: 0.251, blue: 0.31))
+                    .padding(.top, 24)
 
                 Spacer(minLength: 36)
             }
