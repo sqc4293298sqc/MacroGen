@@ -9,6 +9,8 @@ struct ContentView: View {
     @State private var showResult = false
     @State private var showSim = false
     @State private var showRef = false
+    @State private var showTol = false
+    @State private var showThread = false
 
     private var toolpathImage: String {
         switch spec.mode {
@@ -192,6 +194,26 @@ struct ContentView: View {
                     }
 
                     Button {
+                        showTol = true
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Label("尺寸公差查询", systemImage: "ruler")
+                            Spacer()
+                        }
+                    }
+
+                    Button {
+                        showThread = true
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Label("丝锥底孔查询", systemImage: "circle.hexagongrid")
+                            Spacer()
+                        }
+                    }
+
+                    Button {
                         self.build()
                     } label: {
                         HStack {
@@ -206,6 +228,12 @@ struct ContentView: View {
             .navigationTitle("宏程序生成器")
             .sheet(isPresented: $showRef) {
                 CodeRefView()
+            }
+            .sheet(isPresented: $showTol) {
+                ToleranceView()
+            }
+            .sheet(isPresented: $showThread) {
+                ThreadView()
             }
             .sheet(isPresented: $showSim) {
                 ToolpathSimView(spec: spec)

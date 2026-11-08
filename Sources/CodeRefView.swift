@@ -111,6 +111,23 @@ let tips: [CodeItem] = [
 struct CodeRefView: View {
     @Environment(\.dismiss) private var dismiss
 
+    @State private var query = ""
+
+    private func match(_ items: [CodeItem]) -> [CodeItem] {
+        let kw = query.trimmingCharacters(in: .whitespaces).lowercased()
+        if kw.isEmpty { return items }
+        return items.filter {
+            $0.code.lowercased().contains(kw)
+                || $0.name.lowercased().contains(kw)
+                || $0.desc.lowercased().contains(kw)
+        }
+    }
+
+    private var totalHits: Int {
+        match(gCodes).count + match(mCodes).count + match(others).count
+            + match(macroItems).count + match(tips).count
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -125,9 +142,19 @@ struct CodeRefView: View {
                 section("其他常用指令", others)
                 section("宏程序基础语法", macroItems)
                 section("新手六条铁律", tips)
+
+                if totalHits == 0 {
+                    Section {
+                        Text("没找到「\(query)」\n换个说法试试：G43、攻丝、刀补、WHILE、M30")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             .listStyle(.insetGrouped)
             .navigationTitle("编程代码大全")
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: "搜索代码或关键词：G43 / 攻丝 / 刀补")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") { dismiss() }
@@ -138,8 +165,10 @@ struct CodeRefView: View {
 
     @ViewBuilder
     private func section(_ title: String, _ items: [CodeItem]) -> some View {
-        Section(title) {
-            ForEach(items) { item in
+        let hits = match(items)
+        if !hits.isEmpty {
+        Section(query.isEmpty ? title : title + " · 相关") {
+            ForEach(hits) { item in
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 8) {
                         Text(item.code)
@@ -160,6 +189,7 @@ struct CodeRefView: View {
                 }
                 .padding(.vertical, 3)
             }
+        }
         }
     }
 }
