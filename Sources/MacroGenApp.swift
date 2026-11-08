@@ -4,7 +4,7 @@ import SwiftUI
 struct MacroGenApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            WelcomeView()
         }
     }
 }
