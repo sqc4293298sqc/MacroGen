@@ -1,0 +1,28 @@
+trigger:
+  - main
+
+pool:
+  vmImage: 'macOS-14'
+
+steps:
+  - script: |
+      brew install xcodegen
+      xcodegen generate
+    displayName: '生成 Xcode 工程'
+
+  - script: |
+      xcodebuild -project MacroGen.xcodeproj -scheme MacroGen -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+    displayName: '编译未签名 App'
+
+  - script: |
+      mkdir -p Payload
+      cp -R build/Build/Products/Release-iphoneos/MacroGen.app Payload/
+      zip -qry MacroGen.ipa Payload
+      ls -lh MacroGen.ipa
+    displayName: '打包 ipa'
+
+  - task: PublishBuildArtifacts@1
+    inputs:
+      PathtoPublish: 'MacroGen.ipa'
+      ArtifactName: 'ipa'
+      publishLocation: 'Container'
