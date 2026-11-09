@@ -7,10 +7,10 @@ struct ContentView: View {
     @State private var manual: String = ""
     @State private var fileURL: URL? = nil
     @State private var showResult = false
-    @State private var showSim = false
     @State private var showRef = false
     @State private var showTol = false
     @State private var showThread = false
+    @State private var showFeed = false
 
     private var toolpathImage: String {
         switch spec.mode {
@@ -19,6 +19,7 @@ struct ContentView: View {
         case .face: return "ToolpathFace"
         case .spiral: return "ToolpathSpiral"
         case .key: return "ToolpathKey"
+        case .outer: return "ToolpathOuter"
         }
     }
 
@@ -29,6 +30,7 @@ struct ContentView: View {
         case .face: return "Y 向往复走平行线，一层走满整张面再下一层"
         case .spiral: return "刀心圆上 G3 连续下降，每圈吃一层"
         case .key: return "沿槽长来回走，两端由刀径形成圆弧；槽宽大于刀径时自动分行"
+        case .outer: return "贴工件轮廓外侧顺时针绕，一圈一圈往下，G41 把刀偏在外面"
         }
     }
 
@@ -44,7 +46,7 @@ struct ContentView: View {
                             Text(m.rawValue).tag(m)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
                 }
 
                 Section("刀路示意") {
@@ -73,6 +75,14 @@ struct ContentView: View {
                     }
                 }
 
+                if spec.mode == .outer {
+                    Section("工件外形尺寸 (mm)") {
+                        numRow("长 L", value: $spec.length)
+                        numRow("宽 W", value: $spec.width)
+                        numRow("总深 H", value: $spec.depth)
+                    }
+                }
+
                 if spec.mode == .pocket || spec.mode == .face {
                     Section(spec.mode == .face ? "平面尺寸 (mm)" : "型腔尺寸 (mm)") {
                         numRow("长 L", value: $spec.length)
@@ -81,7 +91,7 @@ struct ContentView: View {
                     }
                 }
 
-                if spec.mode == .pocket {
+                if spec.mode == .pocket || spec.mode == .outer {
                     Section("四角形状") {
                         Picker("类型", selection: $spec.cornerType) {
                             ForEach(CornerType.allCases) { t in
@@ -173,17 +183,6 @@ struct ContentView: View {
 
                 Section {
                     Button {
-                        showSim = true
-                    } label: {
-                        HStack {
-                            Spacer()
-                            Label("刀路仿真", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
-                            Spacer()
-                        }
-                    }
-                    .disabled(!spec.canGenerate)
-
-                    Button {
                         showRef = true
                     } label: {
                         HStack {
@@ -214,14 +213,27 @@ struct ContentView: View {
                     }
 
                     Button {
+                        showFeed = true
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Label("刀具转速进给", systemImage: "gauge.with.dots.needle.bottom.50percent")
+                            Spacer()
+                        }
+                    }
+
+                    Button {
                         self.build()
                     } label: {
                         HStack {
                             Spacer()
-                            Label("生成宏程序", systemImage: "function")
+                            Label("生成宏程序 · 含刀路仿真", systemImage: "function")
                             Spacer()
                         }
+                        .font(.headline)
                     }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
                     .disabled(!spec.canGenerate)
                 }
             }
@@ -235,11 +247,11 @@ struct ContentView: View {
             .sheet(isPresented: $showThread) {
                 ThreadView()
             }
-            .sheet(isPresented: $showSim) {
-                ToolpathSimView(spec: spec)
+            .sheet(isPresented: $showFeed) {
+                ToolFeedView()
             }
             .navigationDestination(isPresented: $showResult) {
-                ResultView(code: result, manual: manual, fileURL: fileURL)
+                ResultView(code: result, manual: manual, fileURL: fileURL, spec: spec)
             }
         }
     }
@@ -301,6 +313,8 @@ struct ContentView: View {
             name = "spiral_D\(Int(spec.spiralDia))_H\(Int(spec.depth)).nc"
         } else if spec.mode == .key {
             name = "key_L\(Int(spec.keyLength))_W\(Int(spec.keyWidth))_H\(Int(spec.depth)).nc"
+        } else if spec.mode == .outer {
+            name = "outer_L\(Int(spec.length))_W\(Int(spec.width))_H\(Int(spec.depth)).nc"
         } else {
             name = "pocket_L\(Int(spec.length))_W\(Int(spec.width))_D\(Int(spec.depth)).nc"
         }
@@ -317,6 +331,7 @@ struct ResultView: View {
     let code: String
     let manual: String
     let fileURL: URL?
+    let spec: PocketSpec
     @State private var didCopy = false
 
     var body: some View {
@@ -327,6 +342,16 @@ struct ResultView: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
+
+                Text("刀路仿真（俯视 / 立体 / 倍速）")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+
+                ToolpathSimView(spec: spec, embedded: true, canvasHeight: 220)
+                    .background(Color.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal, 8)
 
                 DisclosureGroup("使用说明（每个变量怎么改）") {
                     Text(manual)

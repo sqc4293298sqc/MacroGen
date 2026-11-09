@@ -27,11 +27,31 @@ struct ToolpathSimView: View {
         return segs.last?.z ?? 0
     }
 
+    /// 是否嵌在别的页面里（嵌进去就不带自己的导航栏和关闭按钮）
+    var embedded = false
+    /// 画布高度，嵌进宏程序页时可以矮一点
+    var canvasHeight: CGFloat = 360
+
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 10) {
+        if embedded {
+            panel
+        } else {
+            NavigationStack {
+                panel
+                    .navigationTitle("刀路仿真")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("关闭") { dismiss() }
+                        }
+                    }
+            }
+        }
+    }
+
+    private var panel: some View {
+        VStack(spacing: 10) {
                 Canvas { ctx, size in draw(ctx, size) }
-                    .frame(height: 360)
+                    .frame(height: canvasHeight)
                     .background(Color.white)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(red: 0.91, green: 0.93, blue: 0.95)))
@@ -85,19 +105,12 @@ struct ToolpathSimView: View {
                     }
                     .buttonStyle(.bordered)
                 }
-            }
-            .padding(14)
-            .navigationTitle("刀路仿真")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { dismiss() }
-                }
-            }
-            .onReceive(Timer.publish(every: 0.04, on: .main, in: .common).autoconnect()) { _ in
-                guard playing else { return }
-                progress = min(1, progress + 0.006 * speeds[speedIndex])
-                if progress >= 1 { playing = false }
-            }
+        }
+        .padding(14)
+        .onReceive(Timer.publish(every: 0.04, on: .main, in: .common).autoconnect()) { _ in
+            guard playing else { return }
+            progress = min(1, progress + 0.006 * speeds[speedIndex])
+            if progress >= 1 { playing = false }
         }
     }
 

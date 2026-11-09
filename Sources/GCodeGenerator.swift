@@ -14,6 +14,7 @@ enum MachiningMode: String, CaseIterable, Identifiable {
     case face = "铣飞面"
     case spiral = "螺旋铣"
     case key = "铣键槽"
+    case outer = "只铣外方形"
 
     var id: String { rawValue }
 }
@@ -61,6 +62,7 @@ struct PocketSpec {
         case .face: return faceIssues
         case .spiral: return spiralIssues
         case .key: return keyIssues
+        case .outer: return outerIssues
         default: return pocketIssues
         }
     }
@@ -147,8 +149,85 @@ enum GCodeGenerator {
         case .face: return generateFace(s)
         case .spiral: return generateSpiral(s)
         case .key: return generateKey(s)
+        case .outer: return generateOuter(s)
         default: return generatePocket(s)
         }
+    }
+
+    private var outerIssues: [String] {
+        var out: [String] = []
+        if length <= 0 || width <= 0 { out.append("工件长宽必须大于 0") }
+        if toolDia <= 0 { out.append("刀具直径必须大于 0") }
+        if depth <= 0 { out.append("总深必须大于 0") }
+        if stepDown <= 0 { out.append("每层切深必须大于 0") }
+        if stepDown > depth { out.append("每层切深大于总深，改小一点") }
+        if stepDown > toolDia * 0.6 { out.append("每层切深超过刀径 60%，外形侧铣吃太多，改小一点") }
+        if cornerType != .square && cornerValue <= 0 { out.append("R/C 值必须大于 0，或选「直角」") }
+        if cornerType != .square && cornerValue >= min(length, width) / 2 { out.append("R/C 值不能大于工件最小边的一半") }
+        return out
+    }
+
+    // MARK: - 只铣外方形
+    private static func generateOuter(_ s: PocketSpec) -> String {
+        var L: [String] = []
+        L.append("%")
+        L.append("O1006 (铣外方形)")
+        L.append("G17 G21 G40 G49 G80 G90 G\(s.coord)")
+        L.append("G52 X\(fmt(s.cx)) Y\(fmt(s.cy)) (平移到工件中心)")
+        L.append("G43 H\(s.hNo) Z\(fmt(s.safeZ, 1))")
+        L.append("M3 S\(s.spindle)")
+        L.append("M8")
+        L.append("#1=\(fmt(s.length, 1)) (工件长)")
+        L.append("#2=\(fmt(s.width, 1)) (工件宽)")
+        L.append("#3=\(fmt(s.toolDia, 1)) (刀具直径)")
+        let cv = s.cornerType == .square ? 0 : s.cornerValue
+        L.append("#4=\(fmt(cv, 3)) (\(s.cornerType == .chamfer ? "倒角C，直角写0" : "圆角R，直角写0"))")
+        L.append("#5=\(fmt(s.depth, 3)) (总深)")
+        L.append("#6=\(fmt(s.stepDown, 2)) (每层)")
+        L.append("#7=0 (工件表面Z)")
+        L.append("#8=-#5 (终点Z)")
+        L.append("#9=[#3/2.+2.] (起刀让量)")
+        L.append("#10=[#1/2.] (半长)")
+        L.append("#11=[#2/2.] (半宽)")
+        L.append("#12=[#10-#4] (角起点X)")
+        L.append("#13=#7 (当前Z)")
+        L.append("WHILE[#13GT#8]DO1")
+        L.append("#13=#13-#6")
+        L.append("IF[#13LT#8]THEN#13=#8")
+        L.append("G0 Z[#13+2.] (抬到本层上方2mm)")
+        L.append("G0 X-[#10+#9] Y[#11+#9] (到左上角外侧)")
+        L.append("G1 Z#13 F\(s.feed / 2) (落刀到本层)")
+        L.append("G41 D\(s.hNo) G1 X-#12 Y#11 F\(s.feed) (左刀补切入，刀在轮廓外)")
+        L.append("G1 X#12 F\(s.feed) (上边 → 右上角)")
+        if s.cornerType == .radius {
+            L.append("G2 X#10 Y[#11-#4] R#4 F\(s.feed) (右上圆角 R)")
+            L.append("G1 Y-[#11-#4] F\(s.feed) (右边)")
+            L.append("G2 X#12 Y-#11 R#4 F\(s.feed) (右下圆角 R)")
+            L.append("G1 X-#12 F\(s.feed) (下边 → 左下角)")
+            L.append("G2 X-#10 Y-[#11-#4] R#4 F\(s.feed) (左下圆角 R)")
+            L.append("G1 Y[#11-#4] F\(s.feed) (左边)")
+            L.append("G2 X-#12 Y#11 R#4 F\(s.feed) (左上圆角 R)")
+        } else {
+            L.append("G1 X#10 Y[#11-#4] F\(s.feed) (右上倒角 C)")
+            L.append("G1 Y-[#11-#4] F\(s.feed) (右边)")
+            L.append("G1 X#12 Y-#11 F\(s.feed) (右下倒角 C)")
+            L.append("G1 X-#12 F\(s.feed) (下边 → 左下角)")
+            L.append("G1 X-#10 Y-[#11-#4] F\(s.feed) (左下倒角 C)")
+            L.append("G1 Y[#11-#4] F\(s.feed) (左边)")
+            L.append("G1 X-#12 Y#11 F\(s.feed) (左上倒角 C)")
+        }
+        L.append("G40 G1 X-[#10+#9] Y[#11+#9] F\(s.feed) (取消刀补退刀)")
+        L.append("END1")
+        L.append("G0 Z\(fmt(s.safeZ, 1))")
+        L.append("G52 X0 Y0")
+        L.append("M5")
+        L.append("M9")
+        L.append("G28 G91 Z0")
+        L.append("G28 G91 Y0")
+        L.append("G90")
+        L.append("M30")
+        L.append("%")
+        return join(L)
     }
 
     // MARK: - 铣飞面
@@ -156,7 +235,7 @@ enum GCodeGenerator {
         var L: [String] = []
         L.append("%")
         L.append("O1003 (飞面宏程序)")
-        L.append("G21 G40 G49 G80 G90 G\(s.coord)")
+        L.append("G17 G21 G40 G49 G80 G90 G\(s.coord)")
         L.append("G52 X\(fmt(s.cx)) Y\(fmt(s.cy)) (平移到平面中心)")
         L.append("G43 H\(s.hNo) Z\(fmt(s.safeZ, 1))")
         L.append("M3 S\(s.spindle)")
@@ -167,8 +246,8 @@ enum GCodeGenerator {
         L.append("#4=0 (起始Z)")
         L.append("#5=\(fmt(-s.depth, 3)) (终点Z)")
         L.append("#6=\(fmt(s.stepDown, 2)) (每层)")
-        L.append("#7=[#1/2.] (半长)")
-        L.append("#8=[#2/2.] (半宽)")
+        L.append("#7=[#1/2.+#3/2.] (半长+刀半径，刀心走出工件边缘)")
+        L.append("#8=[#2/2.+#3/2.] (半宽+刀半径，进出刀都在料外)")
         L.append("#9=[#3*0.75] (行距)")
         L.append("#10=1 (方向)")
         L.append("#11=#4 (当前Z)")
@@ -177,8 +256,9 @@ enum GCodeGenerator {
         L.append("IF[#11LT#5]THEN#11=#5")
         L.append("#12=-#7 (X起点)")
         L.append("WHILE[#12LE#7]DO2")
-        L.append("G0 Z[#11+2.]")
+        L.append("G0 Z[#4+2.] (抬到工件表面上方2mm再横移)")
         L.append("G0 X#12 Y[#8*#10]")
+        L.append("G0 Z[#11+0.5]")
         L.append("G1 Z#11 F\(s.feed / 2)")
         L.append("G1 Y[-#8*#10] F\(s.feed)")
         L.append("#10=-#10")
@@ -191,6 +271,7 @@ enum GCodeGenerator {
         L.append("M9")
         L.append("G28 G91 Z0")
         L.append("G28 G91 Y0")
+        L.append("G90")
         L.append("M30")
         L.append("%")
         return join(L)
@@ -201,7 +282,7 @@ enum GCodeGenerator {
         var L: [String] = []
         L.append("%")
         L.append("O1005 (键槽宏程序)")
-        L.append("G21 G40 G49 G80 G90 G\(s.coord)")
+        L.append("G17 G21 G40 G49 G80 G90 G\(s.coord)")
         L.append("G52 X\(fmt(s.cx)) Y\(fmt(s.cy)) (平移到键槽中心)")
         L.append("G43 H\(s.hNo) Z\(fmt(s.safeZ, 1))")
         L.append("M3 S\(s.spindle)")
@@ -211,27 +292,23 @@ enum GCodeGenerator {
         L.append("#3=\(fmt(s.toolDia, 1)) (刀具直径)")
         L.append("#4=\(fmt(s.depth, 3)) (总深)")
         L.append("#5=\(fmt(s.stepDown, 2)) (每层)")
-        L.append("#6=0 (起始Z)")
+        L.append("#6=0 (工件表面Z)")
         L.append("#7=-#4 (终点Z)")
-        L.append("#8=[#1/2.-#3/2.] (X行程)")
-        L.append("#9=[#2/2.-#3/2.] (Y半行程)")
-        L.append("#10=[#3*0.7] (行距)")
-        L.append("#11=-#9 (Y起点)")
-        L.append("#12=0 (行完成标志)")
-        L.append("WHILE[#12EQ0]DO1")
+        L.append("#8=[#1-#2]/2. (两端圆弧圆心X)")
+        L.append("#9=[#2/2.-#3/2.] (端弧刀心半径)")
+        L.append("IF[#9LT0.01]THEN#9=0.01")
         L.append("#13=#6 (当前Z)")
-        L.append("WHILE[#13GT#7]DO2")
+        L.append("WHILE[#13GT#7]DO1")
         L.append("#13=#13-#5")
         L.append("IF[#13LT#7]THEN#13=#7")
-        L.append("G0 X-#8 Y#11")
-        L.append("G0 Z[#13+2.]")
-        L.append("G1 Z#13 F\(s.feed / 2)")
-        L.append("G1 X#8 F\(s.feed)")
-        L.append("G1 X-#8 F\(s.feed)")
-        L.append("END2")
-        L.append("IF[#11GE#9]THEN#12=1")
-        L.append("#11=#11+#10")
-        L.append("IF[#11GT#9]THEN#11=#9")
+        L.append("G0 Z[#13+2.] (抬到本层上方2mm)")
+        L.append("G0 X0 Y0 (在槽中心落刀，别贴壁下刀)")
+        L.append("G1 Z#13 F\(s.feed / 2) (落刀到本层)")
+        L.append("G1 X-#8 Y-#9 F\(s.feed / 2) (切到左端弧起点)")
+        L.append("G1 X#8 F\(s.feed) (下壁走到右端)")
+        L.append("G3 Y#9 I0. J#9 F\(s.feed) (右端圆弧 R)")
+        L.append("G1 X-#8 F\(s.feed) (上壁走回左端)")
+        L.append("G3 Y-#9 I0. J-#9 F\(s.feed) (左端圆弧 R)")
         L.append("END1")
         L.append("G0 Z\(fmt(s.safeZ, 1))")
         L.append("G52 X0 Y0")
@@ -239,6 +316,7 @@ enum GCodeGenerator {
         L.append("M9")
         L.append("G28 G91 Z0")
         L.append("G28 G91 Y0")
+        L.append("G90")
         L.append("M30")
         L.append("%")
         return join(L)
@@ -249,20 +327,21 @@ enum GCodeGenerator {
         var L: [String] = []
         L.append("%")
         L.append("O1004 (螺旋铣宏程序)")
-        L.append("G21 G40 G49 G80 G90 G\(s.coord)")
+        L.append("G17 G21 G40 G49 G80 G90 G\(s.coord)")
         L.append("G52 X\(fmt(s.cx)) Y\(fmt(s.cy)) (平移到圆心)")
         L.append("G43 H\(s.hNo) Z\(fmt(s.safeZ, 1))")
         L.append("M3 S\(s.spindle)")
         L.append("M8")
         L.append("#1=\(fmt(s.spiralDia, 1)) (圆直径)")
         L.append("#2=\(fmt(s.toolDia, 1)) (刀具直径)")
-        L.append("#3=0 (起始Z)")
+        L.append("#3=0 (工件表面Z)")
         L.append("#4=\(fmt(-s.depth, 3)) (终点Z)")
         L.append("#5=\(fmt(s.stepDown, 2)) (每圈下刀)")
         L.append("#6=[#1/2.-#2/2.] (刀心圆半径)")
+        L.append("IF[#6LT0.01]THEN#6=0.01 (防半径算成 0 或负数)")
         L.append("#7=#3 (当前Z)")
         L.append("G0 X-#6 Y0 (进到圆上)")
-        L.append("G1 Z#3 F\(s.feed / 2)")
+        L.append("G0 Z[#3+2.] (只到工件上方2mm，不再直插到Z0)")
         L.append("WHILE[#7GT#4]DO1")
         L.append("#7=#7-#5")
         L.append("IF[#7LT#4]THEN#7=#4")
@@ -274,6 +353,7 @@ enum GCodeGenerator {
         L.append("M9")
         L.append("G28 G91 Z0")
         L.append("G28 G91 Y0")
+        L.append("G90")
         L.append("M30")
         L.append("%")
         return join(L)
@@ -290,7 +370,7 @@ enum GCodeGenerator {
         L.append("( 切深=\(fmt(s.stepDown)) 行距=\(fmt(s.stepOver)) 转速=\(s.spindle) 进给=\(s.feed) )")
         L.append("( 坐标 G\(s.coord)  中心X=\(fmt(s.cx)) 中心Y=\(fmt(s.cy))  Z0=工件顶面 )")
         L.append("( 由 MacroGen 生成 上机前请核对 )")
-        L.append("G21 G40 G49 G80 G90 G\(s.coord)")
+        L.append("G17 G21 G40 G49 G80 G90 G\(s.coord)")
         L.append("#31=\(fmt(s.cx)) (中心X)")
         L.append("#32=\(fmt(s.cy)) (中心Y)")
         L.append("G52 X#31 Y#32 (平移到型腔中心)")
@@ -339,7 +419,7 @@ enum GCodeGenerator {
         L.append("#28=#21")
         L.append("#29=#4")
         L.append("G00 Z[#26+2.]")
-        L.append("G00 X[#27+6.] Y0")
+        L.append("G00 X0 Y0 (回腔中心，别往壁里冲)")
         L.append("G01 Z#26 F[#9]")
         L.append("G41 D\(s.hNo) G01 X#27 Y0 F[#9]")
         if s.compact {
@@ -347,13 +427,14 @@ enum GCodeGenerator {
         } else {
             L.append(contentsOf: ringBlocks(type: s.cornerType))
         }
-        L.append("G40 G01 X[#27+6.] Y0")
+        L.append("G40 G01 X0 Y0 F[#9] (退回腔中心再抬刀)")
         L.append("G00 Z#10")
         L.append("G52 X0 Y0 (取消局部坐标)")
         L.append("M5")
         L.append("M9")
         L.append("G28 G91 Z0")
         L.append("G28 G91 Y0")
+        L.append("G90")
         L.append("M30")
         L.append("%")
         return join(L)
@@ -370,7 +451,7 @@ enum GCodeGenerator {
         L.append("( 半角\(fmt(s.halfAngle)) 锥度1:\(fmt(taperN, 2)) 全角\(fmt(s.halfAngle * 2, 2)) )")
         L.append("( 刀\(fmt(s.toolDia)) 刀尖R\(fmt(s.toolCornerR)) 层\(fmt(s.stepDown)) )")
         L.append("( G\(s.coord) 中心X\(fmt(s.cx)) Y\(fmt(s.cy)) Z0=顶面 )")
-        L.append("G\(s.coord) G80 G90 G40 G49 G17")
+        L.append("G17 G\(s.coord) G80 G90 G40 G49")
         L.append("#31=\(fmt(s.cx))(中心X)")
         L.append("#32=\(fmt(s.cy))(中心Y)")
         L.append("G52 X#31 Y#32")
@@ -408,7 +489,8 @@ enum GCodeGenerator {
         L.append("M9")
         L.append("G28 G91 Z0")
         L.append("G28 G91 Y0")
-        L.append("M1")
+        L.append("G90")
+        L.append("M30")
         L.append("%")
         return join(L)
     }
@@ -450,10 +532,49 @@ enum GCodeGenerator {
             - #12 那行有 IF 保护，刀心半径算出来小于 0 时会自动取 0.001，防止 I 值为负报警
             - 走刀方向是 G3（逆时针），想改顺铣要改成 G2，I 值同时变正号
             """
+        case .outer:
+            return """
+            【干什么用】
+            只铣外形。刀偏在工件轮廓外面，一圈一圈贴着外形往下走，把 长×宽 的方料修成外形（落料、修边都能用）。每层走一圈，走到总深为止。四角可以是 R 圆角，也可以是 C 倒角，直角就写 0。
+
+            【上机前必须做】
+            1. Z0 对在工件顶面
+            2. G54 的 X0 Y0 对在工件中心（程序自动 G52 平移）
+            3. 刀补号 D 和 H 填真实号，别写死
+            4. 先在机床上空跑一次，确认 G41 让刀偏在工件外面；偏里面就是方向反了
+
+            【可以改的变量】
+            #1 = 工件长
+            #2 = 工件宽
+            #3 = 刀具直径
+            #4 = 四角值（R 圆角 / C 倒角，直角写 0）
+            #5 = 总深
+            #6 = 每层切深
+            #7 = 工件表面 Z（一般 0）
+            #8 = 终点 Z（自动=-#5）
+
+            【自动算的】
+            #9 = 刀半径 + 2，起刀点离开工件的距离
+            #10 = 半长，#11 = 半宽
+            #12 = 半长 - #4，圆角/倒角的起点 X
+            #13 = 当前 Z
+
+            【改法举例】
+            外形 120×80、R8、深 10、每层 3、Ø12 刀：
+            #1=120  #2=80  #4=8  #5=10  #6=3  #3=12
+            要 C5 倒角：把 #4 改成 5，并在界面上选「C 倒角」
+            直角外形：#4 写 0，界面选「直角」
+
+            【注意】
+            - G41 是左刀补，程序顺时针绕一圈，刀才落在工件外侧；改成逆时针就必须换 G42
+            - 有圆角时代码用 G2 R#4；有倒角时用两段 G1，#4 就是倒角边长
+            - 退刀前必须有 G40，不然下一段还带着刀补
+            - 每层别超过刀径的 60%，外形侧刃吃太多会震刀
+            """
         case .key:
             return """
             【干什么用】
-            键槽。沿槽长方向一刀一刀往复，每走完一遍下一层，槽的两端由刀具半径自然形成圆弧。
+            键槽。每一层从上方直接落刀，沿槽下壁走到右端 → G3 铣右端 R → 沿上壁走回左端 → G3 铣左端 R，一个闭合的往复就铣完一层，再落下一层。两端 R 是 G3 单独铣出来的，不靠刀带。
 
             【上机前必须做】
             1. Z0 对在工件顶面
@@ -470,21 +591,20 @@ enum GCodeGenerator {
             #7 = 终点 Z（自动=-#4）
 
             【自动算的】
-            #8 X 行程 = 槽长/2 - 刀径/2
-            #9 Y 半行程 = 槽宽/2 - 刀径/2
-            #10 行距 = 70% 刀径
-            #11 当前行 Y
-            #12 行完成标志
+            #8 = (槽长-槽宽)/2，两端圆弧的圆心 X
+            #9 = 槽宽/2 - 刀径/2，端弧的刀心半径
             #13 当前 Z
 
             【改法举例】
-            槽宽 12、用 Ø12 键槽刀：
-            #2=12  #3=12 → #9=0，只走中间一刀，宽度正好 12
-            槽宽 20、用 Ø12 刀：
-            #2=20  #3=12 → 自动分 2~3 行走完 20 宽
+            槽 40×12 深 5、用 Ø10 刀：
+            #1=40  #2=12  #3=10 → #8=14，两端圆心在 ±14；#9=1，端弧刀心半径 1，一刀往复就铣满 12 宽
+            槽 40×20 深 5、用 Ø12 刀：
+            #2=20  #3=12 → #9=4，两刀（±4）正好盖满 20 宽
 
             【注意】
-            - 刀径不能大于槽宽，程序会直接拦下来
+            - 刀径必须小于槽宽，两个 G3 的 R 才铣得出来；刀径等于槽宽时 R 只剩刀半径，等于没 R
+            - 刀径要 ≥ 槽宽的一半，一个往复才盖满整宽；比一半还小中间会留料
+            - 两个 G3 绝对不能删：G3 Y#9 I0. J#9 是右端，G3 Y-#9 I0. J-#9 是左端
             - 每层 #5 建议 ≤1mm（键槽刀可直扎）；用普通立铣刀请减到 0.3
             - 槽长 #1 是含圆弧的总长，不是直线段长度
             """
@@ -522,7 +642,7 @@ enum GCodeGenerator {
         case .spiral:
             return """
             【干什么用】
-            螺旋铣圆形面或圆孔。刀具在刀心圆上走 G3，每转一圈往下吃一层，Z 是连续下降的。
+            螺旋铣圆形面或圆孔。刀具在刀心圆上一边走 G3 一边下降，从工件上方直接螺旋下刀，不用先扎到 Z0 再开始。每圈吃一层，Z 连续到底。
 
             【上机前必须做】
             1. Z0 对在工件顶面
@@ -532,7 +652,7 @@ enum GCodeGenerator {
             【可以改的变量】
             #1 = 圆直径（要铣的圆）
             #2 = 刀具直径
-            #3 = 起始 Z
+            #3 = 工件表面 Z（一般写 0）
             #4 = 终点 Z（负值）
             #5 = 每圈下刀量
 
@@ -548,6 +668,7 @@ enum GCodeGenerator {
             【注意】
             - 刀具直径必须小于圆直径，等于或大于程序会拦下来
             - 每圈下刀量别超过刀尖强度，#5 建议 0.3~0.6
+            - 下刀靠 G0 Z[#3+2.] + 后面整段 G3，全程螺旋，没有直插；照抄时别把它改回 G1 Z0
             - 想顺铣把 G3 改成 G2，同时 #6 前面加负号（G2 I-#6）
             """
         default:

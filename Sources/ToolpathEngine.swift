@@ -21,6 +21,7 @@ enum ToolpathEngine {
         case .face: return face(s)
         case .spiral: return spiral(s)
         case .key: return key(s)
+        case .outer: return outer(s)
         default: return pocket(s)
         }
     }
@@ -49,9 +50,20 @@ enum ToolpathEngine {
                  CGPoint(x: hl, y: hw), CGPoint(x: -hl, y: hw), CGPoint(x: -hl, y: -hw)]
         case .spiral:
             p += circlePts(s.spiralDia / 2)
+        case .outer:
+            let a = s.length / 2, b = s.width / 2
+            let rc = s.cornerType == .radius ? min(s.cornerValue, min(a, b)) : 0
+            p = [CGPoint(x: -(a - rc), y: b), CGPoint(x: a - rc, y: b)]
+            p += arc(cx: a - rc, cy: b - rc, r: rc, from: 90, to: 0)
+            p.append(CGPoint(x: a, y: -(b - rc)))
+            p += arc(cx: a - rc, cy: -(b - rc), r: rc, from: 0, to: -90)
+            p.append(CGPoint(x: -(a - rc), y: -b))
+            p += arc(cx: -(a - rc), cy: -(b - rc), r: rc, from: 270, to: 180)
+            p.append(CGPoint(x: -a, y: b - rc))
+            p += arc(cx: -(a - rc), cy: b - rc, r: rc, from: 180, to: 90)
+            p.append(CGPoint(x: -(a - rc), y: b))
         case .key:
-            let R = s.toolDia / 2
-            let xc = s.keyLength / 2 - R
+            let xc = (s.keyLength - s.keyWidth) / 2
             let yh = s.keyWidth / 2
             p = [CGPoint(x: -xc, y: -yh), CGPoint(x: xc, y: -yh)]
             p += arc(cx: xc, cy: 0, r: yh, from: -90, to: 90)
@@ -147,24 +159,59 @@ enum ToolpathEngine {
         return out
     }
 
+    private static func outer(_ s: PocketSpec) -> [TPSeg] {
+        var out: [TPSeg] = []
+        let a = s.length / 2 + s.toolDia / 2
+        let b = s.width / 2 + s.toolDia / 2
+        let useR = s.cornerType == .radius
+        let rc = useR ? min(s.cornerValue, min(a, b)) + s.toolDia / 2 : 0
+        let cc = s.cornerType == .chamfer ? s.cornerValue : 0
+        var z0 = 0.0
+        while true {
+            let zz = max(z0 - s.stepDown, -s.depth)
+            z0 = zz
+            var pts: [CGPoint] = []
+            if useR {
+                pts.append(CGPoint(x: -(a - rc), y: b))
+                pts.append(CGPoint(x: a - rc, y: b))
+                pts += arc(cx: a - rc, cy: b - rc, r: rc, from: 90, to: 0)
+                pts.append(CGPoint(x: a, y: -(b - rc)))
+                pts += arc(cx: a - rc, cy: -(b - rc), r: rc, from: 0, to: -90)
+                pts.append(CGPoint(x: -(a - rc), y: -b))
+                pts += arc(cx: -(a - rc), cy: -(b - rc), r: rc, from: 270, to: 180)
+                pts.append(CGPoint(x: -a, y: b - rc))
+                pts += arc(cx: -(a - rc), cy: b - rc, r: rc, from: 180, to: 90)
+            } else {
+                pts.append(CGPoint(x: -(a - cc), y: b))
+                pts.append(CGPoint(x: a - cc, y: b))
+                pts.append(CGPoint(x: a, y: b - cc))
+                pts.append(CGPoint(x: a, y: -(b - cc)))
+                pts.append(CGPoint(x: a - cc, y: -b))
+                pts.append(CGPoint(x: -(a - cc), y: -b))
+                pts.append(CGPoint(x: -a, y: -(b - cc)))
+                pts.append(CGPoint(x: -a, y: b - cc))
+                pts.append(CGPoint(x: -(a - cc), y: b))
+            }
+            out.append(TPSeg(cut: true, z: zz, pts: pts, len: 2 * (2 * a + 2 * b)))
+            if zz <= -s.depth { break }
+        }
+        return out
+    }
+
     private static func key(_ s: PocketSpec) -> [TPSeg] {
         var out: [TPSeg] = []
-        let xh = s.keyLength / 2 - s.toolDia / 2
-        let yh = s.keyWidth / 2 - s.toolDia / 2
-        let row = s.toolDia * 0.7
-        var y = -yh
+        let xh = (s.keyLength - s.keyWidth) / 2
+        let yh = max(0, s.keyWidth / 2 - s.toolDia / 2)
+        var z0 = 0.0
         while true {
-            let yy = min(y, yh)
-            var z = 0.0
-            while z > -s.depth - 1e-9 {
-                let zz = max(z - s.stepDown, -s.depth)
-                let pts = [CGPoint(x: -xh, y: yy), CGPoint(x: xh, y: yy), CGPoint(x: -xh, y: yy)]
-                out.append(TPSeg(cut: true, z: zz, pts: pts, len: xh * 4))
-                if zz <= -s.depth { break }
-                z = zz
-            }
-            if yy >= yh { break }
-            y += row
+            let zz = max(z0 - s.stepDown, -s.depth)
+            z0 = zz
+            var pts: [CGPoint] = [CGPoint(x: -xh, y: -yh), CGPoint(x: xh, y: -yh)]
+            pts += arc(cx: xh, cy: 0, r: yh, from: -90, to: 90)
+            pts.append(CGPoint(x: -xh, y: yh))
+            pts += arc(cx: -xh, cy: 0, r: yh, from: 90, to: 270)
+            out.append(TPSeg(cut: true, z: zz, pts: pts, len: xh * 4 + 2 * Double.pi * yh))
+            if zz <= -s.depth { break }
         }
         return out
     }
