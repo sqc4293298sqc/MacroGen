@@ -16,13 +16,15 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.local.macrogen
         PRODUCT_NAME: MacroGen
-        MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "2.2"
+        CURRENT_PROJECT_VERSION: "11"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: 宏程序
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_NSCameraUsageDescription: 拍机床屏幕或程序单，识别成文字后自动带进模拟
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: 从相册选程序照片做识别
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "5.0"
         CODE_SIGN_IDENTITY: ""

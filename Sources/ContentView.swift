@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var showTol = false
     @State private var showThread = false
     @State private var showFeed = false
+    @State private var showImport = false
 
     private var toolpathImage: String {
         switch spec.mode {
@@ -223,6 +224,16 @@ struct ContentView: View {
                     }
 
                     Button {
+                        showImport = true
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Label("拍照识别程序 · 导入并模拟", systemImage: "camera.viewfinder")
+                            Spacer()
+                        }
+                    }
+
+                    Button {
                         self.build()
                     } label: {
                         HStack {
@@ -249,6 +260,9 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showFeed) {
                 ToolFeedView()
+            }
+            .sheet(isPresented: $showImport) {
+                ImportView()
             }
             .navigationDestination(isPresented: $showResult) {
                 ResultView(code: result, manual: manual, fileURL: fileURL, spec: spec)
@@ -352,6 +366,26 @@ struct ResultView: View {
                     .background(Color.white)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .padding(.horizontal, 8)
+
+                NavigationLink {
+                    SimScreen(code: code, spec: spec)
+                } label: {
+                    HStack {
+                        Image(systemName: "play.circle.fill")
+                        Text("程序模拟 › 按 G 代码逐段走刀")
+                            .font(.system(size: 15, weight: .semibold))
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                    }
+                    .padding(.vertical, 12)
+                    .padding(.horizontal, 14)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.orange)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 12)
 
                 DisclosureGroup("使用说明（每个变量怎么改）") {
                     Text(manual)
