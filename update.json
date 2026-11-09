@@ -1,8 +1,8 @@
 {
   "android": {
-    "versionCode": 10,
-    "versionName": "2.1",
-    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.1/MacroGen.apk",
-    "changelog": "v2.1\n· 新增启动自动检查更新，有新版本可一键下载安装\n· 新增「只铣外方形」，四角支持 R 圆角 / C 倒角\n· 新增「刀具转速进给」查询（皇冠钻 / 合金钻 / 普通钻）\n· 修正型腔精修、飞面进出刀、键槽落刀等撞刀隐患\n· 界面重做：六宫格选模式 + 2×2 查询宫格"
+    "versionCode": 11,
+    "versionName": "2.2",
+    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.2/MacroGen.apk",
+    "changelog": "新增程序模拟：按 G 代码逐段走刀，可单步/倍速/看实时坐标；新增拍照识别导入，机床屏幕或程序单拍下来自动转文字；支持文件与粘贴导入。"
   }
 }
