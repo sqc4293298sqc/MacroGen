@@ -1,4 +1,5 @@
 import SwiftUI
+import Foundation
 
 /// 刀具转速进给推荐：皇冠钻 / 整体合金钻 / 普通高速钢钻
 struct ToolFeedView: View {

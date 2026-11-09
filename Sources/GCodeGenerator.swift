@@ -118,6 +118,19 @@ struct PocketSpec {
         return out
     }
 
+    private var outerIssues: [String] {
+        var out: [String] = []
+        if length <= 0 || width <= 0 { out.append("工件长宽必须大于 0") }
+        if toolDia <= 0 { out.append("刀具直径必须大于 0") }
+        if depth <= 0 { out.append("总深必须大于 0") }
+        if stepDown <= 0 { out.append("每层切深必须大于 0") }
+        if stepDown > depth { out.append("每层切深大于总深，改小一点") }
+        if stepDown > toolDia * 0.6 { out.append("每层切深超过刀径 60%，外形侧铣吃太多，改小一点") }
+        if cornerType != .square && cornerValue <= 0 { out.append("R/C 值必须大于 0，或选「直角」") }
+        if cornerType != .square && cornerValue >= min(length, width) / 2 { out.append("R/C 值不能大于工件最小边的一半") }
+        return out
+    }
+
     private var taperIssues: [String] {
         var out: [String] = []
         if taperDia <= 0 || taperDiaSmall <= 0 { out.append("大头/小头必须大于 0") }
@@ -152,19 +165,6 @@ enum GCodeGenerator {
         case .outer: return generateOuter(s)
         default: return generatePocket(s)
         }
-    }
-
-    private var outerIssues: [String] {
-        var out: [String] = []
-        if length <= 0 || width <= 0 { out.append("工件长宽必须大于 0") }
-        if toolDia <= 0 { out.append("刀具直径必须大于 0") }
-        if depth <= 0 { out.append("总深必须大于 0") }
-        if stepDown <= 0 { out.append("每层切深必须大于 0") }
-        if stepDown > depth { out.append("每层切深大于总深，改小一点") }
-        if stepDown > toolDia * 0.6 { out.append("每层切深超过刀径 60%，外形侧铣吃太多，改小一点") }
-        if cornerType != .square && cornerValue <= 0 { out.append("R/C 值必须大于 0，或选「直角」") }
-        if cornerType != .square && cornerValue >= min(length, width) / 2 { out.append("R/C 值不能大于工件最小边的一半") }
-        return out
     }
 
     // MARK: - 只铣外方形
