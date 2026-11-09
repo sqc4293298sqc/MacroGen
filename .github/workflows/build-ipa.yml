@@ -3,6 +3,8 @@ name: build-ipa
 on:
   push:
     branches: [ main, master ]
+    paths-ignore:
+      - 'update.json' 
   workflow_dispatch:
 
 jobs:
