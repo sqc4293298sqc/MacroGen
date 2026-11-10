@@ -16,8 +16,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.local.macrogen
         PRODUCT_NAME: MacroGen
-        MARKETING_VERSION: "2.3"
-        CURRENT_PROJECT_VERSION: "12"
+        MARKETING_VERSION: "2.4"
+        CURRENT_PROJECT_VERSION: "13"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: 宏程序
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
