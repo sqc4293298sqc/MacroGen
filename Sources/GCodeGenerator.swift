@@ -202,7 +202,12 @@ enum GCodeGenerator {
         L.append("( Z0=工件上表面  孔要先打穿或至少深过倒角 )")
         L.append("( 由 MacroGen 生成 上机前请核对 )")
         L.append("G17 G21 G40 G49 G80 G90 G\(s.coord)")
-        L.append("G52 X\(fmt(s.cx, 3)) Y\(fmt(s.cy, 3)) (平移到孔中心)")
+        let shift = abs(s.cx) > 1e-9 || abs(s.cy) > 1e-9
+        if shift {
+            L.append("G52 X\(fmt(s.cx, 3)) Y\(fmt(s.cy, 3)) (平移到孔中心)")
+        } else {
+            L.append("( X0 Y0 就是 G\(s.coord) 零点, 不对刀就不用改 )")
+        }
         L.append("G43 H\(s.hNo) Z\(fmt(s.safeZ, 1))")
         L.append("M3 S\(s.spindle)")
         L.append("M8")
@@ -230,7 +235,7 @@ enum GCodeGenerator {
         L.append("#20=#20+1")
         L.append("END1")
         L.append("G0 Z\(fmt(s.safeZ, 1))")
-        L.append("G52 X0 Y0")
+        if shift { L.append("G52 X0 Y0") }
         L.append("M5")
         L.append("M9")
         L.append("G28 G91 Z0")
