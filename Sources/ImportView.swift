@@ -298,11 +298,16 @@ enum ProgramCleaner {
             let c = chars[i]
             let prev: Character = i > 0 ? chars[i - 1] : " "
             let next: Character = i + 1 < chars.count ? chars[i + 1] : " "
+            // 紧跟 [ # - + 的字母是地址字（如 I[-#21]），绝不能当数字改
+            if next == "[" || next == "#" || next == "-" || next == "+" {
+                out.append(c)
+                continue
+            }
             let prevOk = prev.isNumber || prev == "." ||
                 (address.contains(prev) && (next.isNumber || !next.isLetter))
             if "OQD".contains(c) && prevOk {
                 out.append("0")
-            } else if "lI|L".contains(c) && prevOk {
+            } else if "l|L".contains(c) && prevOk {   // 不含 I：I 是圆弧/参数地址
                 out.append("1")
             } else {
                 out.append(c)

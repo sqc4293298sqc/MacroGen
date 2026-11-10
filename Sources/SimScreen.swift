@@ -209,17 +209,23 @@ struct SimCanvas: View {
 
     var body: some View {
         Canvas { ctx, size in
-            let span = max(path.maxX - path.minX, path.maxY - path.minY, 1)
-            let s = min(size.width, size.height) / (span * 1.5)
+            let spanX = max(path.maxX - path.minX, 1)
+            let spanY = max(path.maxY - path.minY, 1)
+            let zSpan = max(path.maxZ - path.minZ, 0.001)
+            let zf = 0.8                    // 立体图里 Z 的视觉比例
+            let needW = iso ? (spanX + spanY) * 0.95 : spanX
+            let needH = iso ? (spanX + spanY) * 0.5 + zSpan * zf : spanY
+            let s = min(size.width * 0.92 / needW, size.height * 0.90 / needH)
             let cx = (path.minX + path.maxX) / 2
             let cy = (path.minY + path.maxY) / 2
+            let zMid = (path.minZ + path.maxZ) / 2
             let ox = size.width / 2
-            let oy = size.height / 2 + (iso ? size.height * 0.10 : 0)
+            let oy = size.height / 2 + (iso ? zMid * zf * s : 0)
 
             func project(_ x: Double, _ y: Double, _ z: Double) -> CGPoint {
                 if iso {
                     let px = (x - cx) - (y - cy)
-                    let py = ((x - cx) + (y - cy)) * 0.5 - z * 1.2
+                    let py = ((x - cx) + (y - cy)) * 0.5 - z * zf
                     return CGPoint(x: ox + px * 0.866 * s, y: oy + py * s)
                 }
                 return CGPoint(x: ox + (x - cx) * s, y: oy - (y - cy) * s)
