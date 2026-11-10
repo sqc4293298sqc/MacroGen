@@ -22,6 +22,7 @@ enum ToolpathEngine {
         case .spiral: return spiral(s)
         case .key: return key(s)
         case .outer: return outer(s)
+        case .innerChamfer: return chamfer(s)
         default: return pocket(s)
         }
     }
@@ -44,6 +45,8 @@ enum ToolpathEngine {
             p.append(CGPoint(x: a, y: 0))
         case .taper:
             p += circlePts(s.taperDia / 2)
+        case .innerChamfer:
+            p += circlePts(s.chaDia / 2 + s.chaDepth * tan(s.chaAngle / 2 * .pi / 180))
         case .face:
             let hl = s.length / 2, hw = s.width / 2
             p = [CGPoint(x: -hl, y: -hw), CGPoint(x: hl, y: -hw),
@@ -75,6 +78,19 @@ enum ToolpathEngine {
     }
 
     // MARK: - 各模式轨迹
+
+    /// 内圆倒角：逐层整圆，半径一层比一层小
+    private static func chamfer(_ s: PocketSpec) -> [TPSeg] {
+        var out: [TPSeg] = []
+        let hr = tan(s.chaAngle / 2 * .pi / 180)
+        let n = max(1, Int(floor(s.chaDepth / max(s.chaStep, 0.001) + 1e-9)))
+        for k in 1...n {
+            let h = min(Double(k) * s.chaStep, s.chaDepth)
+            let rr = max(0.01, s.chaDia / 2 + (s.chaDepth - h) * hr - s.toolDia / 2)
+            out.append(TPSeg(cut: true, z: -h, pts: circlePts(rr), len: 2 * .pi * rr))
+        }
+        return out
+    }
 
     private static func pocket(_ s: PocketSpec) -> [TPSeg] {
         var out: [TPSeg] = []
