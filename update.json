@@ -1,8 +1,8 @@
 {
   "android": {
-    "versionCode": 12,
-    "versionName": "2.3",
-    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.3/MacroGen.apk",
-    "changelog": "新增「内圆倒角」模式：给孔口铣一圈锥面倒角，填孔径/锥角/倒角深/每层就能出程序（Ø14 孔 60° 深 4 用 Ø10 刀、每层 0.1，一趟就是一行行的锥面）；顺带修好了识别导入把圆弧 I 字误改成 1 的问题，模拟出来的刀路不再变成一堵墙，立体视图也能完整显示深度。"
+    "versionCode": 13,
+    "versionName": "2.4",
+    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.4/MacroGen.apk",
+    "changelog": "修复 2.3 打开就闪退的问题（界面循环写错导致数组越界），装这版就正常；内圆倒角模式、识别导入圆弧修复、立体视图深度显示一并带上。"
   }
 }
