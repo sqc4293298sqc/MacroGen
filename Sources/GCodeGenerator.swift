@@ -15,6 +15,7 @@ enum MachiningMode: String, CaseIterable, Identifiable {
     case spiral = "螺旋铣"
     case key = "铣键槽"
     case outer = "只铣外方形"
+    case innerChamfer = "内圆倒角"
 
     var id: String { rawValue }
 }
@@ -41,6 +42,12 @@ struct PocketSpec {
     var taperRatio: Double = 2.38    // 锥度 1:N
     var taperAngle: Double = 22.83   // 全角（度）
 
+    // 内圆倒角
+    var chaDia: Double = 14          // 孔径
+    var chaAngle: Double = 60        // 锥角（全角）
+    var chaDepth: Double = 4         // 倒角深
+    var chaStep: Double = 0.1        // 每层
+
     // 共用
     var toolDia: Double = 12
     var toolCornerR: Double = 5      // 刀尖 R（平底刀填 0）
@@ -63,8 +70,23 @@ struct PocketSpec {
         case .spiral: return spiralIssues
         case .key: return keyIssues
         case .outer: return outerIssues
+        case .innerChamfer: return chamferIssues
         default: return pocketIssues
         }
+    }
+
+    private var chamferIssues: [String] {
+        var out: [String] = []
+        let topDia = chaDia + 2 * chaDepth * tan(chaAngle / 2 * .pi / 180)
+        if chaDia <= 0 { out.append("孔径必须大于 0") }
+        if toolDia <= 0 { out.append("刀具直径必须大于 0") }
+        if toolDia >= chaDia { out.append("刀具直径必须小于孔径，否则刀进不去") }
+        if toolDia >= topDia { out.append("刀太大，放到顶口也套不进去，换小刀或减小锥角") }
+        if chaDepth <= 0 { out.append("倒角深度必须大于 0") }
+        if chaAngle <= 1 || chaAngle >= 179 { out.append("锥角应在 1~179 度之间（按图纸全角填）") }
+        if chaStep <= 0 { out.append("每层切深必须大于 0") }
+        if chaStep > chaDepth { out.append("每层切深大于总深度，改小一点") }
+        return out
     }
 
     private var faceIssues: [String] {
@@ -163,8 +185,60 @@ enum GCodeGenerator {
         case .spiral: return generateSpiral(s)
         case .key: return generateKey(s)
         case .outer: return generateOuter(s)
+        case .innerChamfer: return generateInnerChamfer(s)
         default: return generatePocket(s)
         }
+    }
+
+    // MARK: - 内圆倒角
+    private static func generateInnerChamfer(_ s: PocketSpec) -> String {
+        let topDia = s.chaDia + 2 * s.chaDepth * tan(s.chaAngle / 2 * .pi / 180)
+        let plunge = max(50, s.feed / 3)
+        var L: [String] = []
+        L.append("%")
+        L.append("O1005 (内圆倒角宏程序)")
+        L.append("( 孔Ø\(f(s.chaDia, 2))  锥角\(f(s.chaAngle, 1))°  深\(f(s.chaDepth, 2))  刀Ø\(f(s.toolDia, 2)) )")
+        L.append("( 顶口Ø\(f(topDia, 2))  每层\(f(s.chaStep, 3))  中心X=\(f(s.cx, 2)) Y=\(f(s.cy, 2)) )")
+        L.append("( Z0=工件上表面  孔要先打穿或至少深过倒角 )")
+        L.append("( 由 MacroGen 生成 上机前请核对 )")
+        L.append("G17 G21 G40 G49 G80 G90 G\(s.coord)")
+        L.append("G52 X\(f(s.cx, 3)) Y\(f(s.cy, 3)) (平移到孔中心)")
+        L.append("G43 H\(s.hNo) Z\(f(s.safeZ, 1))")
+        L.append("M3 S\(s.spindle)")
+        L.append("M8")
+        L.append("#1=\(f(s.chaDia, 2)) (孔径)")
+        L.append("#2=\(f(s.toolDia, 2)) (刀径)")
+        L.append("#3=\(f(s.chaDepth, 2)) (倒角深)")
+        L.append("#4=\(f(s.chaStep, 3)) (每层)")
+        L.append("#5=\(f(s.chaAngle, 1)) (锥角 全角)")
+        L.append("#6=\(plunge) (下刀F)")
+        L.append("#7=\(s.feed) (圆周F)")
+        L.append("#25=TAN[#5/2.] (半角正切)")
+        L.append("#26=FIX[#3/#4] (层数,取整防少切一层)")
+        L.append("#21=[[#1/2.]+[#3*#25]]-[#2/2.] (顶层刀心半径)")
+        L.append("G0 Z[#3+2.] (先到工件上方)")
+        L.append("G0 X#21 Y0")
+        L.append("G1 Z-#4 F#6 (第一刀把顶面那圈也切掉)")
+        L.append("G2 X#21 Y0 I[-#21] J0 F#7 (整圆)")
+        L.append("#20=2 (从第二层开始循环)")
+        L.append("WHILE[#20LE#26]DO1")
+        L.append("#21=[[#1/2.]+[[#3-[#20*#4]]*#25]]-[#2/2.] (本层刀心半径)")
+        L.append("G0 Z2. (抬到工件上方再移刀)")
+        L.append("G0 X#21 Y0")
+        L.append("G1 Z-[#20*#4] F#6 (下本层)")
+        L.append("G2 X#21 Y0 I[-#21] J0 F#7 (整圆)")
+        L.append("#20=#20+1")
+        L.append("END1")
+        L.append("G0 Z\(f(s.safeZ, 1))")
+        L.append("G52 X0 Y0")
+        L.append("M5")
+        L.append("M9")
+        L.append("G28 G91 Z0")
+        L.append("G28 G91 Y0")
+        L.append("G90")
+        L.append("M30")
+        L.append("%")
+        return L.joined(separator: "\n")
     }
 
     // MARK: - 只铣外方形
@@ -498,6 +572,36 @@ enum GCodeGenerator {
     // MARK: - 新手使用说明
     static func manual(_ s: PocketSpec) -> String {
         switch s.mode {
+        case .innerChamfer:
+            return """
+            【干什么用】
+            给孔口铣一圈锥面倒角（图纸上标 60°、90° 的那种）。用一把平底铣刀，刀心在孔里一圈一圈往下缩，
+            每层只下 0.1，下几十层就把锥面一刀一刀叠出来。螺纹孔、销孔的口部倒角都用这个。
+
+            【刀要多大】
+            必须比孔小：Ø14 的孔最多用 Ø12 的刀，Ø10 最稳。刀比孔大，连孔都进不去，程序会直接报警不给算。
+
+            【程序里几个数怎么改】
+            #1 孔径：图纸上孔的名义尺寸，Ø14 就填 14
+            #2 刀径：实际装上去的铣刀直径
+            #3 倒角深：从工件上表面往下倒多深，图纸标 4 就填 4
+            #4 每层：每圈往下吃多少。0.1 很稳，赶时间可 0.2，想更光可 0.05
+            #5 锥角：填图纸上标的角度，注意是【全角】。标 60° 填 60，标 90° 填 90
+            #6 下刀进给、#7 圆周进给：材料硬就把 #7 调小
+
+            【倒角尺寸怎么核对】
+            顶口直径 = 孔径 + 2 × 倒角深 × tan(锥角/2)
+            例：Ø14 孔、深 4、60° → 顶口约 Ø18.62，正好比 M16 螺纹大一圈。
+            如果图纸那个倒角只倒到 M16 大径（Ø16），深其实只有 1.7 左右，把 #3 改成 1.7。
+
+            【为什么第一刀比后面多切一点】
+            第一刀的半径是按“工件上表面”算的，所以正好把顶面那一圈切干净，倒角边齐平、不留薄边。
+
+            【上机注意】
+            1. Z0 要打在工件上表面，X0Y0 是孔中心（程序用 G52 平移过去了，不用改坐标）
+            2. 孔必须先打穿或至少深过倒角，否则刀会在孔底顶到余料
+            3. 倒角面是一层层叠出来的，刀纹是细台阶，想很光就把 #4 改 0.05 再走一遍
+            """
         case .taper:
             return """
             【干什么用】

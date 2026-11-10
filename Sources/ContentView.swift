@@ -21,6 +21,7 @@ struct ContentView: View {
         case .spiral: return "ToolpathSpiral"
         case .key: return "ToolpathKey"
         case .outer: return "ToolpathOuter"
+        case .innerChamfer: return "ToolpathChamfer"
         }
     }
 
@@ -32,6 +33,7 @@ struct ContentView: View {
         case .spiral: return "刀心圆上 G3 连续下降，每圈吃一层"
         case .key: return "沿槽长来回走，两端由刀径形成圆弧；槽宽大于刀径时自动分行"
         case .outer: return "贴工件轮廓外侧顺时针绕，一圈一圈往下，G41 把刀偏在外面"
+        case .innerChamfer: return "刀心在孔里一圈一圈缩着往下，每层 0.1，把孔口锥面叠出来"
         }
     }
 
@@ -132,6 +134,18 @@ struct ContentView: View {
                     }
                 }
 
+                if spec.mode == .innerChamfer {
+                    Section("内圆倒角参数 (mm)") {
+                        numRow("孔径 Ø", value: $spec.chaDia)
+                        numRow("锥角 °（全角）", value: $spec.chaAngle)
+                        numRow("倒角深 H", value: $spec.chaDepth)
+                        numRow("每层 mm", value: $spec.chaStep)
+                        Text("顶口直径 = 孔径 + 2×深×tan(锥角/2)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("坐标系") {
                     Picker("工件坐标系", selection: $spec.coord) {
                         ForEach([54, 55, 56, 57, 58, 59], id: \.self) { c in
@@ -148,7 +162,9 @@ struct ContentView: View {
                 Section("刀具与切削") {
                     numRow("刀具直径", value: $spec.toolDia)
                     numRow("刀尖 R（平底刀填 0）", value: $spec.toolCornerR)
-                    numRow("每层切深 AP", value: $spec.stepDown)
+                    if spec.mode != .innerChamfer {
+                        numRow("每层切深 AP", value: $spec.stepDown)
+                    }
                     if spec.mode == .pocket {
                         numRow("行距 AE", value: $spec.stepOver)
                     }
@@ -329,6 +345,8 @@ struct ContentView: View {
             name = "key_L\(Int(spec.keyLength))_W\(Int(spec.keyWidth))_H\(Int(spec.depth)).nc"
         } else if spec.mode == .outer {
             name = "outer_L\(Int(spec.length))_W\(Int(spec.width))_H\(Int(spec.depth)).nc"
+        } else if spec.mode == .innerChamfer {
+            name = "chamfer_D\(Int(spec.chaDia))_A\(Int(spec.chaAngle))_H\(Int(spec.chaDepth)).nc"
         } else {
             name = "pocket_L\(Int(spec.length))_W\(Int(spec.width))_D\(Int(spec.depth)).nc"
         }
