@@ -33,6 +33,8 @@ public class Toolpath {
         if (s.mode == GCode.MODE_SPIRAL) return spiral(s);
         if (s.mode == GCode.MODE_KEY) return key(s);
         if (s.mode == GCode.MODE_OUTER) return outer(s);
+        if (s.mode == GCode.MODE_ODCHAM) return odCham(s);
+        if (s.mode == GCode.MODE_CHAMFER) return chamfer(s);
         return pocket(s);
     }
 
@@ -61,6 +63,8 @@ public class Toolpath {
             pts.add(new float[]{-hl, -hw});
         } else if (s.mode == GCode.MODE_SPIRAL) {
             circlePts(pts, (float) (s.spiralDia / 2));
+        } else if (s.mode == GCode.MODE_ODCHAM) {
+            circlePts(pts, (float) (s.odDia / 2));
         } else if (s.mode == GCode.MODE_OUTER) {
             double a = s.length / 2, b = s.width / 2;
             double rc = (s.cornerType == GCode.CORNER_R) ? Math.min(s.cornerValue, Math.min(a, b)) : 0;
@@ -155,7 +159,7 @@ public class Toolpath {
     private static List<Seg> pocket(GCode s) {
         List<Seg> out = new ArrayList<>();
         double a = s.length / 2, b = s.width / 2, r = s.toolDia / 2;
-        double rc0 = s.cornerValue;
+        double rc0 = (s.cornerType == GCode.CORNER_R) ? s.cornerValue : 0;
         for (double z = 0; z > -s.depth - 1e-9; z -= s.stepDown) {
             double zz = Math.max(z - s.stepDown, -s.depth);
             Seg plunge = new Seg(false, (float) zz);
@@ -288,6 +292,47 @@ public class Toolpath {
 
 
 
+
+
+    /** 内圆倒角：每层一个逐渐缩小的整圆，圆心在孔中心 */
+    private static List<Seg> chamfer(GCode s) {
+        List<Seg> out = new ArrayList<>();
+        double half = Math.toRadians(s.chaAngle / 2);
+        int layers = Math.max(1, (int) Math.floor(s.chaDepth / s.chaStep));
+        for (int i = 1; i <= layers; i++) {
+            double dz = Math.min(s.chaDepth, i * s.chaStep);
+            double rad = Math.max(0.001, (s.chaDia / 2 + (s.chaDepth - dz) * Math.tan(half)) - s.toolDia / 2);
+            Seg lead = new Seg(false, (float) -dz);
+            lead.add((float) rad, 0f);
+            out.add(lead);
+            Seg cut = new Seg(true, (float) -dz);
+            cut.add((float) rad, 0f);
+            circle(cut, 0f, 0f, (float) rad, false);
+            out.add(cut);
+        }
+        return out;
+    }
+    /** 外圆倒角：刀在外圆外侧绕整圆，逐层向外扩 */
+    private static List<Seg> odCham(GCode s) {
+        List<Seg> out = new ArrayList<>();
+        double half = Math.toRadians(s.odAngle / 2);
+        double w = s.odDepth * Math.tan(half);
+        double z0 = 0;
+        while (true) {
+            double zz = Math.max(z0 - s.odStep, -s.odDepth);
+            z0 = zz;
+            double rad = (s.odDia / 2 - (s.odDepth + zz) * Math.tan(half)) + s.toolDia / 2;
+            Seg lead = new Seg(false, (float) zz);
+            lead.add((float) Math.max(0.001, rad), 0f);
+            out.add(lead);
+            Seg cut = new Seg(true, (float) zz);
+            cut.add((float) Math.max(0.001, rad), 0f);
+            circle(cut, 0f, 0f, (float) Math.max(0.001, rad), true);
+            out.add(cut);
+            if (zz <= -s.odDepth) break;
+        }
+        return out;
+    }
     private static List<Seg> key(GCode s) {
         List<Seg> out = new ArrayList<>();
         double xh = (s.keyLength - s.keyWidth) / 2.0;              // 两端圆弧圆心 X

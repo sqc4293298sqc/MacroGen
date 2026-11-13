@@ -22,6 +22,7 @@ public class GCode {
     public static final int MODE_KEY = 4;
     public static final int MODE_OUTER = 5;
     public static final int MODE_CHAMFER = 6;      // 内孔倒角
+    public static final int MODE_ODCHAM = 7;       // 外圆倒角（圆柱外缘端面）
 
     public int mode = MODE_POCKET;      // 加工类型
     public double taperDia = 50;        // 大头直径
@@ -36,6 +37,10 @@ public class GCode {
     public double chaAngle = 60;        // 内圆倒角: 锥角(全角)
     public double chaDepth = 4;         // 内圆倒角: 倒角深度
     public double chaStep = 0.1;        // 内圆倒角: 每层切深
+    public double odDia = 50;           // 外圆倒角: 外圆直径
+    public double odAngle = 90;         // 外圆倒角: 锥角(全角)
+    public double odDepth = 2;          // 外圆倒角: 倒角深
+    public double odStep = 0.1;         // 外圆倒角: 每层切深
 
     public int cornerType = CORNER_R;
     public double cornerValue = 8;
@@ -61,6 +66,7 @@ public class GCode {
         if (mode == MODE_KEY) return checkKey();
         if (mode == MODE_OUTER) return checkOuter();
         if (mode == MODE_CHAMFER) return checkChamfer();
+        if (mode == MODE_ODCHAM) return checkODCham();
         if (length <= 0 || width <= 0 || depth <= 0) sb.append("长宽深必须大于 0\n");
         if (toolDia <= 0) sb.append("刀具直径必须大于 0\n");
         if (toolDia >= Math.min(length, width)) sb.append("刀具直径必须小于型腔最小边\n");
@@ -112,6 +118,21 @@ public class GCode {
         return sb.toString().trim();
     }
 
+    String checkODCham() {
+        StringBuilder sb = new StringBuilder();
+        double half = Math.toRadians(odAngle / 2);
+        double w = odDepth * Math.tan(half);
+        if (odDia <= 0) sb.append("外圆直径必须大于 0\n");
+        if (toolDia <= 0) sb.append("刀具直径必须大于 0\n");
+        if (toolDia >= odDia) sb.append("刀具直径必须小于外圆直径，否则整个盖面都会被切\n");
+        if (odDepth <= 0) sb.append("倒角深必须大于 0\n");
+        if (odAngle <= 1 || odAngle >= 179) sb.append("锥角应在 1~179 度之间（按图纸全角填）\n");
+        if (odStep <= 0) sb.append("每层切深必须大于 0\n");
+        if (odStep > odDepth + 1e-9) sb.append("每层切深大于倒角深，改小一点\n");
+        if (w >= odDia / 2.0) sb.append("倒角宽超过外圆半径，改小倒角深或锥角\n");
+        return sb.toString().trim();
+    }
+
     String checkSpiral() {
         StringBuilder sb = new StringBuilder();
         if (spiralDia <= 0) sb.append("圆直径必须大于 0\n");
@@ -148,6 +169,14 @@ public class GCode {
             sb.append("1. Z0 要打在工件上表面，X0Y0 是孔中心（用 G52 平移过去了，不用改坐标）。\n");
             sb.append("2. 孔必须先打穿或至少深过倒角，否则刀会在孔底顶到余料。\n");
             sb.append("3. 倒角面是一层层叠出来的，刀纹是细台阶，想很光就把 #4 改 0.05 再走一遍。\n");
+        }
+        if (mode == MODE_ODCHAM) {
+            sb.append("【干什么用】\n给圆柱（圆盘、凸台）的外圈顶边倒角。刀在工件外面贴着外圆绕整圆，每层往里收一点点，一层层把外圈那圈锥面叠出来。\n\n");
+            sb.append("【刀要多大】\n必须比外圆小，否则整个盖面都被切平了。常用 Ø10~Ø12。\n\n");
+            sb.append("【程序里几个数怎么改】\n#1 外圆直径、#2 刀径、#3 倒角深、#4 每层（0.1 最稳）、#5 锥角（全角，常见 90°、45°）、#6 下刀进给、#7 圆周进给。\n\n");
+            sb.append("【倒角宽怎么核对】\n倒角宽 = 倒角深 × tan(锥角/2)；顶口直径 = 外圆 − 2 × 倒角宽。例：Ø50、倒角深 2、90° → 宽 2、顶口 Ø46。\n\n");
+            sb.append("【上机注意】\n1. Z0 打在工件上表面，X0Y0 是外圆圆心\n2. 第一刀在工件上方先抬到安全高度，逐层往下降，刀始终在外侧，不会撞件\n3. 外圆如果不是整圆（有缺口、有键槽），这段程序会把缺口处也切一刀，先确认再上机\n4. 想更光：每层改 0.05，末层再空走一圈");
+            return sb.toString();
         }
         if (mode == MODE_TAPER) {
             sb.append("【干什么用】\n铣 1:N 锥度的圆孔。刀具从大头中心下刀，一圈一圈往下扩，逐层把锥面铣出来。\n\n");
@@ -311,6 +340,7 @@ public class GCode {
         if (mode == MODE_KEY) return generateKey();
         if (mode == MODE_OUTER) return generateOuter();
         if (mode == MODE_CHAMFER) return generateChamfer();
+        if (mode == MODE_ODCHAM) return generateODCham();
         List<String> L = new ArrayList<>();
         L.add("%");
         L.add("O1001 (型腔宏程序)");
@@ -563,6 +593,63 @@ public class GCode {
         out.append("G1 Z-[#20*#4] F#6 (下本层)\n");
         out.append("G2 X-#21 Y0 R#21 F#7 (前半圆, 圆心在X0Y0)\n");
         out.append("G2 X#21 Y0 R#21 F#7 (后半圆)\n");
+        out.append("#20=#20+1\n");
+        out.append("END1\n");
+        out.append("G0 Z" + f(safeZ, 1) + "\n");
+        if (shift) out.append("G52 X0 Y0\n");
+        out.append("M5\n");
+        out.append("M9\n");
+        out.append("G28 G91 Z0\n");
+        out.append("G28 G91 Y0\n");
+        out.append("G90\n");
+        out.append("M30\n");
+        out.append("%");
+        String r = out.toString();
+        return r.endsWith("\n") ? r.substring(0, r.length() - 1) : r;
+    }
+
+
+    /** 外圆倒角：圆柱外缘端面倒角，刀在外圆外侧绕整圆，逐层向外挪 */
+    private String generateODCham() {
+        double half = Math.toRadians(odAngle / 2);
+        double w = odDepth * Math.tan(half);
+        double topDia = odDia - 2 * w;
+        int plunge = (int) Math.max(50, feed / 3);
+        StringBuilder out = new StringBuilder();
+        out.append("%\n");
+        out.append("O1007 (外圆倒角宏程序)\n");
+        out.append("( 外圆Ø" + f(odDia, 2) + "  锥角" + f(odAngle, 1) + "°  深" + f(odDepth, 2)
+                + "  刀Ø" + f(toolDia, 2) + " )\n");
+        out.append("( 倒角宽" + f(w, 2) + "  顶口Ø" + f(topDia, 2) + "  每层" + f(odStep, 3)
+                + "  中心X=" + f(cx, 2) + " Y=" + f(cy, 2) + " )\n");
+        out.append("( Z0=工件上表面  圆柱外缘端面倒角 )\n");
+        out.append("( 由 MacroGen 生成 上机前请核对 )\n");
+        out.append("G17 G21 G40 G49 G80 G90 G" + coord + "\n");
+        boolean shift = Math.abs(cx) > 1e-9 || Math.abs(cy) > 1e-9;
+        if (shift) {
+            out.append("G52 X" + f(cx, 3) + " Y" + f(cy, 3) + " (平移到圆心)\n");
+        } else {
+            out.append("( X0 Y0 就是 G" + coord + " 零点, 不对刀就不用改 )\n");
+        }
+        out.append("G43 H" + hNo + " Z" + f(safeZ, 1) + "\n");
+        out.append("M3 S" + spindle + "\n");
+        out.append("M8\n");
+        out.append("#1=" + f(odDia, 2) + " (外圆直径)\n");
+        out.append("#2=" + f(toolDia, 2) + " (刀径)\n");
+        out.append("#3=" + f(odDepth, 2) + " (倒角深)\n");
+        out.append("#4=" + f(odStep, 3) + " (每层)\n");
+        out.append("#5=" + f(odAngle, 1) + " (锥角 全角)\n");
+        out.append("#6=" + plunge + " (下刀F)\n");
+        out.append("#7=" + feed + " (圆周F)\n");
+        out.append("#25=TAN[#5/2.] (半角正切)\n");
+        out.append("#26=FIX[#3/#4] (层数)\n");
+        out.append("#20=1\n");
+        out.append("WHILE[#20LE#26]DO1\n");
+        out.append("#21=[[#1/2.]-[[#3-[#20*#4]]*#25]]+[#2/2.] (本层刀心半径)\n");
+        out.append("G0 Z2. (抬到工件上方再移刀)\n");
+        out.append("G0 X#21 Y0\n");
+        out.append("G1 Z-[#20*#4] F#6 (下本层)\n");
+        out.append("G3 I-#21 F#7 (整圆, 圆心在X0Y0)\n");
         out.append("#20=#20+1\n");
         out.append("END1\n");
         out.append("G0 Z" + f(safeZ, 1) + "\n");

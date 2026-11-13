@@ -42,8 +42,9 @@ public class MainActivity extends Activity {
     private EditText eBig, eSmall, eDepthT, eRatio, eAngle, eToolR, eHNo;
     private int ratioSource = 0;  // 0=小头 1=锥度 2=角度
     private boolean syncing = false;
-    private LinearLayout cardSize, cardCorner, cardTaper, cardOut, cardSpiral, cardKey, cardPath, cardChamfer;
+    private LinearLayout cardSize, cardCorner, cardTaper, cardOut, cardSpiral, cardKey, cardPath, cardChamfer, cardODC;
     private EditText eChaDia, eChaAngle, eChaDepth, eChaStep;
+    private EditText eOdDia, eOdAngle, eOdDepth, eOdStep;
     private LinearLayout modeGrid;
     private int curMode = GCode.MODE_POCKET;
 
@@ -55,7 +56,8 @@ public class MainActivity extends Activity {
             {"螺旋铣", "圆面螺旋"},
             {"键槽", "直槽 + 两端 R"},
             {"外形", "G41 修外形"},
-            {"内圆倒角", "孔口锥面"}
+            {"内圆倒角", "孔口锥面"},
+            {"外圆倒角", "外圆顶边"}
     };
     private ImageView imgPath;
     private TextView lblPath;
@@ -128,6 +130,12 @@ public class MainActivity extends Activity {
         eChaAngle = field(cardChamfer, "锥角 °（全角）", "60");
         eChaDepth = field(cardChamfer, "倒角深 H", "4");
         eChaStep = field(cardChamfer, "每层 mm", "0.1");
+
+        cardODC = card(body, "外圆倒角参数", "圆柱外缘顶边：外圆直径 + 锥角 + 倒角深；每层给 0.1 最稳");
+        eOdDia = field(cardODC, "外圆 Ø", "50");
+        eOdAngle = field(cardODC, "锥角 °（全角）", "90");
+        eOdDepth = field(cardODC, "倒角深 H", "2");
+        eOdStep = field(cardODC, "每层 mm", "0.1");
 
         cardKey = card(body, "键槽参数", "槽长含两端圆弧；槽宽大于刀径时自动分行");
         eKeyL = field(cardKey, "槽长 L", "40");
@@ -388,16 +396,18 @@ public class MainActivity extends Activity {
         boolean key = mode == GCode.MODE_KEY;
         boolean outer = mode == GCode.MODE_OUTER;
         boolean cham = mode == GCode.MODE_CHAMFER;
-        if (cardSize != null) cardSize.setVisibility((taper || spiral || key || cham) ? View.GONE : View.VISIBLE);
-        if (cardCorner != null) cardCorner.setVisibility((taper || face || spiral || key || cham) ? View.GONE : View.VISIBLE);
-        if (cardOut != null) cardOut.setVisibility((taper || face || spiral || key || cham) ? View.GONE : View.VISIBLE);
+        boolean odc = mode == GCode.MODE_ODCHAM;
+        if (cardSize != null) cardSize.setVisibility((taper || spiral || key || cham || odc) ? View.GONE : View.VISIBLE);
+        if (cardCorner != null) cardCorner.setVisibility((taper || face || spiral || key || cham || odc) ? View.GONE : View.VISIBLE);
+        if (cardOut != null) cardOut.setVisibility((taper || face || spiral || key || cham || odc) ? View.GONE : View.VISIBLE);
         if (cardChamfer != null) cardChamfer.setVisibility(cham ? View.VISIBLE : View.GONE);
+        if (cardODC != null) cardODC.setVisibility(odc ? View.VISIBLE : View.GONE);
         if (cardTaper != null) cardTaper.setVisibility(taper ? View.VISIBLE : View.GONE);
         if (cardSpiral != null) cardSpiral.setVisibility(spiral ? View.VISIBLE : View.GONE);
         if (cardKey != null) cardKey.setVisibility(key ? View.VISIBLE : View.GONE);
         int[] tp = {R.drawable.tp_pocket, R.drawable.tp_taper, R.drawable.tp_face,
                 R.drawable.tp_spiral, R.drawable.tp_key, R.drawable.tp_outer,
-                R.drawable.tp_chamfer};
+                R.drawable.tp_chamfer, R.drawable.tp_odcham};
         String[] tpText = {
                 "外圈一圈圈向内缩，逐层把腔掏空，最后 G41 精修侧壁",
                 "一圈圈逐渐缩小的圆弧沿锥面盘旋下到底",
@@ -405,7 +415,8 @@ public class MainActivity extends Activity {
                 "刀心圆上 G3 连续下降，每圈吃一层",
                 "沿槽长来回走，两端由刀径形成圆弧；槽宽大于刀径时自动分行",
                 "贴工件轮廓外侧顺时针绕一圈一圈往下，G41 把刀偏在外面",
-                "刀心在孔里一圈一圈缩着往下，每层 0.1，把孔口锥面叠出来"};
+                "刀心在孔里一圈一圈缩着往下，每层 0.1，把孔口锥面叠出来",
+                "刀在外圆外侧绕整圆，逐层向外挪，把外圈顶边的锥面叠出来"};
         if (imgPath != null && mode >= 0 && mode < tp.length) {
             imgPath.setImageResource(tp[mode]);
             lblPath.setText(tpText[mode]);
@@ -569,6 +580,12 @@ public class MainActivity extends Activity {
                 spec.chaDepth = d(eChaDepth, 4);
                 spec.chaStep = d(eChaStep, 0.1);
             }
+            if (eOdDia != null) {
+                spec.odDia = d(eOdDia, 50);
+                spec.odAngle = d(eOdAngle, 90);
+                spec.odDepth = d(eOdDepth, 2);
+                spec.odStep = d(eOdStep, 0.1);
+            }
             if (eKeyL != null) {
                 spec.keyLength = d(eKeyL, 40);
                 spec.keyWidth = d(eKeyW, 12);
@@ -603,6 +620,8 @@ public class MainActivity extends Activity {
             name = "key_L" + (int) spec.keyLength + "_W" + (int) spec.keyWidth + "_H" + (int) spec.depth + ".nc";
         } else if (spec.mode == GCode.MODE_CHAMFER) {
             name = "chamfer_D" + (int) spec.chaDia + "_A" + (int) spec.chaAngle + "_H" + (int) spec.chaDepth + ".nc";
+        } else if (spec.mode == GCode.MODE_ODCHAM) {
+            name = "odcham_D" + (int) spec.odDia + "_A" + (int) spec.odAngle + "_H" + (int) spec.odDepth + ".nc";
         } else if (spec.mode == GCode.MODE_OUTER) {
             name = "outer_L" + (int) spec.length + "_W" + (int) spec.width + "_H" + (int) spec.depth + ".nc";
         } else {
