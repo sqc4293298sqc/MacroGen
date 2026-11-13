@@ -228,8 +228,9 @@ struct SimCanvas: View {
     }
 
     var body: some View {
-        Canvas { ctx, size in
-            ctx.translateBy(x: size.width / 2 + pan.x, y: size.height / 2 + pan.y)
+        Canvas { context, size in
+            var ctx = context
+            ctx.translateBy(x: size.width / 2 + pan.width, y: size.height / 2 + pan.height)
             ctx.scaleBy(x: zoom, y: zoom)
             ctx.translateBy(x: -size.width / 2, y: -size.height / 2)
 

@@ -158,9 +158,10 @@ struct ToolpathSimView: View {
         zoom = 1; baseZoom = 1; pan = .zero; basePan = .zero
     }
 
-    private func draw(_ ctx: GraphicsContext, _ size: CGSize, zoom: CGFloat = 1, pan: CGSize = .zero) {
+    private func draw(_ context: GraphicsContext, _ size: CGSize, zoom: CGFloat = 1, pan: CGSize = .zero) {
+        var ctx = context
         // 画布坐标先按缩放/平移变换，后面的绘制逻辑完全不用改
-        ctx.translateBy(x: size.width / 2 + pan.x, y: size.height / 2 + pan.y)
+        ctx.translateBy(x: size.width / 2 + pan.width, y: size.height / 2 + pan.height)
         ctx.scaleBy(x: zoom, y: zoom)
         ctx.translateBy(x: -size.width / 2, y: -size.height / 2)
 
