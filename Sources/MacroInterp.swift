@@ -295,7 +295,9 @@ final class MacroInterp {
         let mode = gm >= 0 ? gm : motion
         if gm >= 0 { motion = gm }
         guard mode >= 0 && mode <= 3 else { return }
-        if !hasX && !hasY && pz == nz { return }
+        // 整圆写法：G3 I-#21 J0 这种既没有 X/Y、Z 也不变的，以前被当成空行丢掉了
+        let isFullCircle = (mode == 2 || mode == 3) && (hasIJ || hasR)
+        if !hasX && !hasY && pz == nz && !isFullCircle { return }
 
         if mode == 0 || mode == 1 {
             add(SimPoint(x: nx, y: ny, z: nz, rapid: mode == 0, line: lineNo))
