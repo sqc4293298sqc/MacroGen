@@ -116,6 +116,7 @@ final class MacroInterp {
         }
 
         path.error = err
+        trim()
         buildDistances()
         if path.pts.count < 2 {
             path.minX = -50; path.maxX = 50
@@ -393,6 +394,32 @@ final class MacroInterp {
                          z: pz + (nz - pz) * t, rapid: false, line: lineNo))
         }
         add(SimPoint(x: nx, y: ny, z: nz, rapid: false, line: lineNo))
+    }
+
+    /// 点数太多手机画不动：按累计弧长抽稀到上限以内，形状、总长、Z 深浅都保留
+    private func trim(_ maxCount: Int = 4000) {
+        guard path.pts.count > maxCount else { return }
+        var acc: [Double] = [0]
+        acc.reserveCapacity(path.pts.count)
+        var total = 0.0
+        for k in 1..<path.pts.count {
+            let a = path.pts[k - 1], b = path.pts[k]
+            total += sqrt(pow(b.x - a.x, 2) + pow(b.y - a.y, 2) + pow(b.z - a.z, 2))
+            acc.append(total)
+        }
+        let tol = max(total / Double(maxCount - 1), 0.02)
+        var kept: [SimPoint] = [path.pts[0]]
+        kept.reserveCapacity(maxCount + 8)
+        var lastD = 0.0
+        for k in 1..<path.pts.count {
+            let isLast = k == path.pts.count - 1
+            let flip = path.pts[k].rapid != path.pts[k - 1].rapid
+            if isLast || flip || acc[k] - lastD >= tol {
+                kept.append(path.pts[k])
+                lastD = acc[k]
+            }
+        }
+        path.pts = kept
     }
 
     private func buildDistances() {

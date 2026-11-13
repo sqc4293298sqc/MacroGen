@@ -18,10 +18,11 @@ struct ToolpathSimView: View {
     private let speeds: [Double] = [1, 2, 4, 0.5]
     private let speedNames = ["1×", "2×", "4×", "0.5×"]
 
-    private var segs: [TPSeg] { ToolpathEngine.build(spec) }
-    private var outlinePts: [CGPoint] { ToolpathEngine.outline(spec) }
-    private var total: Double { max(1, ToolpathEngine.totalLen(segs)) }
-    private var maxDepth: Double { max(0.001, segs.map { -$0.z }.max() ?? 1) }
+    // 性能：刀路只算一次，不能每帧重算（螺旋一刀流一圈就有 72 段）
+    @State private var segs: [TPSeg] = []
+    @State private var outlinePts: [CGPoint] = []
+    @State private var total: Double = 1
+    @State private var maxDepth: Double = 1
 
     private var currentZ: Double {
         var acc = 0.0
@@ -124,9 +125,18 @@ struct ToolpathSimView: View {
                 }
         }
         .padding(14)
-        .onReceive(Timer.publish(every: 0.04, on: .main, in: .common).autoconnect()) { _ in
+        .onAppear {
+            if segs.isEmpty {
+                let built = ToolpathEngine.build(spec)
+                segs = built
+                outlinePts = ToolpathEngine.outline(spec)
+                total = max(1, ToolpathEngine.totalLen(built))
+                maxDepth = max(0.001, built.map { -$0.z }.max() ?? 1)
+            }
+        }
+        .onReceive(Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()) { _ in
             guard playing else { return }
-            progress = min(1, progress + 0.006 * speeds[speedIndex])
+            progress = min(1, progress + 0.0075 * speeds[speedIndex])
             if progress >= 1 { playing = false }
         }
     }
@@ -177,10 +187,15 @@ struct ToolpathSimView: View {
         }
         guard !pts.isEmpty else { return }
 
-        let minX = pts.map { $0.x }.min()! - toolR
-        let maxX = pts.map { $0.x }.max()! + toolR
-        let minY = pts.map { $0.y }.min()! - toolR
-        let maxY = pts.map { $0.y }.max()! + toolR
+        var bx0 = pts[0].x, bx1 = pts[0].x, by0 = pts[0].y, by1 = pts[0].y
+        for q in pts {
+            if q.x < bx0 { bx0 = q.x }; if q.x > bx1 { bx1 = q.x }
+            if q.y < by0 { by0 = q.y }; if q.y > by1 { by1 = q.y }
+        }
+        let minX = bx0 - toolR
+        let maxX = bx1 + toolR
+        let minY = by0 - toolR
+        let maxY = by1 + toolR
 
         let spanX = max(0.001, maxX - minX), spanY = max(0.001, maxY - minY)
         let pad = 16.0
@@ -242,18 +257,26 @@ struct ToolpathSimView: View {
             // 底面轮廓已表现厚度，不再画竖线
         }
 
-        // 预测路径
+        // 预测路径：全部合成一条 Path，只发一次 stroke
+        var preview = Path()
+        var lastPv: CGPoint? = nil
         for s in segs where s.pts.count > 1 {
-            ctx.stroke(Path { p in
-                p.move(to: screen(project(Double(s.pts[0].x), Double(s.pts[0].y), s.z)))
-                for q in s.pts.dropFirst() {
-                    p.addLine(to: screen(project(Double(q.x), Double(q.y), s.z)))
-                }
-            }, with: .color(Color(red: 0.81, green: 0.84, blue: 0.88)), lineWidth: 1)
+            for q in s.pts {
+                let qp = screen(project(Double(q.x), Double(q.y), s.z))
+                if let lp = lastPv {
+                    if abs(qp.x - lp.x) + abs(qp.y - lp.y) >= 1.2 { preview.addLine(to: qp); lastPv = qp }
+                } else { preview.move(to: qp); lastPv = qp }
+            }
+        }
+        if !preview.isEmpty {
+            ctx.stroke(preview, with: .color(Color(red: 0.81, green: 0.84, blue: 0.88)), lineWidth: 1)
         }
 
-        // 已走轨迹
+        // 已走轨迹：按深度分 5 档合批，避免一段一次 stroke
         let need = total * progress
+        let bands = 5
+        var walked: [Path] = Array(repeating: Path(), count: bands)
+        var lastW: [CGPoint?] = Array(repeating: nil, count: bands)
         var acc = 0.0
         var last: (CGPoint, Double)? = nil
         for s in segs {
@@ -279,16 +302,21 @@ struct ToolpathSimView: View {
             }
             if part.count > 1 {
                 let t = min(1, -s.z / maxDepth)
-                let col = Color(red: 1 - 0.2 * t, green: 0.64 - 0.45 * t, blue: 0.37 - 0.30 * t)
-                ctx.stroke(Path { p in
-                    p.move(to: screen(project(Double(part[0].x), Double(part[0].y), s.z)))
-                    for q in part.dropFirst() {
-                        p.addLine(to: screen(project(Double(q.x), Double(q.y), s.z)))
-                    }
-                }, with: .color(col), lineWidth: 1.8)
+                let bi = min(bands - 1, max(0, Int(t * Double(bands))))
+                for q in part {
+                    let qp = screen(project(Double(q.x), Double(q.y), s.z))
+                    if let lp = lastW[bi] {
+                        if abs(qp.x - lp.x) + abs(qp.y - lp.y) >= 1.0 { walked[bi].addLine(to: qp); lastW[bi] = qp }
+                    } else { walked[bi].move(to: qp); lastW[bi] = qp }
+                }
             }
             last = (part.last ?? CGPoint.zero, s.z)
             acc += s.len
+        }
+        for i in 0..<bands where !walked[i].isEmpty {
+            let t = (Double(i) + 0.5) / Double(bands)
+            let col = Color(red: 1 - 0.2 * t, green: 0.64 - 0.45 * t, blue: 0.37 - 0.30 * t)
+            ctx.stroke(walked[i], with: .color(col), lineWidth: 1.8)
         }
 
         // 刀具

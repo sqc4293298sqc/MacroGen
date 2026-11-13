@@ -111,8 +111,8 @@ struct SimScreen: View {
         if progress >= path.maxLen { progress = 0 }
         playing = true
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { t in
-            let stepMm = path.maxLen / 15.0 * 0.04 * speed
+        timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { t in
+            let stepMm = path.maxLen / 15.0 * 0.05 * speed
             progress += (stepMm < 1 ? 1 : stepMm)
             if progress >= path.maxLen {
                 progress = path.maxLen
@@ -193,9 +193,7 @@ private struct CodeList: View {
             }
             .background(Color(red: 0.07, green: 0.10, blue: 0.14))
             .onChange(of: current) { newValue in
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    proxy.scrollTo(max(0, newValue - 3), anchor: .top)
-                }
+                proxy.scrollTo(max(0, newValue - 3), anchor: .top)
             }
         }
     }
@@ -259,32 +257,48 @@ struct SimCanvas: View {
             guard path.pts.count > 1 else { return }
             let depth = max(1, -path.minZ)
 
+            // 性能：分段合批 + 按屏幕距离抽稀，几千个点也只发十几次 stroke
+            let bands = 6
+            var walked: [Path] = Array(repeating: Path(), count: bands)
+            var lastW: [CGPoint?] = Array(repeating: nil, count: bands)
+            var rapidPath = Path(); var lastRapid: CGPoint? = nil
+            var pending = Path(); var lastPending: CGPoint? = nil
+
             for k in 1..<path.pts.count {
                 let a = path.pts[k - 1], b = path.pts[k]
-                if path.dist[safe: k] ?? 0 > progress { continue }
                 let p0 = project(a.x, a.y, a.z)
                 let p1 = project(b.x, b.y, b.z)
-                var line = Path()
-                line.move(to: p0)
-                line.addLine(to: p1)
-                let col: Color
-                if b.rapid {
-                    col = Color(white: 0.62)
+                let walkedYet = (path.dist[safe: k] ?? 0) <= progress
+                if walkedYet {
+                    if b.rapid {
+                        if let lp = lastRapid {
+                            if abs(p1.x - lp.x) + abs(p1.y - lp.y) >= 1.0 { rapidPath.addLine(to: p1); lastRapid = p1 }
+                        } else { rapidPath.move(to: p0); rapidPath.addLine(to: p1); lastRapid = p1 }
+                    } else {
+                        let t = min(1, max(0, -b.z / depth))
+                        let bi = min(bands - 1, max(0, Int(t * Double(bands))))
+                        if let lp = lastW[bi] {
+                            if abs(p1.x - lp.x) + abs(p1.y - lp.y) >= 1.0 { walked[bi].addLine(to: p1); lastW[bi] = p1 }
+                        } else { walked[bi].move(to: p0); walked[bi].addLine(to: p1); lastW[bi] = p1 }
+                    }
                 } else {
-                    let t = min(1, max(0, -b.z / depth))
-                    col = Color(red: 1.0 - 0.12 * t, green: 0.64 - 0.38 * t, blue: 0.37 - 0.25 * t)
+                    if let lp = lastPending {
+                        if abs(p1.x - lp.x) + abs(p1.y - lp.y) >= 1.2 { pending.addLine(to: p1); lastPending = p1 }
+                    } else { pending.move(to: p0); pending.addLine(to: p1); lastPending = p1 }
                 }
-                ctx.stroke(line, with: .color(col), lineWidth: b.rapid ? 0.8 : 1.4)
             }
 
             // 未走段淡灰轮廓
-            for k in 1..<path.pts.count {
-                if (path.dist[safe: k] ?? 0) <= progress { continue }
-                let a = path.pts[k - 1], b = path.pts[k]
-                var line = Path()
-                line.move(to: project(a.x, a.y, a.z))
-                line.addLine(to: project(b.x, b.y, b.z))
-                ctx.stroke(line, with: .color(Color(white: 0.86)), lineWidth: 0.7)
+            if !pending.isEmpty {
+                ctx.stroke(pending, with: .color(Color(white: 0.86)), lineWidth: 0.7)
+            }
+            if !rapidPath.isEmpty {
+                ctx.stroke(rapidPath, with: .color(Color(white: 0.62)), lineWidth: 0.8)
+            }
+            for i in 0..<bands where !walked[i].isEmpty {
+                let t = (Double(i) + 0.5) / Double(bands)
+                let col = Color(red: 1.0 - 0.12 * t, green: 0.64 - 0.38 * t, blue: 0.37 - 0.25 * t)
+                ctx.stroke(walked[i], with: .color(col), lineWidth: 1.4)
             }
 
             // 刀尖
