@@ -29,13 +29,13 @@ struct ContentView: View {
     private var toolpathText: String {
         switch spec.mode {
         case .pocket: return "外圈一圈圈向内缩，逐层把腔掏空，最后 G41 精修侧壁"
-        case .taper: return "一圈圈逐渐缩小的圆弧沿锥面盘旋下到底"
+        case .taper: return "沿锥面连续螺旋下到底，一圈降一层，中途不抬刀"
         case .face: return "Y 向往复走平行线，一层走满整张面再下一层"
-        case .spiral: return "刀心圆上 G3 连续下降，每圈吃一层"
+        case .spiral: return "刀心圆上 G3 连续下降，一圈降一层，中途不抬刀"
         case .key: return "沿槽长来回走，两端由刀径形成圆弧；槽宽大于刀径时自动分行"
-        case .outer: return "贴工件轮廓外侧顺时针绕，一圈一圈往下，G41 把刀偏在外面"
-        case .innerChamfer: return "刀心在孔里一圈一圈缩着往下，每层 0.1，把孔口锥面叠出来"
-        case .odCham: return "刀在外圆外侧绕整圆，一层比一层靠外，把外圆顶边那圈锥面铣出来"
+        case .outer: return "贴轮廓外侧顺时针绕，上边中点半圆弧切入/切出，G41 把刀偏在外面"
+        case .innerChamfer: return "刀心在孔里连续螺旋下，一圈缩一层，中途不抬刀"
+        case .odCham: return "刀在外圆外侧连续螺旋下，一圈向外挪一层，中途不抬刀"
         }
     }
 

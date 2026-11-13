@@ -86,16 +86,17 @@ enum ToolpathEngine {
     private static func odCham(_ s: PocketSpec) -> [TPSeg] {
         var out: [TPSeg] = []
         let hr = tan(s.odAngle / 2 * .pi / 180)
-        var z0 = 0.0
-        while true {
-            let zz = max(z0 - s.odStep, -s.odDepth)
-            z0 = zz
-            let rad = max(0.001, s.odDia / 2 - (s.odDepth + zz) * hr + s.toolDia / 2)
-            out.append(TPSeg(cut: false, z: zz, pts: [CGPoint(x: rad, y: 0)], len: 0))
-            var pts = [CGPoint(x: rad, y: 0)]
-            pts += circlePts(rad)
-            out.append(TPSeg(cut: true, z: zz, pts: pts, len: 2 * .pi * rad))
-            if zz <= -s.odDepth { break }
+        let n = max(1, Int(floor(s.odDepth / max(s.odStep, 0.001) + 1e-9)))
+        var r = s.odDia / 2 - s.odDepth * hr + s.toolDia / 2     // 顶层(Z0)刀心半径
+        out.append(TPSeg(cut: false, z: 0, pts: [CGPoint(x: r, y: 0)], len: 0))
+        var z = 0.0
+        for k in 1...n {
+            let zn = -min(Double(k) * s.odStep, s.odDepth)
+            let rn = max(0.001, s.odDia / 2 - (s.odDepth + zn) * hr + s.toolDia / 2)
+            out.append(contentsOf: helix(cx: 0, cy: 0, r: r, z0: z, z1: zn, cw: false))
+            out.append(TPSeg(cut: true, z: zn, pts: [CGPoint(x: r, y: 0), CGPoint(x: rn, y: 0)],
+                             len: abs(rn - r)))
+            r = rn; z = zn
         }
         return out
     }
@@ -105,10 +106,16 @@ enum ToolpathEngine {
         var out: [TPSeg] = []
         let hr = tan(s.chaAngle / 2 * .pi / 180)
         let n = max(1, Int(floor(s.chaDepth / max(s.chaStep, 0.001) + 1e-9)))
+        var r = max(0.01, s.chaDia / 2 + s.chaDepth * hr - s.toolDia / 2)   // 顶层刀心半径
+        out.append(TPSeg(cut: false, z: 0, pts: [CGPoint(x: r, y: 0)], len: 0))
+        var z = 0.0
         for k in 1...n {
-            let h = min(Double(k) * s.chaStep, s.chaDepth)
-            let rr = max(0.01, s.chaDia / 2 + (s.chaDepth - h) * hr - s.toolDia / 2)
-            out.append(TPSeg(cut: true, z: -h, pts: circlePts(rr), len: 2 * .pi * rr))
+            let zn = -min(Double(k) * s.chaStep, s.chaDepth)
+            let rn = max(0.01, s.chaDia / 2 + (s.chaDepth + zn) * hr - s.toolDia / 2)
+            out.append(contentsOf: helix(cx: 0, cy: 0, r: r, z0: z, z1: zn, cw: true))
+            out.append(TPSeg(cut: true, z: zn, pts: [CGPoint(x: r, y: 0), CGPoint(x: rn, y: 0)],
+                             len: abs(rn - r)))
+            r = rn; z = zn
         }
         return out
     }
@@ -149,14 +156,17 @@ enum ToolpathEngine {
         let bigR = s.taperDia / 2, r = s.toolDia / 2
         let halfAngle = atan((s.taperDia / 2 - s.taperDiaSmall / 2) / s.taperDepth)
         let tanA = tan(halfAngle)
+        let n = max(1, Int(ceil(s.taperDepth / max(s.stepDown, 0.001))))
+        var rad = max(0.01, bigR - r)          // 顶层刀心半径
         var z = 0.0
-        while z < s.taperDepth - 1e-9 {
-            let zz = min(z + s.stepDown, s.taperDepth)
-            let rad = max(0.01, bigR - r - zz * tanA)
-            var pts = [CGPoint(x: rad, y: 0)]
-            pts += circlePts(rad)
-            out.append(TPSeg(cut: true, z: -zz, pts: pts, len: polyLen(pts)))
-            z = zz
+        out.append(TPSeg(cut: false, z: 0, pts: [CGPoint(x: rad, y: 0)], len: 0))
+        for k in 1...n {
+            let zn = -min(Double(k) * s.stepDown, s.taperDepth)
+            let rn = max(0.01, bigR - r + zn * tanA)
+            out.append(contentsOf: helix(cx: 0, cy: 0, r: rad, z0: z, z1: zn, cw: false))
+            out.append(TPSeg(cut: true, z: zn, pts: [CGPoint(x: rad, y: 0), CGPoint(x: rn, y: 0)],
+                             len: abs(rn - rad)))
+            rad = rn; z = zn
         }
         return out
     }
@@ -200,6 +210,7 @@ enum ToolpathEngine {
         var out: [TPSeg] = []
         let a = s.length / 2 + s.toolDia / 2
         let b = s.width / 2 + s.toolDia / 2
+        let lead = s.toolDia / 2 + 2            // 半圆弧进刀半径
         let useR = s.cornerType == .radius
         let rc = useR ? min(s.cornerValue, min(a, b)) + s.toolDia / 2 : 0
         let cc = s.cornerType == .chamfer ? s.cornerValue : 0
@@ -207,9 +218,9 @@ enum ToolpathEngine {
         while true {
             let zz = max(z0 - s.stepDown, -s.depth)
             z0 = zz
-            var pts: [CGPoint] = []
+            var pts: [CGPoint] = [CGPoint(x: 0, y: b + lead * 2)]
+            pts += arc(cx: 0, cy: b + lead, r: lead, from: 90, to: 270)      // 半圆弧切入
             if useR {
-                pts.append(CGPoint(x: -(a - rc), y: b))
                 pts.append(CGPoint(x: a - rc, y: b))
                 pts += arc(cx: a - rc, cy: b - rc, r: rc, from: 90, to: 0)
                 pts.append(CGPoint(x: a, y: -(b - rc)))
@@ -218,8 +229,8 @@ enum ToolpathEngine {
                 pts += arc(cx: -(a - rc), cy: -(b - rc), r: rc, from: 270, to: 180)
                 pts.append(CGPoint(x: -a, y: b - rc))
                 pts += arc(cx: -(a - rc), cy: b - rc, r: rc, from: 180, to: 90)
+                pts.append(CGPoint(x: -(a - rc), y: b))
             } else {
-                pts.append(CGPoint(x: -(a - cc), y: b))
                 pts.append(CGPoint(x: a - cc, y: b))
                 pts.append(CGPoint(x: a, y: b - cc))
                 pts.append(CGPoint(x: a, y: -(b - cc)))
@@ -229,7 +240,9 @@ enum ToolpathEngine {
                 pts.append(CGPoint(x: -a, y: b - cc))
                 pts.append(CGPoint(x: -(a - cc), y: b))
             }
-            out.append(TPSeg(cut: true, z: zz, pts: pts, len: 2 * (2 * a + 2 * b)))
+            pts.append(CGPoint(x: 0, y: b))
+            pts += arc(cx: 0, cy: b + lead, r: lead, from: 270, to: 450)     // 半圆弧切出
+            out.append(TPSeg(cut: true, z: zz, pts: pts, len: polyLen(pts)))
             if zz <= -s.depth { break }
         }
         return out
@@ -260,6 +273,23 @@ enum ToolpathEngine {
             let a = 2 * Double.pi * Double(i) / 72
             return CGPoint(x: r * cos(a), y: r * sin(a))
         }
+    }
+
+    /// 螺旋段：一圈切成若干小段，Z 逐段下降，画出来就是连续螺旋（不再逐层抬刀）
+    private static func helix(cx: Double, cy: Double, r: Double, z0: Double, z1: Double,
+                             cw: Bool, seg: Int = 72) -> [TPSeg] {
+        var out: [TPSeg] = []
+        let dir = cw ? -1.0 : 1.0
+        var a = 0.0
+        for i in 0..<seg {
+            let a2 = a + dir * 2 * Double.pi / Double(seg)
+            let p0 = CGPoint(x: cx + r * cos(a), y: cy + r * sin(a))
+            let p1 = CGPoint(x: cx + r * cos(a2), y: cy + r * sin(a2))
+            let z = z0 + (z1 - z0) * Double(i + 1) / Double(seg)
+            out.append(TPSeg(cut: true, z: z, pts: [p0, p1], len: hypot(Double(p1.x - p0.x), Double(p1.y - p0.y))))
+            a = a2
+        }
+        return out
     }
 
     private static func arc(cx: Double, cy: Double, r: Double, from a0: Double, to a1: Double) -> [CGPoint] {
