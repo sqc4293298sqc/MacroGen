@@ -1,8 +1,8 @@
 {
   "android": {
-    "versionCode": 15,
-    "versionName": "2.6",
-    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.6/MacroGen.apk",
-    "changelog": "新增外圆倒角（圆柱外缘端面倒角）第 8 个模式；修两处刀路仿真缺陷：内圆倒角以前误画成型腔轨迹、型腔选 C/直角时仍按 R 画轮廓。签名不变，可直接覆盖安装 2.5。"
+    "versionCode": 16,
+    "versionName": "2.6.5",
+    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.6.5/MacroGen.apk",
+    "changelog": "锥孔 / 内圆倒角 / 外圆倒角改成螺旋一刀流（中途不抬刀）；外方形改成上边中点（X0）半圆弧切入、半圆弧退刀；仿真更快；图标名和标题带版本号，打开软件提示更新内容。"
   }
 }
