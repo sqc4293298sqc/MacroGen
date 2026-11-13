@@ -9,7 +9,7 @@
         android:label="宏程序生成器"
         android:icon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
-        android:allowBackup="true">
+        android:allowBackup="false">
 
         <activity
             android:name=".WelcomeActivity"
