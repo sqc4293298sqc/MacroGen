@@ -16,8 +16,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.sqc.macrogen
         PRODUCT_NAME: MacroGen
-        MARKETING_VERSION: "2.6.4"
-        CURRENT_PROJECT_VERSION: "19"
+        MARKETING_VERSION: "2.6.5"
+        CURRENT_PROJECT_VERSION: "20"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: "宏程序$(MARKETING_VERSION)"
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
@@ -27,7 +27,5 @@ targets:
         INFOPLIST_KEY_NSPhotoLibraryUsageDescription: 从相册选程序照片做识别
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "5.0"
-        CODE_SIGN_IDENTITY: ""
-        CODE_SIGNING_REQUIRED: NO
-        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGN_STYLE: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

@@ -1,0 +1,114 @@
+name: testflight
+
+# 只在手动点运行时执行，不会影响平时的未签名构建
+on:
+  workflow_dispatch:
+    inputs:
+      marketing_version:
+        description: '对外版本号（如 2.6.5）'
+        required: true
+        default: '2.6.5'
+      changelog:
+        description: 'TestFlight 测试说明（可留空）'
+        required: false
+        default: '锥孔/内圆倒角/外圆倒角改螺旋一刀流；外方形半圆弧进刀退刀；仿真提速；版本号与更新提示'
+
+jobs:
+  testflight:
+    runs-on: macos-15
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      MARKETING_VERSION: ${{ inputs.marketing_version }}
+      BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - name: 检查密钥是否已配置
+        run: |
+          miss=0
+          for n in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 APPLE_TEAM_ID; do
+            if [ -z "${!n}" ]; then echo "缺少 Secret: $n"; miss=1; fi
+          done
+          if [ "$miss" = "1" ]; then
+            echo "请先在仓库 Settings → Secrets and variables → Actions 里补齐这 4 个 Secret"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 落 App Store Connect 密钥
+        run: |
+          mkdir -p "$RUNNER_TEMP/keys" ~/.appstoreconnect/private_keys
+          echo "$ASC_KEY_P8" | base64 --decode > "$RUNNER_TEMP/keys/AuthKey.p8"
+          cp "$RUNNER_TEMP/keys/AuthKey.p8" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          chmod 600 "$RUNNER_TEMP/keys/AuthKey.p8"
+
+      - name: 安装 xcodegen
+        run: brew install xcodegen
+
+      - name: 生成工程
+        run: xcodegen generate
+
+      - name: Archiving（自动签名 + 云端证书）
+        run: |
+          # build 号每次运行都换，避免 App Store Connect 拒收重复构建号
+          BUILD_NO=$(( 200 + BUILD_NUMBER ))
+          xcodebuild archive \
+            -project MacroGen.xcodeproj \
+            -scheme MacroGen \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/MacroGen.xcarchive" \
+            MARKETING_VERSION="$MARKETING_VERSION" \
+            CURRENT_PROJECT_VERSION="$BUILD_NO" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Automatic \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/keys/AuthKey.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: 导出 App Store 包
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>export</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>teamID</key><string>${APPLE_TEAM_ID}</string>
+            <key>uploadSymbols</key><true/>
+            <key>stripSwiftSymbols</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/MacroGen.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/keys/AuthKey.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          cp "$RUNNER_TEMP/export/MacroGen.ipa" "$RUNNER_TEMP/MacroGen-testflight.ipa"
+          ls -lh "$RUNNER_TEMP/MacroGen-testflight.ipa"
+
+      - name: 上传到 App Store Connect（同时进 TestFlight）
+        run: |
+          xcrun altool --upload-app \
+            -f "$RUNNER_TEMP/MacroGen-testflight.ipa" \
+            -t ios \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID" \
+            --verbose
+
+      - name: 留档
+        uses: actions/upload-artifact@v4
+        with:
+          name: MacroGen-testflight-ipa
+          path: ${{ runner.temp }}/MacroGen-testflight.ipa
+          retention-days: 30
