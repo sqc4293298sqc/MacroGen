@@ -207,8 +207,32 @@ struct SimCanvas: View {
     let progress: Double
     let iso: Bool
 
+    // 双指缩放 + 拖动平移
+    @State private var zoom: CGFloat = 1
+    @State private var baseZoom: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @State private var basePan: CGSize = .zero
+
+    private var zoomPan: some Gesture {
+        SimultaneousGesture(
+            MagnificationGesture()
+                .onChanged { v in zoom = min(8, max(0.4, baseZoom * v)) }
+                .onEnded { _ in baseZoom = zoom },
+            DragGesture()
+                .onChanged { v in
+                    pan = CGSize(width: basePan.width + v.translation.width,
+                                 height: basePan.height + v.translation.height)
+                }
+                .onEnded { _ in basePan = pan }
+        )
+    }
+
     var body: some View {
         Canvas { ctx, size in
+            ctx.translateBy(x: size.width / 2 + pan.x, y: size.height / 2 + pan.y)
+            ctx.scaleBy(x: zoom, y: zoom)
+            ctx.translateBy(x: -size.width / 2, y: -size.height / 2)
+
             let spanX = max(path.maxX - path.minX, 1)
             let spanY = max(path.maxY - path.minY, 1)
             let zSpan = max(path.maxZ - path.minZ, 0.001)
@@ -275,6 +299,20 @@ struct SimCanvas: View {
         }
         .background(Color(white: 0.97))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+        .gesture(zoomPan)
+        .onTapGesture(count: 2) {
+            zoom = 1; baseZoom = 1; pan = .zero; basePan = .zero
+        }
+        .overlay(alignment: .bottomTrailing) {
+            Text("双指缩放 · 双击复位")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.white.opacity(0.8))
+                .clipShape(Capsule())
+                .padding(8)
+        }
     }
 
     private func indexAt(_ d: Double) -> Int {

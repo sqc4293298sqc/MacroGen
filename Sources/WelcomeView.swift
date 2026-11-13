@@ -27,6 +27,11 @@ struct WelcomeView: View {
                     .foregroundStyle(Color(red: 0.478, green: 0.522, blue: 0.584))
                     .padding(.top, 8)
 
+                Text("版本" + (AppInfo.version.isEmpty ? "" : " v" + AppInfo.version))
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color(red: 0.62, green: 0.66, blue: 0.71))
+                    .padding(.top, 4)
+
                 Button {
                     entered = true
                 } label: {

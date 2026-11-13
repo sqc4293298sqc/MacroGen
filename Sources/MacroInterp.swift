@@ -384,7 +384,8 @@ final class MacroInterp {
         var sweep = a1 - a0
         if mode == 3 { while sweep <= 0 { sweep += .pi * 2 } }
         else { while sweep >= 0 { sweep -= .pi * 2 } }
-        let n = max(4, min(160, Int(abs(sweep) * rs / 0.15)))
+        // 采样密度：整圆最多 72 段，够顺滑又不至于几千个点拖慢画面
+        let n = max(4, min(72, Int(abs(sweep) * rs / 0.25)))
         for k in 1...n {
             let t = Double(k) / Double(n)
             let a = a0 + sweep * t

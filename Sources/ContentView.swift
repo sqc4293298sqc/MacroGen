@@ -281,7 +281,7 @@ struct ContentView: View {
                     .disabled(!spec.canGenerate)
                 }
             }
-            .navigationTitle("宏程序生成器")
+            .navigationTitle(AppInfo.appTitle)
             .sheet(isPresented: $showRef) {
                 CodeRefView()
             }

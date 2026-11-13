@@ -9,6 +9,11 @@ struct ToolpathSimView: View {
     @State private var playing = true
     @State private var iso = false
     @State private var speedIndex = 0
+    // 双指缩放 + 拖动平移
+    @State private var zoom: CGFloat = 1
+    @State private var baseZoom: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @State private var basePan: CGSize = .zero
 
     private let speeds: [Double] = [1, 2, 4, 0.5]
     private let speedNames = ["1×", "2×", "4×", "0.5×"]
@@ -50,11 +55,23 @@ struct ToolpathSimView: View {
 
     private var panel: some View {
         VStack(spacing: 10) {
-                Canvas { ctx, size in draw(ctx, size) }
+                Canvas { ctx, size in draw(ctx, size, zoom: zoom, pan: pan) }
                     .frame(height: canvasHeight)
                     .background(Color.white)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(red: 0.91, green: 0.93, blue: 0.95)))
+                    .gesture(zoomPan)
+                    .onTapGesture(count: 2) { resetZoom() }
+                    .overlay(alignment: .bottomTrailing) {
+                        Text("双指缩放 · 双击复位")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.white.opacity(0.8))
+                            .clipShape(Capsule())
+                            .padding(8)
+                    }
 
                 HStack(spacing: 10) {
                     Button {
@@ -123,7 +140,30 @@ struct ToolpathSimView: View {
         return CGPoint(x: x, y: y)
     }
 
-    private func draw(_ ctx: GraphicsContext, _ size: CGSize) {
+    private var zoomPan: some Gesture {
+        SimultaneousGesture(
+            MagnificationGesture()
+                .onChanged { v in zoom = min(8, max(0.4, baseZoom * v)) }
+                .onEnded { _ in baseZoom = zoom },
+            DragGesture()
+                .onChanged { v in
+                    pan = CGSize(width: basePan.width + v.translation.width,
+                                 height: basePan.height + v.translation.height)
+                }
+                .onEnded { _ in basePan = pan }
+        )
+    }
+
+    private func resetZoom() {
+        zoom = 1; baseZoom = 1; pan = .zero; basePan = .zero
+    }
+
+    private func draw(_ ctx: GraphicsContext, _ size: CGSize, zoom: CGFloat = 1, pan: CGSize = .zero) {
+        // 画布坐标先按缩放/平移变换，后面的绘制逻辑完全不用改
+        ctx.translateBy(x: size.width / 2 + pan.x, y: size.height / 2 + pan.y)
+        ctx.scaleBy(x: zoom, y: zoom)
+        ctx.translateBy(x: -size.width / 2, y: -size.height / 2)
+
         let toolR = spec.toolDia / 2
         var pts: [CGPoint] = []
         for s in segs {
@@ -152,7 +192,7 @@ struct ToolpathSimView: View {
         }
 
         // 网格
-        let step = niceStep(spanX / 6)
+        let step = niceStep(spanX / 6 / Double(max(1, zoom)))
         var gx = floor(minX / step) * step
         while gx <= maxX {
             let x = ox + gx * scale
