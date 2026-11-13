@@ -3,6 +3,9 @@ import SwiftUI
 struct WelcomeView: View {
     @State private var entered = false
     @State private var pressed = false
+    // 本版本第一次打开时提示更新内容，看过就不再弹
+    @AppStorage("seenVersion") private var seenVersion = ""
+    @State private var showUpdate = false
 
     var body: some View {
         if entered {
@@ -56,6 +59,15 @@ struct WelcomeView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.white)
+            .sheet(isPresented: $showUpdate, onDismiss: { seenVersion = AppInfo.version }) {
+                UpdateSheet(items: UpdateNotes.items) {
+                    showUpdate = false
+                    seenVersion = AppInfo.version
+                }
+            }
+            .onAppear {
+                if seenVersion != AppInfo.version { showUpdate = true }
+            }
         }
     }
 }
