@@ -23,6 +23,7 @@ enum ToolpathEngine {
         case .key: return key(s)
         case .outer: return outer(s)
         case .innerChamfer: return chamfer(s)
+        case .odCham: return odCham(s)
         default: return pocket(s)
         }
     }
@@ -73,11 +74,31 @@ enum ToolpathEngine {
             p += [CGPoint(x: xc, y: yh), CGPoint(x: -xc, y: yh)]
             p += arc(cx: -xc, cy: 0, r: yh, from: 90, to: 270)
             p.append(CGPoint(x: -xc, y: -yh))
+        case .odCham:
+            p += circlePts(s.odDia / 2)
         }
         return p
     }
 
     // MARK: - 各模式轨迹
+
+    /// 外圆倒角：刀心在外圆外侧绕整圆，逐层向外扩
+    private static func odCham(_ s: PocketSpec) -> [TPSeg] {
+        var out: [TPSeg] = []
+        let hr = tan(s.odAngle / 2 * .pi / 180)
+        var z0 = 0.0
+        while true {
+            let zz = max(z0 - s.odStep, -s.odDepth)
+            z0 = zz
+            let rad = max(0.001, s.odDia / 2 - (s.odDepth + zz) * hr + s.toolDia / 2)
+            out.append(TPSeg(cut: false, z: zz, pts: [CGPoint(x: rad, y: 0)], len: 0))
+            var pts = [CGPoint(x: rad, y: 0)]
+            pts += circlePts(rad)
+            out.append(TPSeg(cut: true, z: zz, pts: pts, len: 2 * .pi * rad))
+            if zz <= -s.odDepth { break }
+        }
+        return out
+    }
 
     /// 内圆倒角：逐层整圆，半径一层比一层小
     private static func chamfer(_ s: PocketSpec) -> [TPSeg] {
@@ -103,7 +124,7 @@ enum ToolpathEngine {
             var guardCount = 0
             while inset < min(a, b) - 0.001 && guardCount < 200 {
                 let ra = a - inset, rb = b - inset
-                let rc = max(0.002, min(s.cornerValue - inset, min(ra, rb)))
+                let rc = max(0.002, min((s.cornerType == .radius ? s.cornerValue : 0) - inset, min(ra, rb)))
                 var pts = [CGPoint(x: ra, y: 0), CGPoint(x: ra, y: rb - rc)]
                 pts += arc(cx: ra - rc, cy: rb - rc, r: rc, from: 0, to: 90)
                 pts += [CGPoint(x: -(ra - rc), y: rb)]

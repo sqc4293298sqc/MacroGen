@@ -16,6 +16,7 @@ enum MachiningMode: String, CaseIterable, Identifiable {
     case key = "铣键槽"
     case outer = "只铣外方形"
     case innerChamfer = "内圆倒角"
+    case odCham = "外圆倒角"
 
     var id: String { rawValue }
 }
@@ -48,6 +49,12 @@ struct PocketSpec {
     var chaDepth: Double = 4         // 倒角深
     var chaStep: Double = 0.1        // 每层
 
+    // 外圆倒角（圆柱外缘端面倒角）
+    var odDia: Double = 50           // 外圆直径
+    var odAngle: Double = 90         // 锥角（全角）
+    var odDepth: Double = 2          // 倒角深
+    var odStep: Double = 0.1         // 每层
+
     // 共用
     var toolDia: Double = 12
     var toolCornerR: Double = 5      // 刀尖 R（平底刀填 0）
@@ -71,8 +78,24 @@ struct PocketSpec {
         case .key: return keyIssues
         case .outer: return outerIssues
         case .innerChamfer: return chamferIssues
+        case .odCham: return odChamIssues
         default: return pocketIssues
         }
+    }
+
+    private var odChamIssues: [String] {
+        var out: [String] = []
+        let half = odAngle / 2 * .pi / 180
+        let w = odDepth * tan(half)
+        if odDia <= 0 { out.append("外圆直径必须大于 0") }
+        if toolDia <= 0 { out.append("刀具直径必须大于 0") }
+        if toolDia >= odDia { out.append("刀具直径必须小于外圆直径，否则整个盖面都会被切") }
+        if odDepth <= 0 { out.append("倒角深必须大于 0") }
+        if odAngle <= 1 || odAngle >= 179 { out.append("锥角应在 1~179 度之间（按图纸全角填）") }
+        if odStep <= 0 { out.append("每层切深必须大于 0") }
+        if odStep > odDepth + 1e-9 { out.append("每层切深大于倒角深，改小一点") }
+        if w >= odDia / 2 { out.append("倒角宽超过外圆半径，改小倒角深或锥角") }
+        return out
     }
 
     private var chamferIssues: [String] {
@@ -186,8 +209,62 @@ enum GCodeGenerator {
         case .key: return generateKey(s)
         case .outer: return generateOuter(s)
         case .innerChamfer: return generateInnerChamfer(s)
+        case .odCham: return generateODCham(s)
         default: return generatePocket(s)
         }
+    }
+
+    // MARK: - 外圆倒角（圆柱外缘端面倒角）
+    private static func generateODCham(_ s: PocketSpec) -> String {
+        let half = s.odAngle / 2 * .pi / 180
+        let w = s.odDepth * tan(half)
+        let topDia = s.odDia - 2 * w
+        let plunge = max(50, s.feed / 3)
+        var L: [String] = []
+        L.append("%")
+        L.append("O1007 (外圆倒角宏程序)")
+        L.append("( 外圆Ø\(fmt(s.odDia, 2))  锥角\(fmt(s.odAngle, 1))°  深\(fmt(s.odDepth, 2))  刀Ø\(fmt(s.toolDia, 2)) )")
+        L.append("( 倒角宽\(fmt(w, 2))  顶口Ø\(fmt(topDia, 2))  每层\(fmt(s.odStep, 3))  中心X=\(fmt(s.cx, 2)) Y=\(fmt(s.cy, 2)) )")
+        L.append("( Z0=工件上表面  圆柱外缘端面倒角 )")
+        L.append("( 由 MacroGen 生成 上机前请核对 )")
+        L.append("G17 G21 G40 G49 G80 G90 G\(s.coord)")
+        let shift = abs(s.cx) > 1e-9 || abs(s.cy) > 1e-9
+        if shift {
+            L.append("G52 X\(fmt(s.cx, 3)) Y\(fmt(s.cy, 3)) (平移到圆心)")
+        } else {
+            L.append("( X0 Y0 就是 G\(s.coord) 零点, 不对刀就不用改 )")
+        }
+        L.append("G43 H\(s.hNo) Z\(fmt(s.safeZ, 1))")
+        L.append("M3 S\(s.spindle)")
+        L.append("M8")
+        L.append("#1=\(fmt(s.odDia, 2)) (外圆直径)")
+        L.append("#2=\(fmt(s.toolDia, 2)) (刀径)")
+        L.append("#3=\(fmt(s.odDepth, 2)) (倒角深)")
+        L.append("#4=\(fmt(s.odStep, 3)) (每层)")
+        L.append("#5=\(fmt(s.odAngle, 1)) (锥角 全角)")
+        L.append("#6=\(plunge) (下刀F)")
+        L.append("#7=\(s.feed) (圆周F)")
+        L.append("#25=TAN[#5/2.] (半角正切)")
+        L.append("#26=FIX[#3/#4] (层数)")
+        L.append("#20=1")
+        L.append("WHILE[#20LE#26]DO1")
+        L.append("#21=[[#1/2.]-[[#3-[#20*#4]]*#25]]+[#2/2.] (本层刀心半径)")
+        L.append("G0 Z2. (抬到工件上方再移刀)")
+        L.append("G0 X#21 Y0")
+        L.append("G1 Z-[#20*#4] F#6 (下本层)")
+        L.append("G3 I-#21 F#7 (整圆, 圆心在X0Y0)")
+        L.append("#20=#20+1")
+        L.append("END1")
+        L.append("G0 Z\(fmt(s.safeZ, 1))")
+        if shift { L.append("G52 X0 Y0") }
+        L.append("M5")
+        L.append("M9")
+        L.append("G28 G91 Z0")
+        L.append("G28 G91 Y0")
+        L.append("G90")
+        L.append("M30")
+        L.append("%")
+        return join(L)
     }
 
     // MARK: - 内圆倒角
@@ -579,6 +656,37 @@ enum GCodeGenerator {
     // MARK: - 新手使用说明
     static func manual(_ s: PocketSpec) -> String {
         switch s.mode {
+        case .odCham:
+            return """
+            【干什么用】
+            给圆柱工件的【外缘顶边】倒一圈角（图纸上写 1×45°、2×30° 的那种端面倒角）。
+            刀压在倒角锥面上，刀心落在外圆外侧，一层一层往下、一圈一圈绕整圆，把锥面叠出来。
+            注意这是"外圆顶边"，不是外形方料的四个尖角倒 C。
+
+            【上机前必须做】
+            1. Z0 对在工件上表面（圆柱顶面）
+            2. G54 的 X0 Y0 对在圆柱中心，程序自动 G52 平移
+            3. 刀具直径、刀补号 H 按实际填
+
+            【可以改的变量】
+            #1 = 外圆直径（Ø50 就填 50）
+            #2 = 刀具直径
+            #3 = 倒角深（从上表面往下倒多深）
+            #4 = 每层（0.1 很稳，赶时间 0.2）
+            #5 = 锥角（填图纸全角：45°倒角填 90，30°填 60）
+            #6 下刀进给、#7 圆周进给
+
+            【尺寸怎么核对】
+            倒角宽 = 倒角深 × tan(锥角/2)
+            顶口直径 = 外圆直径 - 2 × 倒角宽
+            例：Ø50、90°、深 2 → 倒角宽 2，顶口 Ø46，正好 2×45°。
+
+            【注意】
+            - 刀径必须小于外圆直径，否则一刀把整个顶面都刮了，程序会拦下来
+            - 倒角宽不能超过外圆半径，否则会说"超过外圆半径"
+            - 圆柱有缺口 / 键槽 / 台阶时，整圆那一圈会把缺口也切一刀，先确认那里能过刀
+            - 逐层是"从浅到深"，最后一层的刀心最大，越往下越靠外
+            """
         case .innerChamfer:
             return """
             【干什么用】

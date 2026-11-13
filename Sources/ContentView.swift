@@ -22,6 +22,7 @@ struct ContentView: View {
         case .key: return "ToolpathKey"
         case .outer: return "ToolpathOuter"
         case .innerChamfer: return "ToolpathChamfer"
+        case .odCham: return "ToolpathODCham"
         }
     }
 
@@ -34,6 +35,7 @@ struct ContentView: View {
         case .key: return "沿槽长来回走，两端由刀径形成圆弧；槽宽大于刀径时自动分行"
         case .outer: return "贴工件轮廓外侧顺时针绕，一圈一圈往下，G41 把刀偏在外面"
         case .innerChamfer: return "刀心在孔里一圈一圈缩着往下，每层 0.1，把孔口锥面叠出来"
+        case .odCham: return "刀在外圆外侧绕整圆，一层比一层靠外，把外圆顶边那圈锥面铣出来"
         }
     }
 
@@ -146,6 +148,21 @@ struct ContentView: View {
                     }
                 }
 
+                if spec.mode == .odCham {
+                    Section("外圆倒角参数 (mm)") {
+                        numRow("外圆直径 Ø", value: $spec.odDia)
+                        numRow("锥角 °（全角）", value: $spec.odAngle)
+                        numRow("倒角深 H", value: $spec.odDepth)
+                        numRow("每层 mm", value: $spec.odStep)
+                        Text("倒角宽 = 深×tan(锥角/2)；顶口直径 = 外圆 − 2×倒角宽")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("圆柱外缘顶边倒角；整圆一刀，外圆上有缺口时会被切一刀")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("坐标系") {
                     Picker("工件坐标系", selection: $spec.coord) {
                         ForEach([54, 55, 56, 57, 58, 59], id: \.self) { c in
@@ -162,7 +179,7 @@ struct ContentView: View {
                 Section("刀具与切削") {
                     numRow("刀具直径", value: $spec.toolDia)
                     numRow("刀尖 R（平底刀填 0）", value: $spec.toolCornerR)
-                    if spec.mode != .innerChamfer {
+                    if spec.mode != .innerChamfer && spec.mode != .odCham {
                         numRow("每层切深 AP", value: $spec.stepDown)
                     }
                     if spec.mode == .pocket {
@@ -347,6 +364,8 @@ struct ContentView: View {
             name = "outer_L\(Int(spec.length))_W\(Int(spec.width))_H\(Int(spec.depth)).nc"
         } else if spec.mode == .innerChamfer {
             name = "chamfer_D\(Int(spec.chaDia))_A\(Int(spec.chaAngle))_H\(Int(spec.chaDepth)).nc"
+        } else if spec.mode == .odCham {
+            name = "odcham_D\(Int(spec.odDia))_A\(Int(spec.odAngle))_H\(Int(spec.odDepth)).nc"
         } else {
             name = "pocket_L\(Int(spec.length))_W\(Int(spec.width))_D\(Int(spec.depth)).nc"
         }
