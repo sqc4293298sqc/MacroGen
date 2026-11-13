@@ -1,6 +1,6 @@
 name: MacroGen
 options:
-  bundleIdPrefix: com.local
+  bundleIdPrefix: com.sqc
   deploymentTarget:
     iOS: "16.0"
   createIntermediateGroups: true
@@ -14,10 +14,10 @@ targets:
       - path: Resources
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.local.macrogen
+        PRODUCT_BUNDLE_IDENTIFIER: com.sqc.macrogen
         PRODUCT_NAME: MacroGen
-        MARKETING_VERSION: "2.4"
-        CURRENT_PROJECT_VERSION: "13"
+        MARKETING_VERSION: "2.5"
+        CURRENT_PROJECT_VERSION: "14"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: 宏程序
         INFOPLIST_KEY_UILaunchScreen_Generation: YES

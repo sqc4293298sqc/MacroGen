@@ -1,8 +1,8 @@
 {
   "android": {
-    "versionCode": 13,
-    "versionName": "2.4",
-    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.4/MacroGen.apk",
-    "changelog": "修复 2.3 打开就闪退的问题（界面循环写错导致数组越界），装这版就正常；内圆倒角模式、识别导入圆弧修复、立体视图深度显示一并带上。"
+    "versionCode": 14,
+    "versionName": "2.5",
+    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.5/MacroGen.apk",
+    "changelog": "关闭系统自动备份（机床参数、收藏不会被云备份覆盖）；安装包签名不变，可直接覆盖安装 2.4。"
   }
 }
