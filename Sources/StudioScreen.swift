@@ -38,30 +38,104 @@ struct StudioScreen: View {
     @State private var showModelTools = false
     @State private var drawInner = false
     @State private var innerDraft: [ContourNode] = []
+    @State private var undoStack: [PartSpec] = []
+    @State private var redoStack: [PartSpec] = []
+
+    // Digit 式界面状态
+    @State private var modelPanel: StudioModelPanel = .tree
+    @State private var selectedTreeID: String? = nil
+    @State private var hiddenTreeIDs: Set<String> = []
+    @State private var selectedNode: Int? = nil
+    @State private var continuousDraw = true
+    @State private var gridAuto = true
+    @State private var sketchFixed = false
+    @State private var sectionOn = false
+    @State private var sectionAxis: SectionAxis = .z
+    @State private var sectionT = 0.45
+    @State private var sectionReverse = false
+    @State private var sectionHandles = true
+    @State private var sectionLines = true
+    @State private var measureOn = false
+    @State private var measureTarget: MeasureTarget = .body
+    @State private var material: StudioMaterial = .abs
+    @State private var toastText: String = ""
+    @State private var showToast = false
+    @State private var arrayCount = 6
+    @State private var arrayRadius = 36.0
 
     private enum DimTarget: Equatable {
         case none, rectL, rectW, circleD, slotL
         case nodeLen(Int), nodeAngle(Int), nodeR(Int)
     }
 
+    private enum StudioModelPanel: Equatable {
+        case none, tree, section, measure, display, tools
+    }
+
+    private enum SectionAxis: String, CaseIterable, Identifiable {
+        case x = "X", y = "Y", z = "Z"
+        var id: String { rawValue }
+    }
+
+    private enum MeasureTarget: String, CaseIterable, Identifiable {
+        case point = "点", edge = "边", face = "面", body = "体", compound = "复合"
+        var id: String { rawValue }
+        var icon: String {
+            switch self {
+            case .point: return "smallcircle.filled.circle"
+            case .edge: return "line.diagonal"
+            case .face: return "square.on.square"
+            case .body: return "cube"
+            case .compound: return "circle.grid.2x2"
+            }
+        }
+    }
+
+    private enum StudioMaterial: String, CaseIterable, Identifiable {
+        case abs = "ABS", aluminum = "铝合金", steel = "钢", brass = "黄铜"
+        var id: String { rawValue }
+        var density: Double {
+            switch self {
+            case .abs: return 1.04
+            case .aluminum: return 2.70
+            case .steel: return 7.85
+            case .brass: return 8.90
+            }
+        }
+        var pricePerKg: Double {
+            switch self {
+            case .abs: return 20
+            case .aluminum: return 28
+            case .steel: return 12
+            case .brass: return 65
+            }
+        }
+    }
+
+    private struct StudioTreeItem: Identifiable {
+        var id: String
+        var index: Int
+        var title: String
+        var icon: String
+        var detail: String
+        var canMove: Bool
+        var canDelete: Bool
+    }
+
     init() {
         var s = PartSpec()
+        // 打开草图先是一张空白网格，不预放圆/矩形
+        s.template = .free
+        s.nodes = []
+        s.innerLoops = []
         s.feats = []
         _spec = State(initialValue: s)
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("步骤", selection: $step) {
-                Text("1 草图").tag(0)
-                Text("2 建模").tag(1)
-                Text("3 出图").tag(2)
-                Text("4 加工").tag(3)
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 14)
-            .padding(.top, 8)
-            .padding(.bottom, 4)
+            studioHeader
+            studioStepBar
 
             if step == 0 {
                 sketchPage
@@ -73,16 +147,9 @@ struct StudioScreen: View {
                 }
             }
         }
-        .navigationTitle("建模编程")
-        .navigationBarTitleDisplayMode(.inline)
+        .background(Color(red: 0.955, green: 0.965, blue: 0.985))
+        .navigationBarHidden(true)
         .navigationBarBackButtonHidden(true)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button { dismiss() } label: {
-                    Image(systemName: "chevron.left")
-                }
-            }
-        }
         .navigationDestination(isPresented: $showResult) {
             PartResultView(code: code)
         }
@@ -102,7 +169,119 @@ struct StudioScreen: View {
         } message: {
             Text(dimEditTitle + "：输入新的毫米值 / 角度值")
         }
+        .overlay(alignment: .bottom) {
+            if showToast {
+                Text(toastText)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(Capsule().fill(Color.black.opacity(0.78)))
+                    .padding(.bottom, 58)
+                    .transition(.opacity)
+            }
+        }
     }
+
+    // MARK: - 顶部工具栏（Digit 式两级）
+
+    private var studioHeader: some View {
+        HStack(spacing: 10) {
+            Button { dismiss() } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 38, height: 38)
+                    .background(Circle().fill(Color.white.opacity(0.92)))
+            }
+            .buttonStyle(.plain)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("建模编程")
+                    .font(.system(size: 16, weight: .bold))
+                Text("示例 · 参数化 2.5D")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button { undoSketch() } label: {
+                Image(systemName: "arrow.uturn.backward")
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 38, height: 38)
+                    .background(Circle().fill(Color.white.opacity(0.92)))
+            }
+            .buttonStyle(.plain)
+            .disabled(undoStack.isEmpty)
+            .opacity(undoStack.isEmpty ? 0.35 : 1)
+
+            Button { redoSketch() } label: {
+                Image(systemName: "arrow.uturn.forward")
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 38, height: 38)
+                    .background(Circle().fill(Color.white.opacity(0.92)))
+            }
+            .buttonStyle(.plain)
+            .disabled(redoStack.isEmpty)
+            .opacity(redoStack.isEmpty ? 0.35 : 1)
+
+            Menu {
+                Button("适合窗口") { setView(0.78, 0.62) }
+                Button("完成草图") { step = 1 }
+                Button("清空草图", role: .destructive) { clearSketch() }
+                Button("回到工具箱") { dismiss() }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(width: 38, height: 38)
+                    .background(Circle().fill(Color.white.opacity(0.92)))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 4)
+        .padding(.bottom, 6)
+    }
+
+    private var studioStepBar: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<4, id: \.self) { i in
+                Button { step = i } label: {
+                    HStack(spacing: 5) {
+                        Text("\(i + 1)")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(step == i ? .white : studioBlue)
+                            .frame(width: 17, height: 17)
+                            .background(Circle().fill(step == i ? studioBlue : studioBlue.opacity(0.10)))
+                        Text(stepTitle(i))
+                            .font(.system(size: 12, weight: step == i ? .bold : .regular))
+                            .foregroundStyle(step == i ? studioBlue : .primary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 9)
+                            .fill(step == i ? Color.white : Color.clear)
+                            .shadow(color: step == i ? .black.opacity(0.08) : .clear, radius: 4, y: 2)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.55)))
+        .padding(.horizontal, 10)
+        .padding(.bottom, 6)
+    }
+
+    private func stepTitle(_ i: Int) -> String {
+        ["草图", "建模", "出图", "加工"][min(max(i, 0), 3)]
+    }
+
+    private var studioBlue: Color { Color(red: 0.15, green: 0.35, blue: 0.86) }
+
 
     // MARK: - 1 草图
 
@@ -119,10 +298,11 @@ struct StudioScreen: View {
                         .onEnded { _ in dragNode = nil }
                 )
                 .simultaneousGesture(SpatialTapGesture().onEnded { v in
-                    // 点画布：收起左侧抽屉；当前是绘制工具时落点
                     showSketchTools = false
-                    if isDrawTool(sketchTool) {
+                    if isDrawTool(sketchTool) || drawInner {
                         addPointAt(v.location, size: geo.size)
+                    } else {
+                        selectSketchNode(at: v.location, size: geo.size)
                     }
                 })
                 .simultaneousGesture(SpatialTapGesture(count: 2).onEnded { v in
@@ -131,126 +311,262 @@ struct StudioScreen: View {
                 .background(Color.white)
             }
 
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    Button {
-                        showSketchTools.toggle()
-                    } label: {
-                        Label("草图工具", systemImage: "line.3.horizontal")
-                            .font(.system(size: 13, weight: .semibold))
-                            .padding(.horizontal, 11).padding(.vertical, 8)
-                            .background(Color(.systemBackground).opacity(0.9))
-                            .clipShape(Capsule())
-                    }
-                    Spacer()
-                    Button {
-                        step = 1
-                    } label: {
-                        Label("完成草图", systemImage: "checkmark")
-                            .font(.system(size: 13, weight: .semibold))
-                            .padding(.horizontal, 12).padding(.vertical, 8)
-                            .background(Color.orange.opacity(0.9))
-                            .foregroundStyle(.white)
-                            .clipShape(Capsule())
-                    }
-                }
-                .padding(.horizontal, 12).padding(.top, 6)
+            HStack(alignment: .top, spacing: 0) {
+                sketchLeftRail
+                Spacer(minLength: 0)
+                sketchConstraintRail
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
 
+            VStack {
                 Spacer()
-
-                HStack {
-                    Text("草图 \(spec.nodes.count) 段 · 网格 \(Int(gridStep)) mm")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(isDrawTool(sketchTool) ? "点击画布连续落点" : "点工具选绘制方式")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(Color(.systemBackground).opacity(0.85))
+                sketchBottomBar
             }
 
             if showSketchTools {
                 HStack(alignment: .top, spacing: 0) {
-                    Form {
-                        sketchControls
-                    }
-                    .frame(width: 330)
-                    .frame(maxHeight: .infinity)
-                    .background(Color(.systemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .padding(.leading, 8)
-                    .padding(.top, 52)
-                    .padding(.bottom, 8)
-                    Spacer()
+                    sketchToolPanel
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 76)
+                .padding(.top, 8)
+            }
+        }
+    }
+
+    private var sketchLeftRail: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 3) {
+                railButton("选择", "cursorarrow", active: sketchTool.isEmpty && !drawInner) {
+                    sketchTool = ""
+                    refPoints.removeAll()
+                    drawInner = false
+                }
+                railButton("直线", "line.diagonal", active: sketchTool == "直线") { selectSketchTool("直线") }
+                railButton("矩形", "rectangle", active: spec.template == .rect && !drawInner) { selectSketchTool("矩形") }
+                railButton("圆", "circle", active: spec.template == .circle && !drawInner) { selectSketchTool("圆") }
+                railButton("圆弧", "arrow.turn.up.left", active: sketchTool == "圆弧") { selectSketchTool("圆弧") }
+                railButton("样条", "scribble", active: false) { selectSketchTool("样条曲线") }
+                railButton("多边形", "hexagon", active: false) { selectSketchTool("多边形") }
+                railButton("椭圆", "oval", active: false) { selectSketchTool("椭圆") }
+
+                Divider().padding(.vertical, 2)
+                railButton("线阵", "square.grid.3x1.folder.badge.plus", active: false) { arrayInner() }
+                railButton("圆阵", "circle.grid.cross", active: false) { circularArrayInner() }
+                railButton("镜像", "arrow.left.and.right", active: false) { pushUndo(); mirrorOuter() }
+
+                Divider().padding(.vertical, 2)
+                railButton("修剪", "scissors", active: false) { pushUndo(); trimLast() }
+                railButton("延伸", "arrow.up.right", active: false) { pushUndo(); extendLast(10) }
+                railButton("圆角", "square.bottomleft", active: false) { pushUndo(); filletOuter(filletR) }
+                railButton("倒角", "square.topright", active: false) { pushUndo(); chamferOuter(chamferC) }
+
+                railButton("更多", "square.grid.2x2", active: showSketchTools) {
+                    showSketchTools.toggle()
                 }
             }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 4)
+        }
+        .frame(width: 62)
+        .frame(maxHeight: 560)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 132))
+        .overlay(RoundedRectangle(cornerRadius: 132).stroke(Color.white.opacity(0.85), lineWidth: 1))
+        .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
+    }
+
+    private var sketchConstraintRail: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 3) {
+                railButton("尺寸", "ruler", active: false) {
+                    showSketchTools = true
+                    showToastView("在画布上双击尺寸/角度可直接改值")
+                }
+                railButton("角度", "angle", active: false) {
+                    showSketchTools = true
+                    showToastView("双击顶点角度可改；约束按钮对当前轮廓生效")
+                }
+                railButton("水平", "line.3.horizontal", active: false) { pushUndo(); constrain(horizontal: true) }
+                railButton("竖直", "line.3.horizontal.decrease", active: false) { pushUndo(); constrain(horizontal: false) }
+                railButton("固定", "pin", active: sketchFixed) { sketchFixed.toggle() }
+                railButton("重合", "circle.circle", active: false) { pushUndo(); snapLastToFirst() }
+                railButton("中点", "smallcircle.filled.circle", active: false) { pushUndo(); centerSketch() }
+                railButton("平行", "equal", active: false) { pushUndo(); makeParallel() }
+                railButton("垂直", "plus", active: false) { pushUndo(); makePerpendicular() }
+                railButton("相切", "circle.dashed", active: false) { showToastView("相切：圆/圆弧工具已按三点定圆处理") }
+                railButton("同心", "circle.and.line.horizontal", active: false) { pushUndo(); makeConcentric() }
+                railButton("等长", "equal.circle", active: false) { pushUndo(); equalizeSegments() }
+                railButton("清除", "xmark.circle", active: false) {
+                    sketchFixed = false
+                    showToastView("已清除固定状态")
+                }
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 4)
+        }
+        .frame(width: 62)
+        .frame(maxHeight: 560)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 132))
+        .overlay(RoundedRectangle(cornerRadius: 132).stroke(Color.white.opacity(0.85), lineWidth: 1))
+        .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
+    }
+
+    private var sketchBottomBar: some View {
+        HStack(spacing: 8) {
+            Menu {
+                Button("自动（5 mm）") { gridAuto = true; gridStep = 5 }
+                Button("5 mm") { gridAuto = false; gridStep = 5 }
+                Button("10 mm") { gridAuto = false; gridStep = 10 }
+                Button("20 mm") { gridAuto = false; gridStep = 20 }
+                Button("50 mm") { gridAuto = false; gridStep = 50 }
+            } label: {
+                Label("网格 \(Int(gridStep)) mm · \(gridAuto ? "自动" : "手动")", systemImage: "grid")
+                    .font(.system(size: 11, weight: .semibold))
+                    .padding(.horizontal, 10).padding(.vertical, 7)
+                    .background(Capsule().fill(Color.white.opacity(0.92)))
+            }
+            .buttonStyle(.plain)
+
+            Button { continuousDraw.toggle() } label: {
+                Label(continuousDraw ? "连续绘制已开" : "连续绘制",
+                      systemImage: continuousDraw ? "infinity.circle.fill" : "infinity.circle")
+                    .font(.system(size: 11, weight: .semibold))
+                    .padding(.horizontal, 10).padding(.vertical, 7)
+                    .background(Capsule().fill(continuousDraw ? studioBlue.opacity(0.12) : Color.white.opacity(0.92)))
+                    .foregroundStyle(continuousDraw ? studioBlue : .secondary)
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            Text(isDrawTool(sketchTool) || drawInner ? "连续落点 · 点画布添加" : "点线选点 · 双击改尺寸")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+
+            Button { step = 1 } label: {
+                Label("完成", systemImage: "checkmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(Capsule().fill(studioBlue))
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color.white.opacity(0.72))
+        .padding(.horizontal, 8)
+        .padding(.bottom, 8)
+    }
+
+    private var sketchToolPanel: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("草图工具").font(.system(size: 16, weight: .bold))
+                    Text("\(sketchToolCount) 项 · 点画布连续绘制").font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { showSketchTools = false } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                        .background(Circle().fill(Color(.secondarySystemBackground)))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 13)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
+
+            Form { sketchControls }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .background(Color.white)
+        }
+        .frame(width: 300)
+        .frame(maxHeight: 540)
+        .background(RoundedRectangle(cornerRadius: 18).fill(Color.white.opacity(0.97)))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white, lineWidth: 1))
+        .shadow(color: .black.opacity(0.14), radius: 18, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+    }
+
+    private func railButton(_ title: String, _ icon: String, active: Bool = false,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 2) {
+                Image(systemName: icon)
+                    .font(.system(size: 17, weight: .medium))
+                Text(title)
+                    .font(.system(size: 9, weight: .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .frame(width: 52, height: 43)
+            .foregroundStyle(active ? studioBlue : Color(red: 0.27, green: 0.30, blue: 0.36))
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(active ? studioBlue.opacity(0.13) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func showToastView(_ text: String) {
+        toastText = text
+        withAnimation(.easeOut(duration: 0.15)) { showToast = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+            withAnimation(.easeIn(duration: 0.2)) { showToast = false }
         }
     }
 
     @ViewBuilder
     private var sketchControls: some View {
-        Section("草图工具 · 绘制") {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 7) {
-                    chip("直线", sketchTool == "直线") { makeLine() }
-                    chip("多段线", sketchTool == "多段线") { makePolyline() }
-                    chip("矩形", spec.template == .rect) { sketchTool = ""; spec.template = .rect }
-                    chip("中心矩形", spec.template == .rect) { sketchTool = ""; spec.template = .rect }
-                    chip("圆角矩形", spec.template == .rect && spec.rectR > 0) { sketchTool = ""; spec.template = .rect; spec.rectR = 8 }
-                    chip("圆", spec.template == .circle) { sketchTool = ""; spec.template = .circle }
-                    chip("三点圆", sketchTool == "三点圆") { sketchTool = "三点圆" }
-                    chip("圆弧", sketchTool == "圆弧") { sketchTool = "圆弧" }
-                    chip("椭圆", false) { sketchTool = ""; makeEllipse() }
-                    chip("多边形", false) { sketchTool = ""; makePolygon(6) }
-                    chip("五角星", false) { sketchTool = ""; makeStar() }
-                    chip("样条", false) { sketchTool = ""; makeSpline() }
-                    chip("腰形槽", spec.template == .slot) { sketchTool = ""; spec.template = .slot }
-                    chip("平行四边形", false) { sketchTool = ""; makeParallelogram() }
-                    chip("点", sketchTool == "点") { sketchTool = "点" }
-                    chip("自由", spec.template == .free) { sketchTool = ""; spec.template = .free; if spec.nodes.isEmpty { fillRectNodes() } }
-                }
-                .padding(.vertical, 2)
+        Section("绘制") {
+            ForEach(drawToolNames, id: \.self) { name in
+                toolRow(name, active: sketchTool == name) { selectSketchTool(name) }
+                Divider()
             }
         }
 
-        Section("草图工具 · 编辑") {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 7) {
-                    chip("内圆", false) { addInner(.circle) }
-                    chip("内方", false) { addInner(.rect) }
-                    chip("画内轮廓", drawInner) {
-                        drawInner.toggle()
-                        innerDraft.removeAll()
-                        sketchTool = drawInner ? "多段线" : ""
-                    }
-                    chip("完成内轮廓", false) { finishInner() }
-                    chip("修剪", false) { trimLast() }
-                    chip("延伸", false) { extendLast(10) }
-                    chip("打断", false) { breakLast() }
-                    chip("圆角", false) { filletOuter(filletR) }
-                    chip("倒角", false) { chamferOuter(chamferC) }
-                    chip("围栏修剪", false) { regionTrim() }
-                    chip("区域修剪", false) { regionTrim() }
-                    chip("几何约束", false) { constrain(horizontal: true) }
-                    chip("水平约束", false) { constrain(horizontal: true) }
-                    chip("竖直约束", false) { constrain(horizontal: false) }
-                    chip("等长约束", false) { equalizeSegments() }
-                    chip("镜像", false) { mirrorOuter() }
-                    chip("偏置", false) { offsetOuter(offsetD) }
-                    chip("阵列", false) { arrayInner() }
-                    chip("三点圆", false) { threePointCircle() }
-                    chip("圆弧", false) { threePointArc() }
-                    chip("移动轮廓", false) { moveOuter() }
-                    chip("旋转零件", false) { showRotate = true }
-                    chip("缩放零件", false) { showScale = true }
-                    chip("清空内轮廓", false) { spec.innerLoops.removeAll() }
-                }
-                .padding(.vertical, 2)
+        Section("编辑") {
+            ForEach(editToolNames, id: \.self) { name in
+                toolRow(name, active: false) { selectSketchTool(name) }
+                Divider()
             }
-            Text("内圆/内方会叠在外轮廓里，建模时自动当挖穿或型腔；外轮廓和每个内轮廓都能单独改尺寸、深度。")
+            Text("修剪/延伸/打断按当前轮廓的末段处理；圆角/倒角/偏置对整条外轮廓生效。")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+
+        Section("内轮廓（和外轮廓叠在同一张草图）") {
+            HStack {
+                Button { addInner(.circle) } label: { Label("内圆", systemImage: "circle") }
+                Spacer()
+                Button { addInner(.rect) } label: { Label("内方", systemImage: "rectangle") }
+                Spacer()
+                Button {
+                    pushUndo()
+                    drawInner.toggle()
+                    innerDraft.removeAll()
+                    sketchTool = drawInner ? "多段线" : ""
+                } label: {
+                    Label(drawInner ? "正在画内轮廓" : "手画内轮廓", systemImage: "pencil.tip")
+                }
+            }
+            .font(.system(size: 12, weight: .semibold))
+            if drawInner {
+                Button("完成这个内轮廓") { finishInner() }
+                    .font(.system(size: 13, weight: .bold))
+                Text("在画布上连续点，画完点“完成这个内轮廓”。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if spec.innerLoops.isEmpty {
+                Text("还没有内轮廓。内圆/内方/手画内轮廓都会叠在外形里，建模时自动挖切。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
         }
 
         Section("外形尺寸（拉伸）") {
@@ -314,7 +630,13 @@ struct StudioScreen: View {
                     miniNum("阵列 dx", $arrayDX)
                     miniNum("阵列 dy", $arrayDY)
                 }
-                Button("阵列内轮廓") { arrayInner() }
+                Button("阵列内轮廓") { pushUndo(); arrayInner() }
+                    .font(.system(size: 13, weight: .semibold))
+                HStack(spacing: 6) {
+                    Stepper("圆阵 \(arrayCount) 个", value: $arrayCount, in: 2...12)
+                    miniNum("R", $arrayRadius)
+                }
+                Button("圆形阵列内轮廓") { circularArrayInner() }
                     .font(.system(size: 13, weight: .semibold))
             }
         }
@@ -428,7 +750,146 @@ struct StudioScreen: View {
     @State private var arrayDX = 50.0
     @State private var arrayDY = 0.0
 
+    private var drawToolNames: [String] {
+        ["直线", "多段线", "矩形", "中心矩形", "圆角矩形", "圆", "三点圆", "圆弧",
+         "椭圆", "多边形", "五角星", "样条曲线", "槽", "平行四边形", "点"]
+    }
+
+    private var editToolNames: [String] {
+        ["修剪", "围栏修剪", "区域修剪", "圆角", "倒角", "偏置", "镜像",
+         "阵列", "几何约束", "移动", "旋转", "缩放", "延伸", "打断"]
+    }
+
+    private var sketchToolCount: Int { drawToolNames.count + editToolNames.count }
+
+    private func toolRow(_ name: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Text(name)
+                    .font(.system(size: 14, weight: active ? .bold : .regular))
+                    .foregroundStyle(active ? Color.orange : Color.primary)
+                Spacer()
+                if active {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.orange)
+                }
+            }
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func selectSketchTool(_ name: String) {
+        switch name {
+        case "三点圆":
+            sketchTool = "三点圆"; refPoints.removeAll(); return
+        case "圆弧":
+            sketchTool = "圆弧"; refPoints.removeAll(); return
+        case "点":
+            sketchTool = "点"; refPoints.removeAll(); return
+        case "旋转":
+            showRotate = true; return
+        case "缩放":
+            showScale = true; return
+        default:
+            break
+        }
+        pushUndo()
+        sketchTool = ""
+        switch name {
+        case "直线":
+            makeLine()
+        case "多段线":
+            makePolyline()
+        case "矩形", "中心矩形":
+            spec.template = .rect; spec.nodes = []
+        case "圆角矩形":
+            spec.template = .rect; spec.nodes = []; spec.rectR = max(spec.rectR, 8)
+        case "圆":
+            spec.template = .circle; spec.nodes = []
+        case "椭圆":
+            makeEllipse()
+        case "多边形":
+            makePolygon(6)
+        case "五角星":
+            makeStar()
+        case "样条曲线":
+            makeSpline()
+        case "槽":
+            spec.template = .slot; spec.nodes = []
+        case "平行四边形":
+            makeParallelogram()
+        case "修剪":
+            trimLast()
+        case "围栏修剪", "区域修剪":
+            regionTrim()
+        case "圆角":
+            filletOuter(filletR)
+        case "倒角":
+            chamferOuter(chamferC)
+        case "偏置":
+            offsetOuter(offsetD)
+        case "镜像":
+            mirrorOuter()
+        case "阵列":
+            arrayInner()
+        case "几何约束":
+            constrain(horizontal: true)
+        case "移动":
+            moveOuter()
+        case "延伸":
+            extendLast(10)
+        case "打断":
+            breakLast()
+        default:
+            break
+        }
+    }
+
+    private func pushUndo() {
+        undoStack.append(spec)
+        if undoStack.count > 30 { undoStack.removeFirst() }
+        redoStack.removeAll()
+    }
+
+    private func undoSketch() {
+        guard let last = undoStack.popLast() else { return }
+        redoStack.append(spec)
+        if redoStack.count > 30 { redoStack.removeFirst() }
+        spec = last
+        sketchTool = ""
+        refPoints.removeAll()
+        drawInner = false
+        innerDraft.removeAll()
+        selectedNode = nil
+    }
+
+    private func redoSketch() {
+        guard let next = redoStack.popLast() else { return }
+        undoStack.append(spec)
+        spec = next
+        sketchTool = ""
+        refPoints.removeAll()
+        drawInner = false
+        innerDraft.removeAll()
+        selectedNode = nil
+    }
+
+    private func clearSketch() {
+        pushUndo()
+        spec.template = .free
+        spec.nodes = []
+        spec.innerLoops = []
+        spec.feats = []
+        sketchTool = ""
+        refPoints.removeAll()
+        drawInner = false
+        innerDraft.removeAll()
+        selectedNode = nil
+    }
+
     private func moveSketchNode(_ loc: CGPoint, size: CGSize) {
+        guard !sketchFixed else { return }
         guard spec.template == .free, !spec.nodes.isEmpty else { return }
         let b = sketchBBox()
         let k = sketchScale(b: b, size: size)
@@ -440,8 +901,10 @@ struct StudioScreen: View {
                 let d = hypot(Double(loc.x) - sx, Double(loc.y) - sy)
                 if d < best { best = d; dragNode = i }
             }
+            if dragNode != nil { pushUndo() }
         }
         guard let i = dragNode, i < spec.nodes.count else { return }
+        selectedNode = i
         var nx = b.midX + (Double(loc.x) - Double(size.width) / 2) / k
         var ny = b.midY - (Double(loc.y) - Double(size.height) / 2) / k
         if snapGrid, gridStep > 0.01 {
@@ -450,6 +913,29 @@ struct StudioScreen: View {
         }
         spec.nodes[i].x = nx
         spec.nodes[i].y = ny
+    }
+
+    private func selectSketchNode(at loc: CGPoint, size: CGSize) {
+        guard spec.template == .free, !spec.nodes.isEmpty else {
+            showToastView("当前是模板轮廓，点“更多”可转成自由轮廓")
+            return
+        }
+        let b = sketchBBox()
+        let k = sketchScale(b: b, size: size)
+        var best = 30.0
+        var bestIndex: Int? = nil
+        for (i, n) in spec.nodes.enumerated() {
+            let sx = size.width / 2 + (n.x - b.midX) * k
+            let sy = size.height / 2 - (n.y - b.midY) * k
+            let d = hypot(Double(loc.x) - sx, Double(loc.y) - sy)
+            if d < best { best = d; bestIndex = i }
+        }
+        if let i = bestIndex {
+            selectedNode = i
+            showToastView("已选中点 \(i + 1)")
+        } else {
+            selectedNode = nil
+        }
     }
 
     private func drawSketch(context: GraphicsContext, size: CGSize) {
@@ -548,10 +1034,16 @@ struct StudioScreen: View {
 
         // 自由轮廓节点
         if spec.template == .free {
-            for n in spec.nodes {
+            for (i, n) in spec.nodes.enumerated() {
                 let q = P(n.x, n.y)
-                ctx.fill(Path(ellipseIn: CGRect(x: q.x - 4, y: q.y - 4, width: 8, height: 8)),
-                         with: .color(.blue))
+                let selected = (selectedNode == i)
+                ctx.fill(Path(ellipseIn: CGRect(x: q.x - (selected ? 6 : 4), y: q.y - (selected ? 6 : 4),
+                                                width: selected ? 12 : 8, height: selected ? 12 : 8)),
+                         with: .color(selected ? .orange : .blue))
+                if selected {
+                    ctx.stroke(Path(ellipseIn: CGRect(x: q.x - 10, y: q.y - 10, width: 20, height: 20)),
+                               with: .color(.orange.opacity(0.6)), lineWidth: 1.5)
+                }
             }
         }
 
@@ -729,13 +1221,18 @@ struct StudioScreen: View {
             d.template = .rect
         }
         let pts = ContourGeo.flatten(ContourGeo.segments(ContourGeo.buildNodes(d)))
-        guard let f = pts.first else { return CGRect(x: -50, y: -30, width: 100, height: 60) }
+        guard let f = pts.first else { return CGRect(x: -80, y: -60, width: 160, height: 120) }
         var mnx = f.x, mxx = f.x, mny = f.y, mxy = f.y
         for q in pts {
             mnx = min(mnx, q.x); mxx = max(mxx, q.x)
             mny = min(mny, q.y); mxy = max(mxy, q.y)
         }
-        return CGRect(x: mnx, y: mny, width: max(mxx - mnx, 1), height: max(mxy - mny, 1))
+        // 画布视野至少 160×120，避免只画一个点时比例突然放大
+        let cw = max(mxx - mnx, 160)
+        let ch = max(mxy - mny, 120)
+        let cx = (mnx + mxx) / 2
+        let cy = (mny + mxy) / 2
+        return CGRect(x: cx - cw / 2, y: cy - ch / 2, width: cw, height: ch)
     }
 
     private func sketchScale(b: CGRect, size: CGSize) -> Double {
@@ -780,6 +1277,7 @@ struct StudioScreen: View {
 
     private func finishInner() {
         guard innerDraft.count >= 3 else { return }
+        pushUndo()
         let cx = innerDraft.reduce(0.0) { $0 + $1.x } / Double(innerDraft.count)
         let cy = innerDraft.reduce(0.0) { $0 + $1.y } / Double(innerDraft.count)
         var l = SketchLoop(template: .free)
@@ -816,6 +1314,7 @@ struct StudioScreen: View {
         }
         if drawInner {
             if innerDraft.isEmpty || hypot(px - innerDraft.last!.x, py - innerDraft.last!.y) > 0.2 {
+                pushUndo()
                 innerDraft.append(ContourNode(x: px, y: py))
             }
             return
@@ -835,10 +1334,14 @@ struct StudioScreen: View {
             return
         }
         if spec.nodes.isEmpty {
+            pushUndo()
             spec.nodes.append(ContourNode(x: px, y: py))
         } else if let last = spec.nodes.last, hypot(px - last.x, py - last.y) > 0.2 {
+            pushUndo()
             spec.nodes.append(ContourNode(x: px, y: py))
         }
+        selectedNode = spec.nodes.isEmpty ? nil : spec.nodes.count - 1
+        if !continuousDraw { sketchTool = "" }
     }
 
     private func makeEllipse() {
@@ -895,6 +1398,7 @@ struct StudioScreen: View {
     }
 
     private func addInner(_ t: ContourTemplate) {
+        pushUndo()
         let b = PartProg.bbox(spec)
         var l = SketchLoop(template: t)
         l.cx = Double(b.midX)
@@ -1029,6 +1533,98 @@ struct StudioScreen: View {
         if nodes.count >= 3 { spec.nodes = nodes; spec.template = .free }
     }
 
+    private func snapLastToFirst() {
+        if spec.template != .free { fillRectNodes() }
+        guard spec.nodes.count > 2, let first = spec.nodes.first else { return }
+        spec.nodes[spec.nodes.count - 1].x = first.x
+        spec.nodes[spec.nodes.count - 1].y = first.y
+        showToastView("末点已重合到起点")
+    }
+
+    private func centerSketch() {
+        if spec.template != .free { fillRectNodes() }
+        let b = sketchBBox()
+        let cx = Double(b.midX), cy = Double(b.midY)
+        for i in spec.nodes.indices {
+            spec.nodes[i].x -= cx
+            spec.nodes[i].y -= cy
+        }
+        for i in spec.innerLoops.indices {
+            spec.innerLoops[i].cx -= cx
+            spec.innerLoops[i].cy -= cy
+        }
+        for i in spec.feats.indices {
+            spec.feats[i].x -= cx
+            spec.feats[i].y -= cy
+        }
+        showToastView("轮廓已移到坐标中心")
+    }
+
+    private func makeParallel() {
+        if spec.template != .free { fillRectNodes() }
+        guard spec.nodes.count >= 3 else { return }
+        let a = spec.nodes[spec.nodes.count - 3]
+        let b = spec.nodes[spec.nodes.count - 2]
+        let c = spec.nodes[spec.nodes.count - 1]
+        let ux = b.x - a.x, uy = b.y - a.y
+        let vx = c.x - b.x, vy = c.y - b.y
+        let lu = hypot(ux, uy), lv = hypot(vx, vy)
+        guard lu > 1e-6, lv > 1e-6 else { return }
+        spec.nodes[spec.nodes.count - 1].x = b.x + ux / lu * lv
+        spec.nodes[spec.nodes.count - 1].y = b.y + uy / lu * lv
+        showToastView("末段已平行于前一段")
+    }
+
+    private func makePerpendicular() {
+        if spec.template != .free { fillRectNodes() }
+        guard spec.nodes.count >= 3 else { return }
+        let a = spec.nodes[spec.nodes.count - 3]
+        let b = spec.nodes[spec.nodes.count - 2]
+        let c = spec.nodes[spec.nodes.count - 1]
+        let ux = b.x - a.x, uy = b.y - a.y
+        let vx = c.x - b.x, vy = c.y - b.y
+        let lu = hypot(ux, uy), lv = hypot(vx, vy)
+        guard lu > 1e-6, lv > 1e-6 else { return }
+        spec.nodes[spec.nodes.count - 1].x = b.x - uy / lu * lv
+        spec.nodes[spec.nodes.count - 1].y = b.y + ux / lu * lv
+        showToastView("末段已垂直于前一段")
+    }
+
+    private func makeConcentric() {
+        guard !spec.innerLoops.isEmpty else {
+            showToastView("先加内圆/内方，再做同心")
+            return
+        }
+        let b = PartProg.bbox(spec)
+        for i in spec.innerLoops.indices {
+            spec.innerLoops[i].cx = Double(b.midX)
+            spec.innerLoops[i].cy = Double(b.midY)
+        }
+        showToastView("内轮廓已同心")
+    }
+
+    private func circularArrayInner() {
+        let base = spec.innerLoops
+        guard !base.isEmpty else {
+            showToastView("先加一个内轮廓")
+            return
+        }
+        pushUndo()
+        let b = PartProg.bbox(spec)
+        let cx = Double(b.midX), cy = Double(b.midY)
+        for l in base {
+            for i in 1..<max(arrayCount, 2) {
+                let a = Double(i) / Double(max(arrayCount, 2)) * 2 * Double.pi
+                var n = l
+                n.id = UUID()
+                n.name = l.name + " 圆阵\(i + 1)"
+                n.cx = cx + arrayRadius * cos(a)
+                n.cy = cy + arrayRadius * sin(a)
+                spec.innerLoops.append(n)
+            }
+        }
+    }
+
     private func regionTrim() {
         let pts = outerPoints()
         let x0 = min(trimX0, trimX1), x1 = max(trimX0, trimX1)
@@ -1119,6 +1715,7 @@ struct StudioScreen: View {
 
     private func threePointCircle() {
         guard refPoints.count >= 3 else { return }
+        pushUndo()
         let a = refPoints[refPoints.count - 3]
         let b = refPoints[refPoints.count - 2]
         let c = refPoints[refPoints.count - 1]
@@ -1133,6 +1730,7 @@ struct StudioScreen: View {
 
     private func threePointArc() {
         guard refPoints.count >= 3 else { return }
+        pushUndo()
         let a = refPoints[refPoints.count - 3]
         let b = refPoints[refPoints.count - 2]
         let c = refPoints[refPoints.count - 1]
@@ -1210,7 +1808,6 @@ struct StudioScreen: View {
                             let dy = Double(g.translation.height - lastDrag.height)
                             lastDrag = g.translation
                             yaw += dx * 0.012
-                            // 不限制俯仰角：上下也能一直翻，超过 90° 继续转到背面
                             let np = pitch - dy * 0.010
                             pitch = atan2(sin(np), cos(np))
                         }
@@ -1221,7 +1818,6 @@ struct StudioScreen: View {
                     .onEnded { _ in zoomBase = zoom }
                 )
                 .simultaneousGesture(SpatialTapGesture().onEnded { v in
-                    showModelTools = false
                     guard tapOnModel else { return }
                     let xy = modelXY(at: v.location, size: geo.size)
                     ptrX = xy.0; ptrY = xy.1; hasPtr = true
@@ -1232,70 +1828,563 @@ struct StudioScreen: View {
                 .background(Color.white)
             }
 
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    Button {
-                        showModelTools.toggle()
-                    } label: {
-                        Label("建模工具", systemImage: "line.3.horizontal")
-                            .font(.system(size: 13, weight: .semibold))
-                            .padding(.horizontal, 11).padding(.vertical, 8)
-                            .background(Color(.systemBackground).opacity(0.9))
-                            .clipShape(Capsule())
-                    }
-                    Spacer()
-                    Button {
-                        step = 0
-                    } label: {
-                        Label("编辑草图", systemImage: "pencil")
-                            .font(.system(size: 12, weight: .semibold))
-                            .padding(.horizontal, 10).padding(.vertical, 8)
-                            .background(Color(.systemBackground).opacity(0.9))
-                            .clipShape(Capsule())
-                    }
-                    Button {
-                        setView(0.78, 0.62)
-                    } label: {
-                        Label("适合窗口", systemImage: "arrow.up.left.and.arrow.down.right")
-                            .font(.system(size: 12, weight: .semibold))
-                            .padding(.horizontal, 10).padding(.vertical, 8)
-                            .background(Color(.systemBackground).opacity(0.9))
-                            .clipShape(Capsule())
-                    }
-                }
-                .padding(.horizontal, 12).padding(.top, 6)
+            HStack(alignment: .top, spacing: 0) {
+                modelLeftRail
+                Spacer(minLength: 0)
+                modelRightRail
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
 
+            viewCube
+                .padding(.trailing, 74)
+                .padding(.top, 8)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+
+            VStack {
                 Spacer()
-
-                HStack {
-                    Text("X\(ncf(ptrX))  Y\(ncf(ptrY))  Z0")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text("单指 360° 旋转 · 双指缩放")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(Color(.systemBackground).opacity(0.85))
+                modelBottomBar
             }
 
-            if showModelTools {
+            if modelPanel != .none {
                 HStack(alignment: .top, spacing: 0) {
-                    Form {
-                        modelControls
+                    modelPanelView
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 76)
+                .padding(.top, 8)
+            }
+        }
+    }
+
+    private var modelLeftRail: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 3) {
+                railButton("草图", "pencil", active: false) { step = 0 }
+                railButton("拉伸", "arrow.up.right.square", active: false) {
+                    modelPanel = .tools
+                    showToastView("拉伸高度在“更多”里改")
+                }
+                railButton("孔", "circle.circle", active: false) {
+                    pushUndo(); addFeat(.hole); modelPanel = .tree
+                }
+                railButton("圆腔", "circle.dashed", active: false) {
+                    pushUndo(); addFeat(.pocket); modelPanel = .tree
+                }
+                railButton("方腔", "rectangle.dashed", active: false) {
+                    pushUndo(); addFeat(.rectPocket); modelPanel = .tree
+                }
+                railButton("更多", "square.grid.2x2", active: modelPanel == .tools) {
+                    modelPanel = modelPanel == .tools ? .none : .tools
+                }
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 4)
+        }
+        .frame(width: 62)
+        .frame(maxHeight: 460)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 132))
+        .overlay(RoundedRectangle(cornerRadius: 132).stroke(Color.white.opacity(0.85), lineWidth: 1))
+        .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
+    }
+
+    private var modelRightRail: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 3) {
+                railButton("树", "list.bullet.indent", active: modelPanel == .tree) {
+                    modelPanel = modelPanel == .tree ? .none : .tree
+                }
+                railButton("体", "cube", active: false) {
+                    modelPanel = .tree
+                    showToastView("当前为单一 2.5D 实体")
+                }
+                railButton("剖切", "square.split.2x1", active: modelPanel == .section) {
+                    modelPanel = modelPanel == .section ? .none : .section
+                    if modelPanel == .section { sectionOn = true }
+                }
+                railButton("显示", "eye", active: modelPanel == .display) {
+                    modelPanel = modelPanel == .display ? .none : .display
+                }
+                railButton("测量", "ruler", active: modelPanel == .measure) {
+                    modelPanel = modelPanel == .measure ? .none : .measure
+                    if modelPanel == .measure { measureOn = true }
+                }
+                railButton("适合", "arrow.up.left.and.arrow.down.right", active: false) {
+                    setView(0.78, 0.62)
+                    modelPanel = .none
+                }
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 4)
+        }
+        .frame(width: 62)
+        .frame(maxHeight: 460)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 132))
+        .overlay(RoundedRectangle(cornerRadius: 132).stroke(Color.white.opacity(0.85), lineWidth: 1))
+        .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
+    }
+
+    private var viewCube: some View {
+        VStack(spacing: 2) {
+            Button { setView(0, 1.5) } label: {
+                Text("顶").font(.system(size: 9, weight: .bold))
+                    .frame(width: 38, height: 20)
+                    .background(Color.white.opacity(0.85))
+            }
+            .buttonStyle(.plain)
+            HStack(spacing: 2) {
+                Button { setView(0, 0) } label: {
+                    Text("前").font(.system(size: 9, weight: .bold))
+                        .frame(width: 18, height: 28)
+                        .background(Color.white.opacity(0.85))
+                }
+                .buttonStyle(.plain)
+                Button { setView(1.5708, 0) } label: {
+                    Text("右").font(.system(size: 9, weight: .bold))
+                        .frame(width: 18, height: 28)
+                        .background(Color(red: 0.78, green: 0.80, blue: 0.84))
+                }
+                .buttonStyle(.plain)
+            }
+            Text("视图").font(.system(size: 8)).foregroundStyle(.white)
+                .frame(width: 38, height: 15)
+                .background(studioBlue.opacity(0.85))
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.white.opacity(0.9), lineWidth: 0.8))
+        .shadow(color: .black.opacity(0.12), radius: 6, y: 3)
+    }
+
+    private var modelBottomBar: some View {
+        HStack {
+            Text("X\(ncf(ptrX))  Y\(ncf(ptrY))  Z0")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+            if sectionOn {
+                Text("剖切 \(sectionAxis.rawValue) \(Int(sectionT * 100))%")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(studioBlue)
+            }
+            Spacer()
+            Text("单指 360° · 双指缩放 · 点选顶面")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color.white.opacity(0.72))
+        .padding(.horizontal, 8)
+        .padding(.bottom, 8)
+    }
+
+    private var modelPanelView: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(modelPanelTitle).font(.system(size: 16, weight: .bold))
+                    Text(modelPanelSubtitle).font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { modelPanel = .none } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                        .background(Circle().fill(Color(.secondarySystemBackground)))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 13)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
+
+            switch modelPanel {
+            case .tree:
+                modelTreePanel
+            case .section:
+                sectionPanel
+            case .measure:
+                measurePanel
+            case .display:
+                displayPanel
+            case .tools:
+                Form { modelControls }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    .background(Color.white)
+            case .none:
+                EmptyView()
+            }
+        }
+        .frame(width: 252)
+        .frame(maxHeight: 570)
+        .background(RoundedRectangle(cornerRadius: 18).fill(Color.white.opacity(0.97)))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white, lineWidth: 1))
+        .shadow(color: .black.opacity(0.14), radius: 18, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+    }
+
+    private var modelPanelTitle: String {
+        switch modelPanel {
+        case .tree: return "建模树"
+        case .section: return "剖切"
+        case .measure: return "测量"
+        case .display: return "显示"
+        case .tools: return "建模工具"
+        case .none: return ""
+        }
+    }
+
+    private var modelPanelSubtitle: String {
+        switch modelPanel {
+        case .tree: return "\(treeItems.count) 项 · 可见/排序/编辑"
+        case .section: return "X/Y/Z · 实时预览"
+        case .measure: return "体积/重量/尺寸/面积"
+        case .display: return "视角与网格"
+        case .tools: return "参数化特征"
+        case .none: return ""
+        }
+    }
+
+    // MARK: - Digit 式右侧上下文面板
+
+    private var treeItems: [StudioTreeItem] {
+        var out: [StudioTreeItem] = []
+        out.append(StudioTreeItem(
+            id: "sketch", index: 1, title: "草图 1",
+            icon: "pencil",
+            detail: "\(spec.template.rawValue) · \(spec.nodes.count) 个点",
+            canMove: false, canDelete: false))
+        for (i, l) in spec.innerLoops.enumerated() {
+            out.append(StudioTreeItem(
+                id: "inner-\(l.id.uuidString)", index: out.count + 1,
+                title: "草图内轮廓 \(i + 1)", icon: "pencil",
+                detail: "\(l.name) · \(l.through ? "通" : "深\(ncf(l.depth))")",
+                canMove: true, canDelete: true))
+        }
+        for (i, f) in spec.feats.enumerated() {
+            out.append(StudioTreeItem(
+                id: "feat-\(f.id.uuidString)", index: out.count + 1,
+                title: f.name.isEmpty ? "\(f.kind.rawValue) \(i + 1)" : f.name,
+                icon: f.kind == .hole ? "circle" : "square.dashed",
+                detail: f.kind == .hole ? "Ø\(ncf(f.dia)) 通孔" : "\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth))",
+                canMove: true, canDelete: true))
+        }
+        out.append(StudioTreeItem(
+            id: "extrude", index: out.count + 1, title: "拉伸",
+            icon: "arrow.up.right.square",
+            detail: "H \(ncf(spec.height)) mm",
+            canMove: false, canDelete: false))
+        return out
+    }
+
+    private var modelTreePanel: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("\(treeItems.count) 项")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Image(systemName: "line.3.horizontal.decrease.circle")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                Image(systemName: "arrow.down.to.line")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 13)
+            .padding(.bottom, 4)
+
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(treeItems) { item in
+                        HStack(spacing: 6) {
+                            Image(systemName: item.icon)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(item.id == selectedTreeID ? studioBlue : .secondary)
+                                .frame(width: 18)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("\(item.index) · \(item.title)")
+                                    .font(.system(size: 12, weight: item.id == selectedTreeID ? .bold : .medium))
+                                    .lineLimit(1)
+                                Text(item.detail)
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 2)
+                            Button { toggleTreeItem(item) } label: {
+                                Image(systemName: hiddenTreeIDs.contains(item.id) ? "eye.slash" : "eye")
+                                    .font(.system(size: 10))
+                                    .frame(width: 20, height: 26)
+                            }
+                            .buttonStyle(.plain)
+                            .opacity(item.id == "sketch" || item.id == "extrude" ? 0.35 : 1)
+                            .disabled(item.id == "sketch" || item.id == "extrude")
+
+                            Button { moveTreeItemUp(item) } label: {
+                                Image(systemName: "arrow.up")
+                                    .font(.system(size: 10))
+                                    .frame(width: 20, height: 26)
+                            }
+                            .buttonStyle(.plain)
+                            .opacity(item.canMove ? 1 : 0.25)
+                            .disabled(!item.canMove)
+
+                            Button { editTreeItem(item) } label: {
+                                Image(systemName: "pencil")
+                                    .font(.system(size: 10))
+                                    .frame(width: 20, height: 26)
+                            }
+                            .buttonStyle(.plain)
+
+                            Button { deleteTreeItem(item) } label: {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 10))
+                                    .frame(width: 20, height: 26)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(item.canDelete ? Color.red.opacity(0.8) : Color.secondary.opacity(0.3))
+                            .disabled(!item.canDelete)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(item.id == selectedTreeID ? studioBlue.opacity(0.06) : Color.clear)
+                        .contentShape(Rectangle())
+                        .onTapGesture { selectedTreeID = item.id }
+                        Divider().padding(.leading, 34)
                     }
-                    .frame(width: 340)
-                    .frame(maxHeight: .infinity)
-                    .background(Color(.systemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .padding(.leading, 8)
-                    .padding(.top, 52)
-                    .padding(.bottom, 8)
-                    Spacer()
                 }
             }
         }
+        .frame(maxHeight: 500)
+    }
+
+    private func toggleTreeItem(_ item: StudioTreeItem) {
+        if hiddenTreeIDs.contains(item.id) {
+            hiddenTreeIDs.remove(item.id)
+        } else {
+            hiddenTreeIDs.insert(item.id)
+        }
+    }
+
+    private func moveTreeItemUp(_ item: StudioTreeItem) {
+        if item.id.hasPrefix("inner-") {
+            guard let idx = spec.innerLoops.firstIndex(where: { "inner-\($0.id.uuidString)" == item.id }),
+                  idx > 0 else { return }
+            pushUndo()
+            spec.innerLoops.swapAt(idx, idx - 1)
+        } else if item.id.hasPrefix("feat-") {
+            guard let idx = spec.feats.firstIndex(where: { "feat-\($0.id.uuidString)" == item.id }),
+                  idx > 0 else { return }
+            pushUndo()
+            spec.feats.swapAt(idx, idx - 1)
+        }
+    }
+
+    private func editTreeItem(_ item: StudioTreeItem) {
+        selectedTreeID = item.id
+        if item.id == "sketch" {
+            step = 0
+        } else if item.id == "extrude" {
+            modelPanel = .tools
+        } else {
+            showToastView("已选中 \(item.title)，可在右侧参数区继续改")
+        }
+    }
+
+    private func deleteTreeItem(_ item: StudioTreeItem) {
+        if item.id.hasPrefix("inner-"),
+           let id = UUID(uuidString: item.id.replacingOccurrences(of: "inner-", with: "")) {
+            pushUndo()
+            spec.innerLoops.removeAll { $0.id == id }
+        } else if item.id.hasPrefix("feat-"),
+                   let id = UUID(uuidString: item.id.replacingOccurrences(of: "feat-", with: "")) {
+            pushUndo()
+            spec.feats.removeAll { $0.id == id }
+        }
+        selectedTreeID = nil
+    }
+
+    private var sectionPanel: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle("剖切", isOn: $sectionOn)
+                    .tint(studioBlue)
+                Picker("轴", selection: $sectionAxis) {
+                    ForEach(SectionAxis.allCases) { a in Text(a.rawValue).tag(a) }
+                }
+                .pickerStyle(.segmented)
+                HStack {
+                    Text("位置").font(.system(size: 12, weight: .semibold))
+                    Spacer()
+                    Text("\(Int(sectionT * 100))%")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(studioBlue)
+                }
+                Slider(value: $sectionT, in: 0.02...0.98)
+                    .tint(studioBlue)
+                HStack(spacing: 8) {
+                    Button("反向") { sectionReverse.toggle() }
+                        .buttonStyle(.bordered)
+                    Button("重置") { sectionT = 0.45; sectionReverse = false }
+                        .buttonStyle(.bordered)
+                }
+                .font(.system(size: 12, weight: .semibold))
+                Toggle("手柄", isOn: $sectionHandles).tint(studioBlue)
+                Toggle("截面线", isOn: $sectionLines).tint(studioBlue)
+                Text(sectionAxis == .z
+                     ? "Z 向是真实等高剖切：只显示剖切面以上的实体，橙色面为截面。"
+                     : "X/Y 向显示剖切平面和截面试算；当前内核为 2.5D，复杂曲面截面暂不计算。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 13)
+            .padding(.bottom, 14)
+        }
+    }
+
+    private var measurePanel: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("测量目标").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                    Spacer()
+                    Text(measureTarget.rawValue).font(.system(size: 11, weight: .bold)).foregroundStyle(studioBlue)
+                }
+                HStack(spacing: 5) {
+                    ForEach(MeasureTarget.allCases) { t in
+                        Button { measureTarget = t } label: {
+                            VStack(spacing: 2) {
+                                Image(systemName: t.icon).font(.system(size: 12))
+                                Text(t.rawValue).font(.system(size: 9, weight: .medium))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                            .background(RoundedRectangle(cornerRadius: 8)
+                                .fill(measureTarget == t ? studioBlue.opacity(0.14) : Color(.secondarySystemBackground)))
+                            .foregroundStyle(measureTarget == t ? studioBlue : .primary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                HStack {
+                    Text("材料").font(.system(size: 12, weight: .semibold))
+                    Spacer()
+                    Picker("", selection: $material) {
+                        ForEach(StudioMaterial.allCases) { m in Text(m.rawValue).tag(m) }
+                    }
+                    .labelsHidden()
+                    .frame(width: 105)
+                }
+                Toggle("显示测量框", isOn: $measureOn).tint(studioBlue)
+                metricCard("体积", "\(ncf(partVolume)) mm³")
+                metricCard("重量", "\(ncf(partWeight)) g（\(material.rawValue)）")
+                metricCard("价格", "¥\(ncf(partPrice))")
+                metricCard("包容体积", "\(ncf(partBBoxVolume)) mm³")
+                metricCard("尺寸", "\(ncf(Double(partBBox.width))) × \(ncf(Double(partBBox.height))) × \(ncf(spec.height)) mm")
+                metricCard("投影面积", "\(ncf(partProjectedArea)) mm²")
+                Text("体积按外形面积×厚度，再减去孔/型腔/内轮廓；重量按材料密度换算，价格为参考估价。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 13)
+            .padding(.bottom, 14)
+        }
+    }
+
+    private func metricCard(_ title: String, _ value: String) -> some View {
+        HStack {
+            Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+            Spacer()
+            Text(value).font(.system(size: 11, weight: .bold)).multilineTextAlignment(.trailing)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 9).fill(Color(.secondarySystemBackground).opacity(0.75)))
+    }
+
+    private var displayPanel: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("视角").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        viewChip("等轴") { setView(0.78, 0.62) }
+                        viewChip("俯视") { setView(0, 1.5) }
+                        viewChip("正视") { setView(0, 0) }
+                        viewChip("右视") { setView(1.5708, 0) }
+                        viewChip("仰视") { setView(0, -1.5) }
+                    }
+                }
+                Divider()
+                HStack {
+                    Text("网格").font(.system(size: 12, weight: .semibold))
+                    Spacer()
+                    Picker("", selection: $gridStep) {
+                        Text("5").tag(5.0); Text("10").tag(10.0); Text("20").tag(20.0); Text("50").tag(50.0)
+                    }
+                    .labelsHidden().frame(width: 80)
+                }
+                Toggle("网格吸附", isOn: $snapGrid)
+                Toggle("节点吸附", isOn: $snapVertex)
+                Toggle("点顶面取 XY", isOn: $tapOnModel)
+                Divider()
+                Text("单指自由旋转（俯仰不锁 ±90°），双指缩放；旋转不带动外层页面。")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 13)
+            .padding(.bottom, 14)
+        }
+    }
+
+    // MARK: - 测量数据（2.5D 真实几何近似）
+
+    private var partBBox: CGRect { PartProg.bbox(spec) }
+
+    private var outerSurfaceArea: Double {
+        abs(ContourGeo.signedArea(PartProg.pts(spec)))
+    }
+
+    private var cutVolume: Double {
+        var cut = 0.0
+        for l in spec.innerLoops {
+            let a = abs(ContourGeo.signedArea(PartProg.loopPoints(l)))
+            cut += a * (l.through ? spec.height : min(max(l.depth, 0), spec.height))
+        }
+        for f in spec.feats {
+            if f.kind == .hole {
+                cut += Double.pi * (f.dia / 2) * (f.dia / 2) * spec.height
+            } else if f.kind == .rectPocket {
+                cut += f.w * f.h * min(max(f.depth, 0), spec.height)
+            } else {
+                cut += Double.pi * (f.dia / 2) * (f.dia / 2) * min(max(f.depth, 0), spec.height)
+            }
+        }
+        return cut
+    }
+
+    private var partVolume: Double {
+        max(0, outerSurfaceArea * spec.height - cutVolume)
+    }
+
+    private var partWeight: Double { partVolume * material.density / 1000 }
+
+    private var partPrice: Double { partWeight / 1000 * material.pricePerKg }
+
+    private var partBBoxVolume: Double {
+        Double(partBBox.width) * Double(partBBox.height) * spec.height
+    }
+
+    private var partProjectedArea: Double {
+        var cut = 0.0
+        for l in spec.innerLoops {
+            cut += abs(ContourGeo.signedArea(PartProg.loopPoints(l)))
+        }
+        for f in spec.feats {
+            cut += (f.kind == .rectPocket ? f.w * f.h : Double.pi * (f.dia / 2) * (f.dia / 2))
+        }
+        return max(0, outerSurfaceArea - cut)
     }
 
     @ViewBuilder
@@ -1427,11 +2516,16 @@ struct StudioScreen: View {
     }
 
     private func drawModel(context: GraphicsContext, size: CGSize) {
+        if hiddenTreeIDs.contains("sketch") || hiddenTreeIDs.contains("extrude") { return }
         var ctx = context
         let cam = modelCam(size: size)
         let pts = PartProg.pts(spec)
         guard pts.count > 2 else { return }
         let depth = max(spec.height, 0.1)
+        let showZCut = sectionOn && sectionAxis == .z
+        let visibleDepth = showZCut
+            ? max(0.2, depth * (sectionReverse ? (1 - sectionT) : sectionT))
+            : depth
 
         func ringPath(_ z: Double) -> Path {
             var path = Path()
@@ -1451,14 +2545,14 @@ struct StudioScreen: View {
             return path
         }
 
-        let bottom = ringPath(-depth)
+        let bottom = ringPath(-visibleDepth)
         ctx.fill(bottom, with: .color(Color.orange.opacity(0.10)))
         ctx.stroke(bottom, with: .color(Color(red: 0.70, green: 0.72, blue: 0.76)), lineWidth: 1)
 
-        let layers = max(1, Int(ceil(depth / max(spec.stepDown, 0.1))))
+        let layers = max(1, Int(ceil(visibleDepth / max(spec.stepDown, 0.1))))
         if layers > 1 {
             for i in 1..<layers {
-                let z = -min(depth, Double(i) * spec.stepDown)
+                let z = -min(visibleDepth, Double(i) * spec.stepDown)
                 ctx.stroke(ringPath(z), with: .color(Color.orange.opacity(0.20)), lineWidth: 0.7)
             }
         }
@@ -1466,19 +2560,25 @@ struct StudioScreen: View {
             let q = pts[i]
             ctx.stroke(Path { p in
                 p.move(to: cam.p(q.x, q.y, 0))
-                p.addLine(to: cam.p(q.x, q.y, -depth))
+                p.addLine(to: cam.p(q.x, q.y, -visibleDepth))
             }, with: .color(Color(red: 0.78, green: 0.80, blue: 0.83)), lineWidth: 0.8)
         }
 
         ctx.fill(ringPath(0), with: .color(Color.orange.opacity(0.08)))
         ctx.stroke(ringPath(0), with: .color(.orange), lineWidth: 2)
 
-        for l in spec.innerLoops {
+        if showZCut {
+            ctx.fill(ringPath(-visibleDepth), with: .color(Color.orange.opacity(0.38)))
+            ctx.stroke(ringPath(-visibleDepth), with: .color(.orange), lineWidth: 2)
+        }
+
+        for l in spec.innerLoops where !hiddenTreeIDs.contains("inner-\(l.id.uuidString)") {
             let d = PartProg.drawForLoop(l, spec, depth: l.through ? spec.height + 1 : l.depth,
                                          dia: max(spec.pocketDia, 1), hNo: spec.pocketTool)
             let segs = ContourGeo.segments(ContourGeo.buildNodes(d))
             let flat = ContourGeo.flatten(segs, arcStep: 24)
             let cut = l.through ? spec.height : min(l.depth, spec.height)
+            let loopCut = min(cut, visibleDepth)
             func loopPath(_ z: Double) -> Path {
                 var p = Path()
                 guard let f = flat.first else { return p }
@@ -1490,7 +2590,7 @@ struct StudioScreen: View {
             ctx.fill(topLoop, with: .color(Color.red.opacity(0.12)))
             ctx.stroke(topLoop, with: .color(.red),
                        style: StrokeStyle(lineWidth: 1.4, dash: [4, 3]))
-            ctx.stroke(loopPath(-cut), with: .color(Color.red.opacity(0.55)), lineWidth: 0.9)
+            ctx.stroke(loopPath(-loopCut), with: .color(Color.red.opacity(0.55)), lineWidth: 0.9)
             let c = cam.p(l.cx, l.cy, 0)
             let text: String
             switch l.template {
@@ -1503,7 +2603,7 @@ struct StudioScreen: View {
                      at: CGPoint(x: c.x, y: c.y - 10))
         }
 
-        for f in spec.feats {
+        for f in spec.feats where !hiddenTreeIDs.contains("feat-\(f.id.uuidString)") {
             if f.kind == .rectPocket {
                 let d = min(f.depth, spec.height)
                 var top = Path()
@@ -1531,7 +2631,7 @@ struct StudioScreen: View {
                 let c = circle(f.x, f.y, 0, r)
                 ctx.fill(c, with: .color(Color(white: 0.28).opacity(0.55)))
                 ctx.stroke(c, with: .color(Color(white: 0.35)), lineWidth: 1.4)
-                ctx.stroke(circle(f.x, f.y, -depth, r), with: .color(Color(white: 0.45)), lineWidth: 0.9)
+                ctx.stroke(circle(f.x, f.y, -min(depth, visibleDepth), r), with: .color(Color(white: 0.45)), lineWidth: 0.9)
                 label(ctx, cam, f, "Ø\(ncf(f.dia))")
             } else {
                 let d = min(f.depth, spec.height)
@@ -1541,6 +2641,13 @@ struct StudioScreen: View {
                 ctx.stroke(circle(f.x, f.y, -d, r), with: .color(Color(red: 0.95, green: 0.55, blue: 0.20).opacity(0.75)), lineWidth: 1)
                 label(ctx, cam, f, "Ø\(ncf(f.dia)) 深\(ncf(f.depth))")
             }
+        }
+
+        if sectionOn {
+            drawSectionPlane(&ctx, cam, size: size)
+        }
+        if measureOn {
+            drawMeasureBox(&ctx, cam)
         }
 
         if hasPtr {
@@ -1554,6 +2661,77 @@ struct StudioScreen: View {
             ctx.draw(Text("X\(ncf(ptrX)) Y\(ncf(ptrY))").font(.system(size: 9, weight: .medium)).foregroundColor(.black),
                  at: CGPoint(x: o.x + 2, y: o.y - 16))
         }
+    }
+
+    private func drawSectionPlane(_ ctx: inout GraphicsContext, _ cam: Cam, size: CGSize) {
+        let b = partBBox
+        let depth = max(spec.height, 0.1)
+        let z = -depth * (sectionReverse ? (1 - sectionT) : sectionT)
+        let x = Double(b.minX) + Double(b.width) * sectionT
+        let y = Double(b.minY) + Double(b.height) * sectionT
+        var corners: [(Double, Double, Double)] = []
+        switch sectionAxis {
+        case .z:
+            corners = [(Double(b.minX), Double(b.minY), z), (Double(b.maxX), Double(b.minY), z),
+                       (Double(b.maxX), Double(b.maxY), z), (Double(b.minX), Double(b.maxY), z)]
+        case .x:
+            corners = [(x, Double(b.minY), 0), (x, Double(b.maxY), 0),
+                       (x, Double(b.maxY), -depth), (x, Double(b.minY), -depth)]
+        case .y:
+            corners = [(Double(b.minX), y, 0), (Double(b.maxX), y, 0),
+                       (Double(b.maxX), y, -depth), (Double(b.minX), y, -depth)]
+        }
+        var plane = Path()
+        guard let f = corners.first else { return }
+        plane.move(to: cam.p(f.0, f.1, f.2))
+        for c in corners.dropFirst() { plane.addLine(to: cam.p(c.0, c.1, c.2)) }
+        plane.closeSubpath()
+        ctx.fill(plane, with: .color(studioBlue.opacity(0.13)))
+        ctx.stroke(plane, with: .color(studioBlue.opacity(0.8)),
+                   style: StrokeStyle(lineWidth: 1, dash: sectionLines ? [CGFloat(5), CGFloat(4)] : []))
+
+        if sectionHandles {
+            for c in corners {
+                let q = cam.p(c.0, c.1, c.2)
+                ctx.fill(Path(ellipseIn: CGRect(x: q.x - 3, y: q.y - 3, width: 6, height: 6)),
+                         with: .color(.white))
+                ctx.stroke(Path(ellipseIn: CGRect(x: q.x - 3, y: q.y - 3, width: 6, height: 6)),
+                          with: .color(studioBlue), lineWidth: 1)
+            }
+        }
+        let mid = cam.p(corners[0].0, corners[0].1, corners[0].2)
+        ctx.draw(Text("剖切 \(sectionAxis.rawValue) \(Int(sectionT * 100))%")
+                    .font(.system(size: 9, weight: .semibold)).foregroundColor(studioBlue),
+                 at: CGPoint(x: mid.x + 42, y: mid.y + 14))
+    }
+
+    private func drawMeasureBox(_ ctx: inout GraphicsContext, _ cam: Cam) {
+        let b = partBBox
+        let depth = max(spec.height, 0.1)
+        let bottom: [(Double, Double)] = [(Double(b.minX), Double(b.minY)), (Double(b.maxX), Double(b.minY)),
+                                          (Double(b.maxX), Double(b.maxY)), (Double(b.minX), Double(b.maxY))]
+        func boxPath(_ z: Double) -> Path {
+            var p = Path()
+            guard let f = bottom.first else { return p }
+            p.move(to: cam.p(f.0, f.1, z))
+            for q in bottom.dropFirst() { p.addLine(to: cam.p(q.0, q.1, z)) }
+            p.closeSubpath()
+            return p
+        }
+        ctx.stroke(boxPath(0), with: .color(.orange), lineWidth: 1.6)
+        ctx.stroke(boxPath(-depth), with: .color(.orange.opacity(0.55)), lineWidth: 1)
+        for q in bottom {
+            ctx.stroke(Path { p in
+                p.move(to: cam.p(q.0, q.1, 0))
+                p.addLine(to: cam.p(q.0, q.1, -depth))
+            }, with: .color(.orange.opacity(0.45)), lineWidth: 1)
+        }
+        let q = cam.p(Double(b.midX), Double(b.midY), 0)
+        ctx.draw(Text("体积 \(ncf(partVolume)) mm³").font(.system(size: 10, weight: .semibold)).foregroundColor(.orange),
+                 at: CGPoint(x: q.x, y: q.y - 26))
+        ctx.draw(Text("\(ncf(Double(b.width))) × \(ncf(Double(b.height))) × \(ncf(spec.height))")
+                    .font(.system(size: 9)).foregroundColor(.orange),
+                 at: CGPoint(x: q.x, y: q.y - 13))
     }
 
     private func label(_ ctx: GraphicsContext, _ cam: Cam, _ f: PartFeat, _ text: String) {
