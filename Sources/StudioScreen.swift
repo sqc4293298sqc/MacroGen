@@ -105,16 +105,16 @@ struct StudioScreen: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 7) {
                     chip("直线", spec.template == .free) { makeLine() }
-                    chip("矩形", spec.template == .rect) { spec.template = .rect }
-                    chip("中心矩形", spec.template == .rect) { spec.template = .rect }
-                    chip("圆角矩形", spec.template == .rect && spec.rectR > 0) { spec.template = .rect; spec.rectR = 8 }
-                    chip("圆", spec.template == .circle) { spec.template = .circle }
-                    chip("椭圆", false) { makeEllipse() }
-                    chip("多边形", false) { makePolygon(6) }
-                    chip("五角星", false) { makeStar() }
-                    chip("样条", false) { makeSpline() }
-                    chip("腰形槽", spec.template == .slot) { spec.template = .slot }
-                    chip("自由", spec.template == .free) { spec.template = .free; if spec.nodes.isEmpty { fillRectNodes() } }
+                    chip("矩形", spec.template == .rect) { sketchTool = ""; spec.template = .rect }
+                    chip("中心矩形", spec.template == .rect) { sketchTool = ""; spec.template = .rect }
+                    chip("圆角矩形", spec.template == .rect && spec.rectR > 0) { sketchTool = ""; spec.template = .rect; spec.rectR = 8 }
+                    chip("圆", spec.template == .circle) { sketchTool = ""; spec.template = .circle }
+                    chip("椭圆", false) { sketchTool = ""; makeEllipse() }
+                    chip("多边形", false) { sketchTool = ""; makePolygon(6) }
+                    chip("五角星", false) { sketchTool = ""; makeStar() }
+                    chip("样条", false) { sketchTool = ""; makeSpline() }
+                    chip("腰形槽", spec.template == .slot) { sketchTool = ""; spec.template = .slot }
+                    chip("自由", spec.template == .free) { sketchTool = ""; spec.template = .free; if spec.nodes.isEmpty { fillRectNodes() } }
                 }
                 .padding(.vertical, 2)
             }
@@ -125,9 +125,19 @@ struct StudioScreen: View {
                 HStack(spacing: 7) {
                     chip("内圆", false) { addInner(.circle) }
                     chip("内方", false) { addInner(.rect) }
+                    chip("修剪", false) { trimLast() }
+                    chip("延伸", false) { extendLast(10) }
+                    chip("打断", false) { breakLast() }
+                    chip("圆角", false) { filletOuter(filletR) }
+                    chip("倒角", false) { chamferOuter(chamferC) }
+                    chip("围栏修剪", false) { regionTrim() }
+                    chip("水平约束", false) { constrain(horizontal: true) }
+                    chip("竖直约束", false) { constrain(horizontal: false) }
                     chip("镜像", false) { mirrorOuter() }
                     chip("偏置", false) { offsetOuter(5) }
                     chip("阵列", false) { arrayInner() }
+                    chip("点", false) { sketchTool = "点" }
+                    chip("三点圆", false) { threePointCircle() }
                     chip("旋转零件", false) { showRotate = true }
                     chip("缩放零件", false) { showScale = true }
                     chip("清空内轮廓", false) { spec.innerLoops.removeAll() }
@@ -154,6 +164,27 @@ struct StudioScreen: View {
             }
             numRow("零件厚度 H（拉伸高度）", $spec.height)
             numRow("顶面余量 (mm)", $spec.topStock)
+        }
+
+        Section {
+            DisclosureGroup("编辑参数（圆角 / 倒角 / 框选 / 移动）") {
+                numRow("圆角 R (mm)", $filletR)
+                numRow("倒角 C (mm)", $chamferC)
+                HStack(spacing: 6) {
+                    miniNum("X0", $trimX0)
+                    miniNum("Y0", $trimY0)
+                    miniNum("X1", $trimX1)
+                    miniNum("Y1", $trimY1)
+                }
+                Button("按这个方框围栏修剪") { regionTrim() }
+                    .font(.system(size: 13, weight: .semibold))
+                HStack(spacing: 6) {
+                    miniNum("dx", $moveDX)
+                    miniNum("dy", $moveDY)
+                    Button("移动轮廓") { moveOuter() }
+                        .font(.system(size: 13, weight: .semibold))
+                }
+            }
         }
 
         Section("内轮廓（和外形叠在同一张草图）") {
@@ -250,6 +281,15 @@ struct StudioScreen: View {
 
     @State private var dragNode: Int? = nil
     @State private var sketchTool: String = ""
+    @State private var refPoints: [CGPoint] = []
+    @State private var filletR = 5.0
+    @State private var chamferC = 3.0
+    @State private var trimX0 = -20.0
+    @State private var trimY0 = -20.0
+    @State private var trimX1 = 20.0
+    @State private var trimY1 = 20.0
+    @State private var moveDX = 10.0
+    @State private var moveDY = 0.0
 
     private func moveSketchNode(_ loc: CGPoint, size: CGSize) {
         guard spec.template == .free, !spec.nodes.isEmpty else { return }
@@ -345,6 +385,15 @@ struct StudioScreen: View {
             }
             ctx.draw(Text(text).font(.system(size: 9, weight: .semibold)).foregroundColor(.red),
                      at: CGPoint(x: c.x, y: c.y - 10))
+        }
+
+        // 参考点 / 三点圆用的点
+        for (i, rp) in refPoints.enumerated() {
+            let q = P(Double(rp.x), Double(rp.y))
+            ctx.fill(Path(ellipseIn: CGRect(x: q.x - 4, y: q.y - 4, width: 8, height: 8)),
+                     with: .color(.purple))
+            ctx.draw(Text("\(i + 1)").font(.system(size: 8)).foregroundColor(.purple),
+                     at: CGPoint(x: q.x + 8, y: q.y - 8))
         }
 
         // 自由轮廓节点
@@ -458,6 +507,10 @@ struct StudioScreen: View {
         let k = sketchScale(b: b, size: size)
         let x = b.midX + (Double(loc.x) - Double(size.width) / 2) / k
         let y = b.midY - (Double(loc.y) - Double(size.height) / 2) / k
+        if sketchTool == "点" {
+            refPoints.append(CGPoint(x: x, y: y))
+            return
+        }
         if spec.nodes.isEmpty {
             spec.nodes.append(ContourNode(x: x, y: y))
         } else if let last = spec.nodes.last, hypot(x - last.x, y - last.y) > 0.2 {
@@ -544,6 +597,194 @@ struct StudioScreen: View {
             n.cx += 35
             spec.innerLoops.append(n)
         }
+    }
+
+    // MARK: - 草图编辑算法
+
+    private func outerPoints() -> [CGPoint] {
+        var d = sketchDrawSpec()
+        if d.template == .free && d.nodes.isEmpty { return [] }
+        return ContourGeo.flatten(ContourGeo.segments(ContourGeo.buildNodes(d)))
+    }
+
+    private func setOuterPoints(_ pts: [CGPoint]) {
+        spec.nodes = pts.map { ContourNode(x: Double($0.x), y: Double($0.y)) }
+        spec.template = .free
+    }
+
+    private func trimLast() {
+        if !spec.nodes.isEmpty {
+            spec.nodes.removeLast()
+        } else {
+            let pts = outerPoints()
+            if pts.count > 3 { setOuterPoints(Array(pts.dropLast())) }
+        }
+    }
+
+    private func extendLast(_ d: Double) {
+        if spec.template != .free { fillRectNodes() }
+        guard spec.nodes.count >= 2 else { return }
+        let a = spec.nodes[spec.nodes.count - 2]
+        let b = spec.nodes[spec.nodes.count - 1]
+        let len = hypot(b.x - a.x, b.y - a.y)
+        guard len > 0.001 else { return }
+        spec.nodes[spec.nodes.count - 1].x += (b.x - a.x) / len * d
+        spec.nodes[spec.nodes.count - 1].y += (b.y - a.y) / len * d
+    }
+
+    private func breakLast() {
+        if spec.template != .free { fillRectNodes() }
+        guard spec.nodes.count >= 2 else { return }
+        let a = spec.nodes[spec.nodes.count - 2]
+        let b = spec.nodes[spec.nodes.count - 1]
+        spec.nodes.insert(ContourNode(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2), at: spec.nodes.count - 1)
+    }
+
+    private func constrain(horizontal: Bool) {
+        if spec.template != .free { fillRectNodes() }
+        guard let f = spec.nodes.first else { return }
+        for i in spec.nodes.indices {
+            if horizontal { spec.nodes[i].y = f.y } else { spec.nodes[i].x = f.x }
+        }
+    }
+
+    private func regionTrim() {
+        let pts = outerPoints()
+        let x0 = min(trimX0, trimX1), x1 = max(trimX0, trimX1)
+        let y0 = min(trimY0, trimY1), y1 = max(trimY0, trimY1)
+        let kept = pts.filter { Double($0.x) < x0 || Double($0.x) > x1 || Double($0.y) < y0 || Double($0.y) > y1 }
+        if kept.count >= 3 { setOuterPoints(kept) }
+    }
+
+    private func moveOuter() {
+        if spec.template != .free { fillRectNodes() }
+        for i in spec.nodes.indices {
+            spec.nodes[i].x += moveDX
+            spec.nodes[i].y += moveDY
+        }
+        for i in spec.innerLoops.indices {
+            spec.innerLoops[i].cx += moveDX
+            spec.innerLoops[i].cy += moveDY
+        }
+        for i in spec.feats.indices {
+            spec.feats[i].x += moveDX
+            spec.feats[i].y += moveDY
+        }
+    }
+
+    private func filletOuter(_ r: Double) {
+        let pts = outerPoints()
+        guard pts.count >= 3, r > 0.01 else { return }
+        let n = pts.count
+        let area = ContourGeo.signedArea(pts)
+        _ = area
+        var nodes: [ContourNode] = []
+        for i in 0..<n {
+            let prev = pts[(i + n - 1) % n]
+            let cur = pts[i]
+            let next = pts[(i + 1) % n]
+            let uin = norm(Double(prev.x - cur.x), Double(prev.y - cur.y))
+            let uout = norm(Double(next.x - cur.x), Double(next.y - cur.y))
+            guard uin.0 != 0 || uin.1 != 0, uout.0 != 0 || uout.1 != 0 else { continue }
+            let dot = max(-1.0, min(1.0, uin.0 * uout.0 + uin.1 * uout.1))
+            let theta = acos(dot)
+            if theta < 0.05 || theta > 3.09 { continue }
+            let tangent = r / tan(theta / 2)
+            let e1 = hypot(Double(prev.x - cur.x), Double(prev.y - cur.y))
+            let e2 = hypot(Double(next.x - cur.x), Double(next.y - cur.y))
+            let d = min(tangent, min(e1, e2) * 0.45)
+            let ax = Double(cur.x) + uin.0 * d
+            let ay = Double(cur.y) + uin.1 * d
+            let bx = Double(cur.x) + uout.0 * d
+            let by = Double(cur.y) + uout.1 * d
+            let cross = uin.0 * uout.1 - uin.1 * uout.0
+            nodes.append(ContourNode(x: ax, y: ay, kind: .line, r: 0))
+            nodes.append(ContourNode(x: bx, y: by, kind: cross > 0 ? .ccw : .cw, r: r))
+        }
+        if nodes.count >= 3 {
+            spec.nodes = nodes
+            spec.template = .free
+        }
+    }
+
+    private func chamferOuter(_ c: Double) {
+        let pts = outerPoints()
+        guard pts.count >= 3, c > 0.01 else { return }
+        let n = pts.count
+        var nodes: [ContourNode] = []
+        for i in 0..<n {
+            let prev = pts[(i + n - 1) % n]
+            let cur = pts[i]
+            let next = pts[(i + 1) % n]
+            let uin = norm(Double(prev.x - cur.x), Double(prev.y - cur.y))
+            let uout = norm(Double(next.x - cur.x), Double(next.y - cur.y))
+            let e1 = hypot(Double(prev.x - cur.x), Double(prev.y - cur.y))
+            let e2 = hypot(Double(next.x - cur.x), Double(next.y - cur.y))
+            let d = min(c, min(e1, e2) * 0.45)
+            nodes.append(ContourNode(x: Double(cur.x) + uin.0 * d, y: Double(cur.y) + uin.1 * d))
+            nodes.append(ContourNode(x: Double(cur.x) + uout.0 * d, y: Double(cur.y) + uout.1 * d))
+        }
+        if nodes.count >= 3 {
+            spec.nodes = nodes
+            spec.template = .free
+        }
+    }
+
+    private func threePointCircle() {
+        guard refPoints.count >= 3 else { return }
+        let a = refPoints[refPoints.count - 3]
+        let b = refPoints[refPoints.count - 2]
+        let c = refPoints[refPoints.count - 1]
+        guard let circle = circleFrom(a, b, c) else { return }
+        let n = 32
+        spec.nodes = (0..<n).map { i in
+            let ang = Double(i) / Double(n) * 2 * Double.pi
+            return ContourNode(x: circle.0 + circle.2 * cos(ang), y: circle.1 + circle.2 * sin(ang))
+        }
+        spec.template = .free
+    }
+
+    private func threePointArc() {
+        guard refPoints.count >= 3 else { return }
+        let a = refPoints[refPoints.count - 3]
+        let b = refPoints[refPoints.count - 2]
+        let c = refPoints[refPoints.count - 1]
+        guard let circle = circleFrom(a, b, c) else { return }
+        let a0 = atan2(Double(a.y) - circle.1, Double(a.x) - circle.0)
+        let am = atan2(Double(b.y) - circle.1, Double(b.x) - circle.0)
+        let a1 = atan2(Double(c.y) - circle.1, Double(c.x) - circle.0)
+        var sweep = a1 - a0
+        while sweep <= -Double.pi { sweep += 2 * Double.pi }
+        while sweep > Double.pi { sweep -= 2 * Double.pi }
+        var mid = am - a0
+        while mid <= -Double.pi { mid += 2 * Double.pi }
+        while mid > Double.pi { mid -= 2 * Double.pi }
+        if (sweep > 0) != (mid > 0) { sweep += sweep > 0 ? -2 * Double.pi : 2 * Double.pi }
+        let n = 18
+        spec.nodes = (0...n).map { i in
+            let ang = a0 + sweep * Double(i) / Double(n)
+            return ContourNode(x: circle.0 + circle.2 * cos(ang), y: circle.1 + circle.2 * sin(ang))
+        }
+        spec.template = .free
+    }
+
+    private func circleFrom(_ a: CGPoint, _ b: CGPoint, _ c: CGPoint) -> (Double, Double, Double)? {
+        let ax = Double(a.x), ay = Double(a.y)
+        let bx = Double(b.x), by = Double(b.y)
+        let cx = Double(c.x), cy = Double(c.y)
+        let d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+        guard abs(d) > 1e-9 else { return nil }
+        let ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay)
+            + (cx * cx + cy * cy) * (ay - by)) / d
+        let uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx)
+            + (cx * cx + cy * cy) * (bx - ax)) / d
+        let r = hypot(ax - ux, ay - uy)
+        return (ux, uy, r)
+    }
+
+    private func norm(_ x: Double, _ y: Double) -> (Double, Double) {
+        let l = hypot(x, y)
+        return l > 1e-9 ? (x / l, y / l) : (0, 0)
     }
 
     // MARK: - 2 建模
