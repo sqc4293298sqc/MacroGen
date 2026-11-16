@@ -1232,9 +1232,11 @@ private struct TransformSheet: View {
             spec.innerLoops[i].cy = x * sin(rad) + y * cos(rad)
             if spec.innerLoops[i].template == .rect && abs(a.truncatingRemainder(dividingBy: 90)) < 0.01
                 && Int(round(a / 90)) % 2 != 0 {
-                let t = spec.innerLoops[i].rectL
-                spec.innerLoops[i].rectL = spec.innerLoops[i].rectW
-                spec.innerLoops[i].rectW = t
+                var l = spec.innerLoops[i]
+                let t = l.rectL
+                l.rectL = l.rectW
+                l.rectW = t
+                spec.innerLoops[i] = l
             }
         }
     }

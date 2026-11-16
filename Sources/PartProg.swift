@@ -213,6 +213,8 @@ enum PartProg {
             }
         }
         for l in p.innerLoops {
+            if l.template == .circle && l.through && !p.doHole { continue }
+            if !(l.template == .circle && l.through) && !p.doPocket { continue }
             let depth = l.through ? p.height + 1 : min(l.depth, p.height)
             if l.template == .circle && l.through && p.holeMode != .spiral {
                 out.append("\(l.name) Ø\(ncf(l.circleD)) · \(p.holeMode.rawValue)　T\(p.holeTool)")
@@ -345,6 +347,8 @@ enum PartProg {
         }
 
         for l in p.innerLoops {
+            if l.template == .circle && l.through && !p.doHole { continue }
+            if !(l.template == .circle && l.through) && !p.doPocket { continue }
             let depth = l.through ? p.height + 1 : min(l.depth, p.height)
             if l.template == .circle && l.through {
                 switch p.holeMode {
