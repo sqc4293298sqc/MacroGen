@@ -364,8 +364,12 @@ enum DrawingScanner {
             if let t = matchOne(raw, pattern: "(?:厚(?:度)?|T)\\s*([0-9]+(?:\\.[0-9]+)?)") {
                 facts.thickness = t
             }
-            for n in allNumbers(raw) {
-                if n > 1 && n < 3000 { facts.numbers.append(n) }
+            let onlyFeatureText = (raw.contains("Ø") || raw.contains("厚") || raw.hasPrefix("R"))
+                && raw.range(of: "×") == nil && allNumbers(raw).count <= 1
+            if !onlyFeatureText {
+                for n in allNumbers(raw) {
+                    if n > 1 && n < 3000 { facts.numbers.append(n) }
+                }
             }
 
             if index < 24 && (raw.contains("Ø") || raw.contains("厚") || raw.contains("R")

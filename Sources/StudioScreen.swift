@@ -199,6 +199,7 @@ struct StudioScreen: View {
                     scanError = "相册图片读取失败，换一张试试"
                     return
                 }
+                photoItem = nil
                 startScan(image)
             }
         }
@@ -848,6 +849,7 @@ struct StudioScreen: View {
         sketchTool = ""
         refPoints.removeAll()
         drawInner = false
+        scanResult = nil
         showToastView("已采用识别结果：\(result.summary)")
     }
 
@@ -1352,6 +1354,27 @@ struct StudioScreen: View {
                      at: CGPoint(x: c.x, y: c.y - 10))
         }
 
+        // 识别/新增的孔、圆腔、方腔也叠在草图上，方便先核对位置和尺寸
+        for f in spec.feats where !hiddenTreeIDs.contains("feat-\(f.id.uuidString)") {
+            let c = P(f.x, f.y)
+            if f.kind == .hole {
+                let r = max(2, f.dia / 2 * k)
+                ctx.fill(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)),
+                         with: .color(Color.red.opacity(0.10)))
+                ctx.stroke(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)),
+                           with: .color(.red), style: StrokeStyle(lineWidth: 1.2, dash: [4, 3]))
+                ctx.draw(Text("Ø\(ncf(f.dia))").font(.system(size: 8, weight: .semibold)).foregroundColor(.red),
+                         at: CGPoint(x: c.x, y: c.y - r - 8))
+            } else {
+                let w = max(3, f.w * k), h = max(3, f.h * k)
+                let rect = CGRect(x: c.x - w / 2, y: c.y - h / 2, width: w, height: h)
+                ctx.stroke(Path(roundedRect: rect, cornerRadius: 1),
+                           with: .color(.red), style: StrokeStyle(lineWidth: 1.2, dash: [4, 3]))
+                ctx.draw(Text("\(ncf(f.w))×\(ncf(f.h))").font(.system(size: 8, weight: .semibold)).foregroundColor(.red),
+                         at: CGPoint(x: c.x, y: c.y - h / 2 - 8))
+            }
+        }
+
         if drawInner, innerDraft.count > 1 {
             var dp = Path()
             dp.move(to: P(innerDraft[0].x, innerDraft[0].y))
@@ -1399,6 +1422,14 @@ struct StudioScreen: View {
         case .free:
             let nodes = spec.nodes
             if nodes.count > 1 {
+                let minX = nodes.map(\.x).min() ?? 0
+                let maxX = nodes.map(\.x).max() ?? 0
+                let minY = nodes.map(\.y).min() ?? 0
+                let maxY = nodes.map(\.y).max() ?? 0
+                drawDim(ctx, from: P(minX, minY - 16), to: P(maxX, minY - 16),
+                        text: "包络 " + ncf(maxX - minX))
+                drawDim(ctx, from: P(minX - 16, minY), to: P(minX - 16, maxY),
+                        text: "包络 " + ncf(maxY - minY))
                 for i in 0..<nodes.count {
                     let a = nodes[i]
                     let c = nodes[(i + 1) % nodes.count]
@@ -2542,7 +2573,7 @@ struct StudioScreen: View {
         if item.id == "sketch" {
             step = 0
         } else if item.id == "extrude" {
-            modelPanel = .tools
+            modelPanel = .extrude
         } else {
             modelPanel = .tools
             showToastView("已选中 \(item.title)，参数在“建模工具”里")

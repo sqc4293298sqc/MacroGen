@@ -28,12 +28,16 @@ struct DrawingScanPreviewView: View {
                             metric("厚", ncf(result.spec.height))
                         }
                         if !result.spec.feats.isEmpty {
-                            Text("孔：" + result.spec.feats.map { "Ø\(ncf($0.dia))" }.joined(separator: "  "))
-                                .font(.system(size: 13))
-                                .foregroundColor(.secondary)
+                            ForEach(result.spec.feats) { f in
+                                Text(f.kind == .hole
+                                     ? "孔 Ø\(ncf(f.dia)) @ X\(ncf(f.x)) Y\(ncf(f.y))"
+                                     : "型腔 \(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth)) @ X\(ncf(f.x)) Y\(ncf(f.y))")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(.secondary)
+                            }
                         }
-                        if result.spec.template == .free, !result.spec.nodes.isEmpty {
-                            Text("自由轮廓共 \(result.spec.nodes.count) 段；采用后草图会逐段标长度/角度，可逐段改")
+                        if result.spec.template == .free, result.spec.nodes.count > 1 {
+                            Text("轮廓分段：" + segmentLengths(result.spec.nodes))
                                 .font(.system(size: 12))
                                 .foregroundColor(.secondary)
                         }
@@ -200,5 +204,15 @@ struct DrawingScanPreviewView: View {
         .padding(.vertical, 8)
         .background(Color(.tertiarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 9))
+    }
+
+    private func segmentLengths(_ nodes: [ContourNode]) -> String {
+        guard nodes.count > 1 else { return "—" }
+        var out: [String] = []
+        for i in 0..<nodes.count {
+            let a = nodes[i], b = nodes[(i + 1) % nodes.count]
+            out.append("\(i + 1):\(ncf(hypot(b.x - a.x, b.y - a.y)) )")
+        }
+        return out.joined(separator: "  ")
     }
 }
