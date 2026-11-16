@@ -3,6 +3,7 @@ import UIKit
 
 /// 建模编程（iOS 对齐安卓四步）：草图 → 建模 → 出图 → 加工
 struct StudioScreen: View {
+    @Environment(\.dismiss) private var dismiss
     @State private var spec = PartSpec()
     @State private var step = 0
     @State private var code = ""
@@ -33,6 +34,10 @@ struct StudioScreen: View {
     @State private var dimEditTitle = ""
     @State private var dimEditText = ""
     @State private var dimTarget: DimTarget = .none
+    @State private var showSketchTools = false
+    @State private var showModelTools = false
+    @State private var drawInner = false
+    @State private var innerDraft: [ContourNode] = []
 
     private enum DimTarget: Equatable {
         case none, rectL, rectW, circleD, slotL
@@ -70,6 +75,14 @@ struct StudioScreen: View {
         }
         .navigationTitle("建模编程")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.left")
+                }
+            }
+        }
         .navigationDestination(isPresented: $showResult) {
             PartResultView(code: code)
         }
@@ -94,7 +107,7 @@ struct StudioScreen: View {
     // MARK: - 1 草图
 
     private var sketchPage: some View {
-        VStack(spacing: 0) {
+        ZStack(alignment: .topLeading) {
             GeometryReader { geo in
                 Canvas { context, size in
                     drawSketch(context: context, size: size)
@@ -106,23 +119,72 @@ struct StudioScreen: View {
                         .onEnded { _ in dragNode = nil }
                 )
                 .simultaneousGesture(SpatialTapGesture().onEnded { v in
-                    if sketchTool == "直线" {
+                    // 点画布：收起左侧抽屉；当前是绘制工具时落点
+                    showSketchTools = false
+                    if isDrawTool(sketchTool) {
                         addPointAt(v.location, size: geo.size)
                     }
                 })
                 .simultaneousGesture(SpatialTapGesture(count: 2).onEnded { v in
                     pickDim(at: v.location, size: geo.size)
                 })
+                .background(Color.white)
             }
-            .frame(height: 320)
-            .background(Color.white)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .padding(.horizontal, 14)
-            .padding(.top, 8)
-            .padding(.bottom, 4)
 
-            Form {
-                sketchControls
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Button {
+                        showSketchTools.toggle()
+                    } label: {
+                        Label("草图工具", systemImage: "line.3.horizontal")
+                            .font(.system(size: 13, weight: .semibold))
+                            .padding(.horizontal, 11).padding(.vertical, 8)
+                            .background(Color(.systemBackground).opacity(0.9))
+                            .clipShape(Capsule())
+                    }
+                    Spacer()
+                    Button {
+                        step = 1
+                    } label: {
+                        Label("完成草图", systemImage: "checkmark")
+                            .font(.system(size: 13, weight: .semibold))
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .background(Color.orange.opacity(0.9))
+                            .foregroundStyle(.white)
+                            .clipShape(Capsule())
+                    }
+                }
+                .padding(.horizontal, 12).padding(.top, 6)
+
+                Spacer()
+
+                HStack {
+                    Text("草图 \(spec.nodes.count) 段 · 网格 \(Int(gridStep)) mm")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(isDrawTool(sketchTool) ? "点击画布连续落点" : "点工具选绘制方式")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(Color(.systemBackground).opacity(0.85))
+            }
+
+            if showSketchTools {
+                HStack(alignment: .top, spacing: 0) {
+                    Form {
+                        sketchControls
+                    }
+                    .frame(width: 330)
+                    .frame(maxHeight: .infinity)
+                    .background(Color(.systemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .padding(.leading, 8)
+                    .padding(.top, 52)
+                    .padding(.bottom, 8)
+                    Spacer()
+                }
             }
         }
     }
@@ -132,8 +194,8 @@ struct StudioScreen: View {
         Section("草图工具 · 绘制") {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 7) {
-                    chip("直线", spec.template == .free) { makeLine() }
-                    chip("多段线", spec.template == .free && sketchTool == "直线") { makeLine() }
+                    chip("直线", sketchTool == "直线") { makeLine() }
+                    chip("多段线", sketchTool == "多段线") { makePolyline() }
                     chip("矩形", spec.template == .rect) { sketchTool = ""; spec.template = .rect }
                     chip("中心矩形", spec.template == .rect) { sketchTool = ""; spec.template = .rect }
                     chip("圆角矩形", spec.template == .rect && spec.rectR > 0) { sketchTool = ""; spec.template = .rect; spec.rectR = 8 }
@@ -158,6 +220,12 @@ struct StudioScreen: View {
                 HStack(spacing: 7) {
                     chip("内圆", false) { addInner(.circle) }
                     chip("内方", false) { addInner(.rect) }
+                    chip("画内轮廓", drawInner) {
+                        drawInner.toggle()
+                        innerDraft.removeAll()
+                        sketchTool = drawInner ? "多段线" : ""
+                    }
+                    chip("完成内轮廓", false) { finishInner() }
                     chip("修剪", false) { trimLast() }
                     chip("延伸", false) { extendLast(10) }
                     chip("打断", false) { breakLast() }
@@ -462,6 +530,13 @@ struct StudioScreen: View {
                      at: CGPoint(x: c.x, y: c.y - 10))
         }
 
+        if drawInner, innerDraft.count > 1 {
+            var dp = Path()
+            dp.move(to: P(innerDraft[0].x, innerDraft[0].y))
+            for q in innerDraft.dropFirst() { dp.addLine(to: P(q.x, q.y)) }
+            ctx.stroke(dp, with: .color(.orange), style: StrokeStyle(lineWidth: 1.8, dash: [5, 4]))
+        }
+
         // 参考点 / 三点圆用的点
         for (i, rp) in refPoints.enumerated() {
             let q = P(Double(rp.x), Double(rp.y))
@@ -693,6 +768,35 @@ struct StudioScreen: View {
         sketchTool = "直线"
         spec.nodes = []
         spec.template = .free
+        refPoints.removeAll()
+    }
+
+    private func makePolyline() {
+        sketchTool = "多段线"
+        spec.nodes = []
+        spec.template = .free
+        refPoints.removeAll()
+    }
+
+    private func finishInner() {
+        guard innerDraft.count >= 3 else { return }
+        let cx = innerDraft.reduce(0.0) { $0 + $1.x } / Double(innerDraft.count)
+        let cy = innerDraft.reduce(0.0) { $0 + $1.y } / Double(innerDraft.count)
+        var l = SketchLoop(template: .free)
+        l.name = "内轮廓"
+        l.cx = cx
+        l.cy = cy
+        l.nodes = innerDraft.map { ContourNode(x: $0.x - cx, y: $0.y - cy) }
+        l.through = true
+        l.depth = spec.height
+        spec.innerLoops.append(l)
+        innerDraft.removeAll()
+        drawInner = false
+        sketchTool = ""
+    }
+
+    private func isDrawTool(_ tool: String) -> Bool {
+        ["直线", "多段线", "三点圆", "圆弧", "点"].contains(tool)
     }
 
     private func addPointAt(_ loc: CGPoint, size: CGSize) {
@@ -710,16 +814,30 @@ struct StudioScreen: View {
         }), hypot(near.x - px, near.y - py) < 8 {
             px = near.x; py = near.y
         }
+        if drawInner {
+            if innerDraft.isEmpty || hypot(px - innerDraft.last!.x, py - innerDraft.last!.y) > 0.2 {
+                innerDraft.append(ContourNode(x: px, y: py))
+            }
+            return
+        }
         if sketchTool == "点" || sketchTool == "三点圆" || sketchTool == "圆弧" {
             refPoints.append(CGPoint(x: px, y: py))
-            if sketchTool == "三点圆" && refPoints.count >= 3 { threePointCircle() }
-            if sketchTool == "圆弧" && refPoints.count >= 3 { threePointArc() }
+            if sketchTool == "三点圆" && refPoints.count >= 3 {
+                threePointCircle()
+                sketchTool = ""
+                refPoints.removeAll()
+            }
+            if sketchTool == "圆弧" && refPoints.count >= 3 {
+                threePointArc()
+                sketchTool = ""
+                refPoints.removeAll()
+            }
             return
         }
         if spec.nodes.isEmpty {
-            spec.nodes.append(ContourNode(x: x, y: y))
-        } else if let last = spec.nodes.last, hypot(x - last.x, y - last.y) > 0.2 {
-            spec.nodes.append(ContourNode(x: x, y: y))
+            spec.nodes.append(ContourNode(x: px, y: py))
+        } else if let last = spec.nodes.last, hypot(px - last.x, py - last.y) > 0.2 {
+            spec.nodes.append(ContourNode(x: px, y: py))
         }
     }
 
@@ -1059,7 +1177,7 @@ struct StudioScreen: View {
     // MARK: - 2 建模
 
     private var modelPage: some View {
-        VStack(spacing: 0) {
+        ZStack(alignment: .topLeading) {
             GeometryReader { geo in
                 Canvas { context, size in
                     drawModel(context: context, size: size)
@@ -1092,7 +1210,9 @@ struct StudioScreen: View {
                             let dy = Double(g.translation.height - lastDrag.height)
                             lastDrag = g.translation
                             yaw += dx * 0.012
-                            pitch = min(1.55, max(-1.55, pitch - dy * 0.010))
+                            // 不限制俯仰角：上下也能一直翻，超过 90° 继续转到背面
+                            let np = pitch - dy * 0.010
+                            pitch = atan2(sin(np), cos(np))
                         }
                         .onEnded { _ in lastDrag = .zero; dragFeatID = nil }
                 )
@@ -1101,6 +1221,7 @@ struct StudioScreen: View {
                     .onEnded { _ in zoomBase = zoom }
                 )
                 .simultaneousGesture(SpatialTapGesture().onEnded { v in
+                    showModelTools = false
                     guard tapOnModel else { return }
                     let xy = modelXY(at: v.location, size: geo.size)
                     ptrX = xy.0; ptrY = xy.1; hasPtr = true
@@ -1108,16 +1229,71 @@ struct StudioScreen: View {
                 .onTapGesture(count: 2) {
                     yaw = 0.78; pitch = 0.62; zoom = 1; zoomBase = 1
                 }
+                .background(Color.white)
             }
-            .frame(height: 400)
-            .background(Color.white)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .padding(.horizontal, 14)
-            .padding(.top, 8)
-            .padding(.bottom, 4)
 
-            Form {
-                modelControls
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Button {
+                        showModelTools.toggle()
+                    } label: {
+                        Label("建模工具", systemImage: "line.3.horizontal")
+                            .font(.system(size: 13, weight: .semibold))
+                            .padding(.horizontal, 11).padding(.vertical, 8)
+                            .background(Color(.systemBackground).opacity(0.9))
+                            .clipShape(Capsule())
+                    }
+                    Spacer()
+                    Button {
+                        step = 0
+                    } label: {
+                        Label("编辑草图", systemImage: "pencil")
+                            .font(.system(size: 12, weight: .semibold))
+                            .padding(.horizontal, 10).padding(.vertical, 8)
+                            .background(Color(.systemBackground).opacity(0.9))
+                            .clipShape(Capsule())
+                    }
+                    Button {
+                        setView(0.78, 0.62)
+                    } label: {
+                        Label("适合窗口", systemImage: "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .padding(.horizontal, 10).padding(.vertical, 8)
+                            .background(Color(.systemBackground).opacity(0.9))
+                            .clipShape(Capsule())
+                    }
+                }
+                .padding(.horizontal, 12).padding(.top, 6)
+
+                Spacer()
+
+                HStack {
+                    Text("X\(ncf(ptrX))  Y\(ncf(ptrY))  Z0")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("单指 360° 旋转 · 双指缩放")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(Color(.systemBackground).opacity(0.85))
+            }
+
+            if showModelTools {
+                HStack(alignment: .top, spacing: 0) {
+                    Form {
+                        modelControls
+                    }
+                    .frame(width: 340)
+                    .frame(maxHeight: .infinity)
+                    .background(Color(.systemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .padding(.leading, 8)
+                    .padding(.top, 52)
+                    .padding(.bottom, 8)
+                    Spacer()
+                }
             }
         }
     }
@@ -1742,61 +1918,61 @@ private struct Cam {
     let zoom: Double
     let size: CGSize
 
-    private var b: CGRect { PartProg.bbox(spec) }
-    private var depth: Double { max(spec.height, 0.1) }
+    // 缓存投影参数：每帧只算一次，避免每个点都重算包围盒和三角函数
+    private let cy: Double
+    private let sy: Double
+    private let sp: Double
+    private let cp: Double
+    private let kValue: Double
+    private let midX: Double
+    private let midY: Double
 
-    private var k: Double {
-        let cy = cos(yaw), sy = sin(yaw), sp = sin(pitch), cp = cos(pitch)
+    init(spec: PartSpec, yaw: Double, pitch: Double, zoom: Double, size: CGSize) {
+        self.spec = spec
+        self.yaw = yaw
+        self.pitch = pitch
+        self.zoom = zoom
+        self.size = size
+
+        let b = PartProg.bbox(spec)
+        let depth = max(spec.height, 0.1)
+        let c = cos(yaw), s = sin(yaw)
+        let sp0 = sin(pitch), cp0 = cos(pitch)
+        self.cy = c
+        self.sy = s
+        self.sp = sp0
+        self.cp = cp0
+
         var mnx = Double.infinity, mxx = -Double.infinity
         var mny = Double.infinity, mxy = -Double.infinity
         for zz in [0.0, -depth] {
             for (xx, yy) in [(b.minX, b.minY), (b.maxX, b.minY), (b.maxX, b.maxY), (b.minX, b.maxY)] {
-                let rx = Double(xx) * cy - Double(yy) * sy
-                let ry = Double(xx) * sy + Double(yy) * cy
+                let rx = Double(xx) * c - Double(yy) * s
+                let ry = Double(xx) * s + Double(yy) * c
                 let sx = rx
-                let syy = -(ry * sp + zz * cp)
+                let syy = -(ry * sp0 + zz * cp0)
                 mnx = min(mnx, sx); mxx = max(mxx, sx)
                 mny = min(mny, syy); mxy = max(mxy, syy)
             }
         }
-        return min((Double(size.width) - 52) / max(mxx - mnx, 1),
-                   (Double(size.height) - 52) / max(mxy - mny, 1)) * zoom
-    }
-
-    private var mid: (Double, Double) {
-        let cy = cos(yaw), sy = sin(yaw), sp = sin(pitch), cp = cos(pitch)
-        var mnx = Double.infinity, mxx = -Double.infinity
-        var mny = Double.infinity, mxy = -Double.infinity
-        for zz in [0.0, -depth] {
-            for (xx, yy) in [(b.minX, b.minY), (b.maxX, b.minY), (b.maxX, b.maxY), (b.minX, b.maxY)] {
-                let rx = Double(xx) * cy - Double(yy) * sy
-                let ry = Double(xx) * sy + Double(yy) * cy
-                let sx = rx
-                let syy = -(ry * sp + zz * cp)
-                mnx = min(mnx, sx); mxx = max(mxx, sx)
-                mny = min(mny, syy); mxy = max(mxy, syy)
-            }
-        }
-        return ((mnx + mxx) / 2, (mny + mxy) / 2)
+        self.midX = (mnx + mxx) / 2
+        self.midY = (mny + mxy) / 2
+        self.kValue = min((Double(size.width) - 52) / max(mxx - mnx, 1),
+                           (Double(size.height) - 52) / max(mxy - mny, 1)) * zoom
     }
 
     func p(_ x: Double, _ y: Double, _ z: Double) -> CGPoint {
-        let cy = cos(yaw), sy = sin(yaw), sp = sin(pitch), cp = cos(pitch)
         let rx = x * cy - y * sy
         let ry = x * sy + y * cy
-        let sx = rx
         let syy = -(ry * sp + z * cp)
-        let m = mid
-        return CGPoint(x: Double(size.width) / 2 + (sx - m.0) * k,
-                       y: Double(size.height) / 2 + (syy - m.1) * k)
+        return CGPoint(x: Double(size.width) / 2 + (rx - midX) * kValue,
+                       y: Double(size.height) / 2 + (syy - midY) * kValue)
     }
 
     func unprojectTop(_ pt: CGPoint) -> (Double, Double) {
-        let cy = cos(yaw), sy = sin(yaw), sp = sin(pitch)
-        let m = mid
-        let rx = (Double(pt.x) - Double(size.width) / 2) / k + m.0
         let sp2 = abs(sp) < 0.15 ? (sp < 0 ? -0.15 : 0.15) : sp
-        let ry = -((Double(pt.y) - Double(size.height) / 2) / k + m.1) / sp2
+        let rx = (Double(pt.x) - Double(size.width) / 2) / kValue + midX
+        let ry = -((Double(pt.y) - Double(size.height) / 2) / kValue + midY) / sp2
         let x = rx * cy + ry * sy
         let y = -rx * sy + ry * cy
         return (x, y)
