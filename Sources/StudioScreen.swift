@@ -70,7 +70,7 @@ struct StudioScreen: View {
     }
 
     private enum StudioModelPanel: Equatable {
-        case none, tree, body, section, measure, display, tools
+        case none, tree, body, extrude, section, measure, display, tools
     }
 
     private enum SketchSidePanel: Hashable {
@@ -2090,9 +2090,8 @@ struct StudioScreen: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 3) {
                 railButton("草图", "pencil", active: false) { step = 0 }
-                railButton("拉伸", "arrow.up.right.square", active: false) {
-                    modelPanel = .tools
-                    showToastView("拉伸高度在“更多”里改")
+                railButton("拉伸", "arrow.up.right.square", active: modelPanel == .extrude) {
+                    modelPanel = modelPanel == .extrude ? .none : .extrude
                 }
                 railButton("孔", "circle.circle", active: false) {
                     pushUndo(); let f = addFeat(.hole)
@@ -2240,6 +2239,8 @@ struct StudioScreen: View {
                 modelTreePanel
             case .body:
                 bodyPanel
+            case .extrude:
+                extrudePanel
             case .section:
                 sectionPanel
             case .measure:
@@ -2267,6 +2268,7 @@ struct StudioScreen: View {
         switch modelPanel {
         case .tree: return "建模树"
         case .body: return "体"
+        case .extrude: return "拉伸"
         case .section: return "剖切"
         case .measure: return "测量"
         case .display: return "显示"
@@ -2279,6 +2281,7 @@ struct StudioScreen: View {
         switch modelPanel {
         case .tree: return "\(treeItems.count) 项 · 可见/排序/编辑"
         case .body: return "实体属性 · 体积/重量/材料"
+        case .extrude: return "由草图向下拉伸"
         case .section: return "X/Y/Z · 实时预览"
         case .measure: return "体积/重量/尺寸/面积"
         case .display: return "视角与网格"
@@ -2446,6 +2449,38 @@ struct StudioScreen: View {
             spec.feats.removeAll { $0.id == id }
         }
         selectedTreeID = nil
+    }
+
+    private var extrudePanel: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.system(size: 17))
+                        .foregroundStyle(studioBlue)
+                    Text("草图 1 → 实体").font(.system(size: 13, weight: .semibold))
+                }
+                numRow("厚度 H (mm)", $spec.height)
+                numRow("顶面余量 (mm)", $spec.topStock)
+                HStack {
+                    Text("方向").font(.system(size: 12, weight: .semibold))
+                    Spacer()
+                    Text("Z− 向下").font(.system(size: 11, weight: .bold)).foregroundStyle(studioBlue)
+                }
+                Text("外轮廓按草图闭合线拉伸；内圆/内方/孔/型腔是实体上的切除特征。")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                Button { modelPanel = .none } label: {
+                    Text("应用并关闭").font(.system(size: 13, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background(RoundedRectangle(cornerRadius: 9).fill(studioBlue))
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 13)
+            .padding(.bottom, 14)
+        }
     }
 
     private var bodyPanel: some View {
