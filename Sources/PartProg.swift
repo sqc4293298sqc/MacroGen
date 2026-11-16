@@ -3,6 +3,14 @@ import CoreGraphics
 
 // MARK: - 零件模型（草图 + 特征）
 
+enum HoleMode: String, CaseIterable, Identifiable {
+    case spiral = "螺旋铣"
+    case g81 = "钻孔 G81"
+    case g83 = "钻孔 G83"
+    case tap = "攻丝 G84"
+    var id: String { rawValue }
+}
+
 enum PartFeatKind: String, CaseIterable, Identifiable {
     case hole = "孔（贯通）"
     case pocket = "沉台（盲腔）"
@@ -53,6 +61,18 @@ struct PartSpec {
 
     var doFace = true
     var doContour = true
+    var doHole = true
+    var doPocket = true
+
+    // 孔加工方式
+    var holeMode: HoleMode = .spiral
+    var peck: Double = 2          // G83 每次啄钻
+    var tapPitch: Double = 1.5    // 攻丝螺距
+    var tapRpm: Int = 300
+    var tapTool: Int = 5
+    var tapDia: Double = 10
+
+    var coord: Int = 54           // G54~G59
 }
 
 // MARK: - 多工序程序
@@ -113,8 +133,18 @@ enum PartProg {
         }
         for f in p.feats {
             if f.kind == .hole {
-                out.append("孔 Ø\(ncf(f.dia)) · 螺旋铣　T\(p.holeTool) D\(ncf(p.holeDia))")
-            } else {
+                guard p.doHole else { continue }
+                switch p.holeMode {
+                case .spiral:
+                    out.append("孔 Ø\(ncf(f.dia)) · 螺旋铣　T\(p.holeTool) D\(ncf(p.holeDia))")
+                case .g81:
+                    out.append("孔 Ø\(ncf(f.dia)) · 钻孔 G81　T\(p.holeTool) D\(ncf(f.dia))")
+                case .g83:
+                    out.append("孔 Ø\(ncf(f.dia)) · 钻孔 G83　T\(p.holeTool) D\(ncf(f.dia))")
+                case .tap:
+                    out.append("孔 Ø\(ncf(f.dia)) · 攻丝 G84　T\(p.tapTool) P\(ncf(p.tapPitch))")
+                }
+            } else if p.doPocket {
                 out.append("沉台 Ø\(ncf(f.dia)) 深\(ncf(f.depth)) · 型腔铣　T\(p.pocketTool) D\(ncf(p.pocketDia))")
             }
         }
@@ -190,21 +220,31 @@ enum PartProg {
 
         for f in p.feats {
             if f.kind == .hole {
-                var s = PocketSpec()
-                s.mode = .spiral
-                s.spiralDia = f.dia
-                s.toolDia = p.holeDia
-                s.depth = p.height + 1          // 钻穿
-                s.stepDown = p.stepDown
-                s.spindle = p.spindle
-                s.feed = p.feed
-                s.safeZ = p.safeZ
-                s.hNo = p.holeTool
-                s.cx = f.x
-                s.cy = f.y
-                add("孔 Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) 螺旋铣 T\(p.holeTool) D\(ncf(p.holeDia))",
-                    p.holeTool, GCodeGenerator.generate(s))
-            } else {
+                guard p.doHole else { continue }
+                switch p.holeMode {
+                case .spiral:
+                    var s = PocketSpec()
+                    s.mode = .spiral
+                    s.spiralDia = f.dia
+                    s.toolDia = p.holeDia
+                    s.depth = p.height + 1          // 钻穿
+                    s.stepDown = p.stepDown
+                    s.spindle = p.spindle
+                    s.feed = p.feed
+                    s.safeZ = p.safeZ
+                    s.hNo = p.holeTool
+                    s.cx = f.x
+                    s.cy = f.y
+                    add("孔 Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) 螺旋铣 T\(p.holeTool) D\(ncf(p.holeDia))",
+                        p.holeTool, GCodeGenerator.generate(s))
+                case .g81, .g83:
+                    add("孔 Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) 钻孔 \(p.holeMode == .g81 ? "G81" : "G83")",
+                        p.holeTool, drillBlock(p, f))
+                case .tap:
+                    add("孔 Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) 攻丝 G84 P\(ncf(p.tapPitch))",
+                        p.tapTool, tapBlock(p, f))
+                }
+            } else if p.doPocket {
                 let d = asDraw(p, outward: false, template: .circle, circleD: f.dia,
                                dia: p.pocketDia, depth: f.depth, hNo: p.pocketTool)
                 var code = ContourProg.generate(d)
@@ -220,8 +260,8 @@ enum PartProg {
         let b = bbox(p)
         L.append("( 外形 \(ncf(Double(b.width))) × \(ncf(Double(b.height)))  厚\(ncf(p.height))  顶面余量\(ncf(p.topStock)) )")
         L.append("( 共 \(blocks.count) 道工序，每段前面注明了用哪把刀，换刀后从该段重新启动 )")
-        L.append("G17 G21 G40 G49 G80 G90 G54")
-        L.append("( X0 Y0 为 G54 零点；外形按中心对称编程，毛坯装夹请对中心 )")
+        L.append("G17 G21 G40 G49 G80 G90 G\(p.coord)")
+        L.append("( X0 Y0 为 G\(p.coord) 零点；外形按中心对称编程，毛坯装夹请对中心 )")
         L.append(blocks.joined(separator: "\n"))
         L.append("G0 Z\(ncf(p.safeZ, 1))")
         L.append("M5")
@@ -249,6 +289,30 @@ enum PartProg {
             out.append(t)
         }
         return out.joined(separator: "\n")
+    }
+
+    /// G81 / G83 钻孔
+    static func drillBlock(_ p: PartSpec, _ f: PartFeat) -> String {
+        let z = -(p.height + 1)
+        var L: [String] = []
+        L.append("G0 Z\(ncf(p.safeZ, 1))")
+        L.append("( 孔 Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) )")
+        var line = "G98 G\(p.holeMode == .g81 ? "81" : "83") X\(ncf(f.x)) Y\(ncf(f.y)) Z\(ncf(z, 1)) R2. F\(p.feed)"
+        if p.holeMode == .g83 { line += " Q\(ncf(p.peck))" }
+        L.append(line)
+        L.append("G80")
+        return L.joined(separator: "\n")
+    }
+
+    /// G84 攻丝：M29 刚性攻丝，F = 螺距 × 转速
+    static func tapBlock(_ p: PartSpec, _ f: PartFeat) -> String {
+        var L: [String] = []
+        L.append("G0 Z\(ncf(p.safeZ, 1))")
+        L.append("( 攻丝 Ø\(ncf(f.dia)) P\(ncf(p.tapPitch)) @X\(ncf(f.x)) Y\(ncf(f.y)) )")
+        L.append("M29 S\(p.tapRpm)")
+        L.append("G98 G84 X\(ncf(f.x)) Y\(ncf(f.y)) Z\(ncf(-(p.height + 1), 1)) R2. F\(ncf(Double(p.tapRpm) * p.tapPitch))")
+        L.append("G80")
+        return L.joined(separator: "\n")
     }
 
     /// 只平移 X / Y 数值（I、J 是增量，不能动；注释行不动）

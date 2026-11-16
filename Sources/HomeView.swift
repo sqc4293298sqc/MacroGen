@@ -35,9 +35,9 @@ struct HomeView: View {
                     }
 
                     NavigationLink {
-                        PartScreen()
+                        StudioScreen()
                     } label: {
-                        Tile(title: "绘图编程", icon: "scribble.variable",
+                        Tile(title: "建模编程", icon: "cube.transparent",
                              tint: Color(red: 1.0, green: 0.42, blue: 0.10))
                     }
                     .buttonStyle(.plain)
