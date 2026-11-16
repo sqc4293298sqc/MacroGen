@@ -157,7 +157,8 @@ struct PartScreen: View {
         }
 
         Section {
-            Text("\(spec.feats.count) 个特征 · 外形 \(ncf(PartProg.bbox(spec).width)) × \(ncf(PartProg.bbox(spec).height)) · 厚 \(ncf(spec.height))")
+            let b = PartProg.bbox(spec)
+            Text("\(spec.feats.count) 个特征 · 外形 \(ncf(Double(b.width))) × \(ncf(Double(b.height))) · 厚 \(ncf(spec.height))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
