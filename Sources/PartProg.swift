@@ -78,7 +78,7 @@ enum PartProg {
         d.toolDia = dia
         d.depth = depth
         d.stepDown = p.stepDown
-        d.feed = p.feed
+        d.feed = Double(p.feed)
         d.rpm = Double(p.spindle)
         d.safeZ = p.safeZ
         d.hNo = hNo
