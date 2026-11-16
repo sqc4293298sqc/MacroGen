@@ -165,7 +165,7 @@ enum PartProg {
             if !inside {
                 out.append("特征 \(i + 1)：Ø\(ncf(f.dia))@X\(ncf(f.x)) Y\(ncf(f.y)) 超出外形范围")
             }
-            if f.kind == .hole && p.holeDia >= f.dia {
+            if f.kind == .hole && p.holeMode == .spiral && p.holeDia >= f.dia {
                 out.append("特征 \(i + 1)：孔 Ø\(ncf(f.dia))，刀径必须小于孔径")
             }
             if f.kind == .pocket {

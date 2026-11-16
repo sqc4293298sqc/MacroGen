@@ -537,7 +537,7 @@ struct StudioScreen: View {
             ctx.stroke(Path { p in p.move(to: o); p.addLine(to: ax) }, with: .color(.red), lineWidth: 1.4)
             ctx.stroke(Path { p in p.move(to: o); p.addLine(to: ay) }, with: .color(.green), lineWidth: 1.4)
             ctx.stroke(Path { p in p.move(to: o); p.addLine(to: az) }, with: .color(.blue), lineWidth: 1.4)
-            ctx.draw(Text("X\(ncf(ptrX)) Y\(ncf(ptrY))").font(.system(size: 9, weight: .medium)).foregroundColor(.white),
+            ctx.draw(Text("X\(ncf(ptrX)) Y\(ncf(ptrY))").font(.system(size: 9, weight: .medium)).foregroundColor(.black),
                  at: CGPoint(x: o.x + 2, y: o.y - 16))
         }
     }
@@ -832,7 +832,8 @@ private struct Cam {
         let cy = cos(yaw), sy = sin(yaw), sp = sin(pitch)
         let m = mid
         let rx = (Double(pt.x) - Double(size.width) / 2) / k + m.0
-        let ry = -((Double(pt.y) - Double(size.height) / 2) / k + m.1) / max(abs(sp), 0.15)
+        let sp2 = abs(sp) < 0.15 ? (sp < 0 ? -0.15 : 0.15) : sp
+        let ry = -((Double(pt.y) - Double(size.height) / 2) / k + m.1) / sp2
         let x = rx * cy + ry * sy
         let y = -rx * sy + ry * cy
         return (x, y)
