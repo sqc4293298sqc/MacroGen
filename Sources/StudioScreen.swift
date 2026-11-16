@@ -673,7 +673,10 @@ struct StudioScreen: View {
     }
 
     private func filletOuter(_ r: Double) {
-        let pts = outerPoints()
+        var pts = outerPoints()
+        if pts.count > 3, let f = pts.first, let l = pts.last, hypot(f.x - l.x, f.y - l.y) < 0.01 {
+            pts.removeLast()
+        }
         guard pts.count >= 3, r > 0.01 else { return }
         let n = pts.count
         let area = ContourGeo.signedArea(pts)
@@ -699,7 +702,7 @@ struct StudioScreen: View {
             let by = Double(cur.y) + uout.1 * d
             let cross = uin.0 * uout.1 - uin.1 * uout.0
             nodes.append(ContourNode(x: ax, y: ay, kind: .line, r: 0))
-            nodes.append(ContourNode(x: bx, y: by, kind: cross > 0 ? .ccw : .cw, r: r))
+            nodes.append(ContourNode(x: bx, y: by, kind: cross < 0 ? .ccw : .cw, r: r))
         }
         if nodes.count >= 3 {
             spec.nodes = nodes
@@ -708,7 +711,10 @@ struct StudioScreen: View {
     }
 
     private func chamferOuter(_ c: Double) {
-        let pts = outerPoints()
+        var pts = outerPoints()
+        if pts.count > 3, let f = pts.first, let l = pts.last, hypot(f.x - l.x, f.y - l.y) < 0.01 {
+            pts.removeLast()
+        }
         guard pts.count >= 3, c > 0.01 else { return }
         let n = pts.count
         var nodes: [ContourNode] = []
