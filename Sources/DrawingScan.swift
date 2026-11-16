@@ -119,7 +119,7 @@ enum DrawingScanner {
             rawOutline = contourInfo.points
             outerContour = contourInfo.contour
         } else if let rectInfo = rectInfo {
-            rawOutline = rectInfo.points
+            rawOutline = rectInfo
             outerContour = nil
         } else {
             rawOutline = [
@@ -232,7 +232,7 @@ enum DrawingScanner {
 
     private static func bestOuterContour(_ observations: [VNContoursObservation]) -> (contour: VNContour, points: [CGPoint])? {
         guard let observation = observations.first else { return nil }
-        var best: (VNContour, [CGPoint], Double)?
+        var best: (VNContour, [CGPoint], CGFloat)?
         for c in observation.topLevelContours {
             let p = points(of: c)
             guard p.count > 2 else { continue }
@@ -257,7 +257,7 @@ enum DrawingScanner {
         return (found.0, found.1)
     }
 
-    private static func bestOuterRectangle(_ observations: [VNRectangleObservation]) -> (points: [CGPoint])? {
+    private static func bestOuterRectangle(_ observations: [VNRectangleObservation]) -> [CGPoint]? {
         var best: (VNRectangleObservation, Double)?
         for r in observations {
             let a = Double(r.boundingBox.width * r.boundingBox.height)
