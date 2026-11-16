@@ -70,6 +70,8 @@ struct StudioScreen: View {
     @State private var showCamera = false
     @State private var showPhotoPicker = false
     @State private var photoItem: PhotosPickerItem?
+    @State private var pendingScanImage: UIImage?
+    @State private var showCrop = false
     @State private var scanning = false
     @State private var scanResult: DrawingScanResult?
     @State private var scanError: String?
@@ -187,7 +189,10 @@ struct StudioScreen: View {
         .sheet(isPresented: $showCamera) {
             CameraPicker { image in
                 showCamera = false
-                startScan(image)
+                pendingScanImage = image
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                    showCrop = true
+                }
             }
         }
         .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images)
@@ -200,13 +205,33 @@ struct StudioScreen: View {
                     return
                 }
                 photoItem = nil
-                startScan(image)
+                pendingScanImage = image
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    showCrop = true
+                }
+            }
+        }
+        .sheet(isPresented: $showCrop) {
+            if let image = pendingScanImage {
+                DrawingCropView(
+                    image: image,
+                    onCrop: { cropped in
+                        showCrop = false
+                        pendingScanImage = nil
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            startScan(cropped)
+                        }
+                    },
+                    onCancel: {
+                        showCrop = false
+                        pendingScanImage = nil
+                    })
             }
         }
         .sheet(item: $scanResult) { result in
             DrawingScanPreviewView(
                 result: result,
-                onUse: { adoptScan(result) },
+                onUse: { updated in adoptScan(updated) },
                 onRetry: { showPhotoMenu = true })
         }
         .alert("识别失败", isPresented: Binding(

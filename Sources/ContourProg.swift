@@ -224,8 +224,10 @@ enum ContourGeo {
         guard !nodes.isEmpty else { return out }
         if nodes.count == 1 {
             let n = nodes[0]
+            // 单独一个“直线节点”只是落点，不能当成整圆
+            if n.kind == .line { return out }
             let p = CGPoint(x: n.x, y: n.y)
-            out.append(ContourSeg(p0: p, p1: p, kind: n.kind == .line ? .ccw : n.kind,
+            out.append(ContourSeg(p0: p, p1: p, kind: n.kind,
                                   r: max(n.r, 0.001), full: true))
             return out
         }
