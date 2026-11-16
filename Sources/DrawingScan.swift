@@ -354,8 +354,10 @@ enum DrawingScanner {
             guard !raw.isEmpty else { continue }
 
             if let pair = matchPair(raw) {
-                if pair.0 > 1, pair.1 > 1 {
-                    facts.pair = pair
+                if pair.0 > 1, pair.1 > 1, pair.0 < 2000, pair.1 < 2000 {
+                    if facts.pair == nil || pair.0 * pair.1 > facts.pair!.0 * facts.pair!.1 {
+                        facts.pair = pair
+                    }
                 }
             }
             if let dia = matchOne(raw, pattern: "[ØøΦφ∅]\\s*([0-9]+(?:\\.[0-9]+)?)") {
@@ -492,10 +494,10 @@ enum DrawingScanner {
             guard ar > 0.65, ar < 1.45 else { continue }
             let perimeter = polygonPerimeter(p)
             let circularity = perimeter > 0.001 ? (4 * .pi * area / (perimeter * perimeter)) : 0
-            guard circularity > 0.55 else { continue }
+            guard circularity > 0.65 else { continue }
 
             let dia = (Double(b.width) * scaleX + Double(b.height) * scaleY) / 2
-            guard dia > 1.2, dia < min(length, width) * 0.92 else { continue }
+            guard dia > 2.0, dia < min(length, width) * 0.92 else { continue }
             let x = (Double(b.midX) - Double(outerBox.midX)) * scaleX
             let y = (Double(b.midY) - Double(outerBox.midY)) * scaleY
 
