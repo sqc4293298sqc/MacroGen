@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import PhotosUI
 
 /// 建模编程（iOS 对齐安卓四步）：草图 → 建模 → 出图 → 加工
 struct StudioScreen: View {
@@ -63,6 +64,15 @@ struct StudioScreen: View {
     @State private var showToast = false
     @State private var arrayCount = 6
     @State private var arrayRadius = 36.0
+
+    // 拍照图纸
+    @State private var showPhotoMenu = false
+    @State private var showCamera = false
+    @State private var showPhotoPicker = false
+    @State private var photoItem: PhotosPickerItem?
+    @State private var scanning = false
+    @State private var scanResult: DrawingScanResult?
+    @State private var scanError: String?
 
     private enum DimTarget: Equatable {
         case none, rectL, rectW, rectR, circleD, slotL, slotW
@@ -167,6 +177,45 @@ struct StudioScreen: View {
         .sheet(isPresented: $showOpSheet) {
             OpParamsSheet(spec: $spec, op: opSheetName)
         }
+        .confirmationDialog("拍照图纸", isPresented: $showPhotoMenu, titleVisibility: .visible) {
+            Button("拍照") { openCamera() }
+            Button("从相册选") { showPhotoPicker = true }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("拍正视图/俯视图，图上带尺寸或比例尺最准；识别后请先核对尺寸")
+        }
+        .sheet(isPresented: $showCamera) {
+            CameraPicker { image in
+                showCamera = false
+                startScan(image)
+            }
+        }
+        .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images)
+        .onChange(of: photoItem) { newItem in
+            guard let item = newItem else { return }
+            Task { @MainActor in
+                guard let data = try? await item.loadTransferable(type: Data.self),
+                      let image = UIImage(data: data) else {
+                    scanError = "相册图片读取失败，换一张试试"
+                    return
+                }
+                startScan(image)
+            }
+        }
+        .sheet(item: $scanResult) { result in
+            DrawingScanPreviewView(
+                result: result,
+                onUse: { adoptScan(result) },
+                onRetry: { showPhotoMenu = true })
+        }
+        .alert("识别失败", isPresented: Binding(
+            get: { scanError != nil },
+            set: { if !$0 { scanError = nil } }
+        )) {
+            Button("知道了") { scanError = nil }
+        } message: {
+            Text(scanError ?? "")
+        }
         .alert("改尺寸", isPresented: $showDimEdit) {
             TextField("数值", text: $dimEditText).keyboardType(.decimalPad)
             Button("确定") { applyDimEdit() }
@@ -184,6 +233,24 @@ struct StudioScreen: View {
                     .background(Capsule().fill(Color.black.opacity(0.78)))
                     .padding(.bottom, 58)
                     .transition(.opacity)
+            }
+        }
+        .overlay {
+            if scanning {
+                ZStack {
+                    Color.black.opacity(0.25).ignoresSafeArea()
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("正在识别图纸：轮廓 / 尺寸 / 圆孔")
+                            .font(.system(size: 14, weight: .semibold))
+                        Text("请稍等，识别完先核对尺寸再采用")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(22)
+                    .background(.ultraThinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                }
             }
         }
     }
@@ -232,6 +299,9 @@ struct StudioScreen: View {
             .opacity(redoStack.isEmpty ? 0.35 : 1)
 
             Menu {
+                Button { showPhotoMenu = true } label: {
+                    Label("拍照图纸", systemImage: "camera.viewfinder")
+                }
                 Button("适合窗口") { setView(0.78, 0.62) }
                 Button("完成草图") { step = 1 }
                 Button("清空草图", role: .destructive) { clearSketch() }
@@ -344,6 +414,7 @@ struct StudioScreen: View {
     private var sketchLeftRail: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 3) {
+                railButton("拍图", "camera.viewfinder", active: false) { showPhotoMenu = true }
                 railButton("选择", "cursorarrow", active: sketchTool.isEmpty && !drawInner) {
                     sketchTool = ""
                     refPoints.removeAll()
@@ -513,7 +584,7 @@ struct StudioScreen: View {
                 }
             }
         }
-        .frame(width: 300)
+        .frame(width: 268)
         .frame(maxHeight: 540)
         .background(RoundedRectangle(cornerRadius: 18).fill(Color.white.opacity(0.97)))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white, lineWidth: 1))
@@ -738,6 +809,46 @@ struct StudioScreen: View {
             )
         }
         .buttonStyle(.plain)
+    }
+
+    private func openCamera() {
+        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+            scanError = "这台设备没有可用相机，请从相册选图纸"
+            return
+        }
+        showPhotoMenu = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            showCamera = true
+        }
+    }
+
+    private func startScan(_ image: UIImage) {
+        scanError = nil
+        scanning = true
+        Task { @MainActor in
+            do {
+                let result = try await DrawingScanner.scan(image)
+                scanning = false
+                scanResult = result
+            } catch {
+                scanning = false
+                scanError = error.localizedDescription
+            }
+        }
+    }
+
+    private func adoptScan(_ result: DrawingScanResult) {
+        pushUndo()
+        spec = result.spec
+        step = 0
+        selectedNode = nil
+        selectedTreeID = nil
+        modelPanel = .none
+        sketchSidePanel = .dim
+        sketchTool = ""
+        refPoints.removeAll()
+        drawInner = false
+        showToastView("已采用识别结果：\(result.summary)")
     }
 
     private func showToastView(_ text: String) {
