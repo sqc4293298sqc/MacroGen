@@ -223,11 +223,11 @@ enum PartProg {
                 case .spiral:
                     out.append("\(f.name.isEmpty ? "孔" : f.name) Ø\(ncf(f.dia)) · 螺旋铣　T\(p.holeTool) D\(ncf(p.holeDia))")
                 case .g81:
-                    out.append("孔 Ø\(ncf(f.dia)) · 钻孔 G81　T\(p.holeTool) D\(ncf(f.dia))")
+                    out.append("\(f.name.isEmpty ? "孔" : f.name) Ø\(ncf(f.dia)) · 钻孔 G81　T\(p.holeTool) D\(ncf(f.dia))")
                 case .g83:
-                    out.append("孔 Ø\(ncf(f.dia)) · 钻孔 G83　T\(p.holeTool) D\(ncf(f.dia))")
+                    out.append("\(f.name.isEmpty ? "孔" : f.name) Ø\(ncf(f.dia)) · 钻孔 G83　T\(p.holeTool) D\(ncf(f.dia))")
                 case .tap:
-                    out.append("孔 Ø\(ncf(f.dia)) · 攻丝 G84　T\(p.tapTool) P\(ncf(p.tapPitch))")
+                    out.append("\(f.name.isEmpty ? "孔" : f.name) Ø\(ncf(f.dia)) · 攻丝 G84　T\(p.tapTool) P\(ncf(p.tapPitch))")
                 }
             } else if p.doPocket && f.kind == .rectPocket {
                 out.append("方腔 \(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth)) · 型腔铣　T\(p.pocketTool) D\(ncf(p.pocketDia))")

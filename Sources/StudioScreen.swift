@@ -1128,6 +1128,19 @@ struct StudioScreen: View {
                 .font(.caption).foregroundStyle(.secondary)
         }
 
+        Section("特征清单") {
+            HStack {
+                Text("草图 \(spec.nodes.count) 段").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Text("外形 · 孔\(spec.feats.filter { $0.kind == .hole }.count) · 型腔\(spec.feats.filter { $0.kind != .hole }.count)")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if spec.feats.isEmpty {
+                Text("还没有特征；下面加孔/圆腔/方腔，或草图里加内轮廓。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+
         Section("特征（孔 / 型腔）") {
             ForEach($spec.feats) { $f in
                 VStack(alignment: .leading, spacing: 6) {
