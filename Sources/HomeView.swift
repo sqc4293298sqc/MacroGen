@@ -9,11 +9,11 @@ struct HomeView: View {
     @State private var showImport = false
 
     private let prog: [(String, String, MachiningMode)] = [
-        ("型腔铣", "square.dashed", .pocket),
-        ("平面铣", "rectangle.split.3x1", .face),
+        ("方形型腔", "square.dashed", .pocket),
+        ("铣飞面", "rectangle.split.3x1", .face),
         ("螺旋铣", "circle.hexagongrid", .spiral),
-        ("键槽", "capsule", .key),
-        ("外方形", "square.on.square", .outer),
+        ("铣键槽", "capsule", .key),
+        ("只铣外方形", "square.on.square", .outer),
         ("锥孔", "triangle", .taper),
         ("内圆倒角", "circle.circle", .innerChamfer),
         ("外圆倒角", "circle", .odCham)
@@ -35,7 +35,7 @@ struct HomeView: View {
                     }
 
                     NavigationLink {
-                        DrawScreen()
+                        PartScreen()
                     } label: {
                         Tile(title: "绘图编程", icon: "scribble.variable",
                              tint: Color(red: 1.0, green: 0.42, blue: 0.10))

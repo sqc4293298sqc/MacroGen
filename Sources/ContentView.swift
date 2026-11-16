@@ -50,15 +50,6 @@ struct ContentView: View {
 
     var body: some View {
             Form {
-                Section("加工类型") {
-                    Picker("类型", selection: $spec.mode) {
-                        ForEach(MachiningMode.allCases) { m in
-                            Text(m.rawValue).tag(m)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                }
-
                 Section("刀路示意") {
                     Image(toolpathImage)
                         .resizable()
