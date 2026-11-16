@@ -75,7 +75,7 @@ enum DrawingScanner {
     }
 
     private static func scanSync(_ image: UIImage) throws -> DrawingScanResult {
-        let prepared = normalizedImage(image, maxDimension: 2000)
+        let prepared = prepare(image, maxDimension: 2000)
         guard let cg = prepared.cgImage else { throw DrawingScanError.badImage }
 
         let handler = VNImageRequestHandler(cgImage: cg, orientation: .up, options: [:])
@@ -202,6 +202,8 @@ enum DrawingScanner {
             if ocr.pair == nil { w.append(ocr.numbers.isEmpty ? "没读到尺寸，按 100 mm 估算，请核对" : "只读到一个尺寸，另一个按图比例推算") }
             if ocr.thickness == nil { w.append("厚度没读到，按 10 mm 生成，请核对") }
             if holes.feats.isEmpty && !ocr.holeDias.isEmpty { w.append("读到孔径标注，但没识别到圆的闭合轮廓，孔请手动加") }
+            if holes.feats.count >= 6 { w.append("识别到较多孔，可能是多视图/尺寸文字误判；请逐个核对，错的可在草图里删") }
+            if ocr.pair == nil && ocr.numbers.count >= 8 { w.append("图上尺寸很多，自动选的不一定是总尺寸；请直接改长/宽核对") }
             w.append("照片尽量正对图纸拍，斜拍/反光/手写标注会影响精度")
             return w
         }()
@@ -211,6 +213,7 @@ enum DrawingScanner {
             + (outerContour == nil ? 0 : 0.25)
             + (ocr.pair == nil ? 0 : 0.16)
             + (holes.feats.isEmpty ? 0 : 0.08)
+            + (holes.feats.count >= 6 ? -0.10 : 0)
             + (geometryFallback ? -0.15 : 0))
 
         return DrawingScanResult(
@@ -531,7 +534,7 @@ enum DrawingScanner {
 
     // MARK: - 图像
 
-    private static func normalizedImage(_ image: UIImage, maxDimension: CGFloat) -> UIImage {
+    static func prepare(_ image: UIImage, maxDimension: CGFloat = 2000) -> UIImage {
         let oriented = image.fixedOrientation()
         let w = max(oriented.size.width, 1)
         let h = max(oriented.size.height, 1)
@@ -543,6 +546,22 @@ enum DrawingScanner {
         return renderer.image { _ in
             oriented.draw(in: CGRect(origin: .zero, size: size))
         }
+    }
+
+    /// 按 UI 归一化坐标裁图（原点左上角），裁完再交给识别器缩放。
+    static func crop(_ image: UIImage, normalizedRect: CGRect) -> UIImage? {
+        let oriented = image.fixedOrientation()
+        guard let cg = oriented.cgImage else { return nil }
+        let w = CGFloat(cg.width), h = CGFloat(cg.height)
+        var r = CGRect(
+            x: normalizedRect.minX * w,
+            y: normalizedRect.minY * h,
+            width: normalizedRect.width * w,
+            height: normalizedRect.height * h
+        ).integral
+        r = r.intersection(CGRect(x: 0, y: 0, width: w, height: h))
+        guard r.width > 2, r.height > 2, let cropped = cg.cropping(to: r) else { return nil }
+        return UIImage(cgImage: cropped, scale: 1, orientation: .up)
     }
 }
 

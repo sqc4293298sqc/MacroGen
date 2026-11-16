@@ -4,9 +4,22 @@ import UIKit
 /// 拍照图纸识别结果预览：图上叠尺寸/孔位标注，下面列出可核对尺寸。
 struct DrawingScanPreviewView: View {
     let result: DrawingScanResult
-    var onUse: () -> Void
+    var onUse: (DrawingScanResult) -> Void
     var onRetry: () -> Void
     @Environment(\.dismiss) private var dismiss
+
+    @State private var lengthText: String
+    @State private var widthText: String
+    @State private var heightText: String
+
+    init(result: DrawingScanResult, onUse: @escaping (DrawingScanResult) -> Void, onRetry: @escaping () -> Void) {
+        self.result = result
+        self.onUse = onUse
+        self.onRetry = onRetry
+        _lengthText = State(initialValue: ncf(result.spec.rectL))
+        _widthText = State(initialValue: ncf(result.spec.rectW))
+        _heightText = State(initialValue: ncf(result.spec.height))
+    }
 
     var body: some View {
         NavigationStack {
@@ -22,10 +35,13 @@ struct DrawingScanPreviewView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("尺寸核对")
                             .font(.system(size: 15, weight: .semibold))
+                        Text("识别错了可直接改长/宽/厚；孔位、轮廓会按比例一起缩放。")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
                         HStack(spacing: 10) {
-                            metric("长", ncf(result.spec.rectL))
-                            metric("宽", ncf(result.spec.rectW))
-                            metric("厚", ncf(result.spec.height))
+                            editMetric("长", $lengthText)
+                            editMetric("宽", $widthText)
+                            editMetric("厚", $heightText)
                         }
                         if !result.spec.feats.isEmpty {
                             ForEach(result.spec.feats) { f in
@@ -80,7 +96,7 @@ struct DrawingScanPreviewView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("采用") {
-                        onUse()
+                        use()
                         dismiss()
                     }
                     .fontWeight(.semibold)
@@ -98,7 +114,7 @@ struct DrawingScanPreviewView: View {
                     .buttonStyle(.bordered)
 
                     Button {
-                        onUse()
+                        use()
                         dismiss()
                     } label: {
                         Label("采用并进草图", systemImage: "checkmark.circle.fill")
@@ -195,15 +211,71 @@ struct DrawingScanPreviewView: View {
             .clipShape(Capsule())
     }
 
-    private func metric(_ name: String, _ value: String) -> some View {
-        VStack(spacing: 2) {
+    private func editMetric(_ name: String, _ text: Binding<String>) -> some View {
+        VStack(spacing: 3) {
             Text(name).font(.system(size: 11)).foregroundColor(.secondary)
-            Text(value + " mm").font(.system(size: 15, weight: .semibold)).monospacedDigit()
+            TextField("", text: text)
+                .keyboardType(.decimalPad)
+                .multilineTextAlignment(.center)
+                .font(.system(size: 14, weight: .semibold))
+                .monospacedDigit()
+                .textFieldStyle(.roundedBorder)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
         .background(Color(.tertiarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 9))
+    }
+
+    private func use() {
+        var spec = result.spec
+        let oldL = max(spec.rectL, 0.001)
+        let oldW = max(spec.rectW, 0.001)
+        let newL = max(Double(lengthText) ?? oldL, 0.1)
+        let newW = max(Double(widthText) ?? oldW, 0.1)
+        let newH = max(Double(heightText) ?? spec.height, 0.1)
+        let sx = newL / oldL
+        let sy = newW / oldW
+
+        spec.rectL = newL
+        spec.rectW = newW
+        spec.height = newH
+
+        if spec.template == .free {
+            spec.nodes = spec.nodes.map { n in
+                var n = n
+                n.x *= sx
+                n.y *= sy
+                return n
+            }
+        }
+        for i in spec.feats.indices {
+            spec.feats[i].x *= sx
+            spec.feats[i].y *= sy
+            if spec.feats[i].kind == .hole {
+                spec.feats[i].dia *= min(sx, sy)
+                spec.feats[i].depth = newH + 1
+            } else {
+                spec.feats[i].w *= sx
+                spec.feats[i].h *= sy
+            }
+        }
+        for i in spec.innerLoops.indices {
+            spec.innerLoops[i].cx *= sx
+            spec.innerLoops[i].cy *= sy
+            spec.innerLoops[i].rectL *= sx
+            spec.innerLoops[i].rectW *= sy
+            spec.innerLoops[i].circleD *= min(sx, sy)
+            spec.innerLoops[i].slotL *= sx
+            spec.innerLoops[i].slotW *= sy
+            spec.innerLoops[i].depth = min(spec.innerLoops[i].depth, newH)
+        }
+
+        var updated = result
+        updated.spec = spec
+        updated.summary = "外形 \(ncf(newL)) × \(ncf(newW)) mm · 厚 \(ncf(newH)) mm · 孔 \(spec.feats.count) 个"
+        updated.scaleNote = "已按你输入的尺寸修正；孔位和轮廓按比例缩放"
+        onUse(updated)
     }
 
     private func segmentLengths(_ nodes: [ContourNode]) -> String {
