@@ -43,12 +43,13 @@ struct StudioScreen: View {
             .padding(.top, 8)
             .padding(.bottom, 4)
 
-            Form {
-                switch step {
-                case 0: sketchPage
-                case 1: modelPage
-                case 2: drawingPage
-                default: camPage
+            if step == 0 {
+                sketchPage
+            } else if step == 1 {
+                modelPage
+            } else {
+                Form {
+                    if step == 2 { drawingPage } else { camPage }
                 }
             }
         }
@@ -68,103 +69,187 @@ struct StudioScreen: View {
     // MARK: - 1 草图
 
     private var sketchPage: some View {
-        Group {
-            Section("草图工具") {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        chip("矩形", spec.template == .rect) { spec.template = .rect }
-                        chip("圆", spec.template == .circle) { spec.template = .circle }
-                        chip("腰形槽", spec.template == .slot) { spec.template = .slot }
-                        chip("自由轮廓", spec.template == .free) { spec.template = .free }
-                        chip("按矩形填入", false) { fillRectNodes() }
-                        chip("加点", false) { addNode() }
+        VStack(spacing: 0) {
+            GeometryReader { geo in
+                Canvas { context, size in
+                    drawSketch(context: context, size: size)
+                }
+                .contentShape(Rectangle())
+                .highPriorityGesture(
+                    DragGesture(minimumDistance: 1)
+                        .onChanged { value in moveSketchNode(value.location, size: geo.size) }
+                        .onEnded { _ in dragNode = nil }
+                )
+                .simultaneousGesture(SpatialTapGesture().onEnded { v in
+                    if sketchTool == "直线" {
+                        addPointAt(v.location, size: geo.size)
                     }
-                    .padding(.vertical, 2)
-                }
+                })
             }
+            .frame(height: 320)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 14)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
 
-            Section("画布 · 尺寸可直接核对") {
-                GeometryReader { geo in
-                    Canvas { context, size in
-                        drawSketch(context: context, size: size)
+            Form {
+                sketchControls
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var sketchControls: some View {
+        Section("草图工具 · 绘制") {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 7) {
+                    chip("直线", spec.template == .free) { makeLine() }
+                    chip("矩形", spec.template == .rect) { spec.template = .rect }
+                    chip("中心矩形", spec.template == .rect) { spec.template = .rect }
+                    chip("圆角矩形", spec.template == .rect && spec.rectR > 0) { spec.template = .rect; spec.rectR = 8 }
+                    chip("圆", spec.template == .circle) { spec.template = .circle }
+                    chip("椭圆", false) { makeEllipse() }
+                    chip("多边形", false) { makePolygon(6) }
+                    chip("五角星", false) { makeStar() }
+                    chip("样条", false) { makeSpline() }
+                    chip("腰形槽", spec.template == .slot) { spec.template = .slot }
+                    chip("自由", spec.template == .free) { spec.template = .free; if spec.nodes.isEmpty { fillRectNodes() } }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+
+        Section("草图工具 · 编辑") {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 7) {
+                    chip("内圆", false) { addInner(.circle) }
+                    chip("内方", false) { addInner(.rect) }
+                    chip("镜像", false) { mirrorOuter() }
+                    chip("偏置", false) { offsetOuter(5) }
+                    chip("阵列", false) { arrayInner() }
+                    chip("旋转零件", false) { showRotate = true }
+                    chip("缩放零件", false) { showScale = true }
+                    chip("清空内轮廓", false) { spec.innerLoops.removeAll() }
+                }
+                .padding(.vertical, 2)
+            }
+            Text("内圆/内方会叠在外轮廓里，建模时自动当挖穿或型腔；外轮廓和每个内轮廓都能单独改尺寸、深度。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+
+        Section("外形尺寸（拉伸）") {
+            switch spec.template {
+            case .rect:
+                numRow("长 L (mm)", $spec.rectL)
+                numRow("宽 W (mm)", $spec.rectW)
+                numRow("四角 R（0=直角）", $spec.rectR)
+            case .circle:
+                numRow("直径 D (mm)", $spec.circleD)
+            case .slot:
+                numRow("槽总长 L（含圆弧）", $spec.slotL)
+                numRow("槽宽 W", $spec.slotW)
+            case .free:
+                EmptyView()
+            }
+            numRow("零件厚度 H（拉伸高度）", $spec.height)
+            numRow("顶面余量 (mm)", $spec.topStock)
+        }
+
+        Section("内轮廓（和外形叠在同一张草图）") {
+            if spec.innerLoops.isEmpty {
+                Text("还没有内轮廓。点上面的「内圆」或「内方」，就会在外形里加一个可挖的孔/型腔。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            ForEach($spec.innerLoops) { $l in
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack {
+                        TextField("名称", text: $l.name)
+                            .font(.system(size: 13, weight: .semibold))
+                            .textFieldStyle(.roundedBorder)
+                        Picker("", selection: $l.template) {
+                            ForEach(ContourTemplate.allCases) { t in Text(t.rawValue).tag(t) }
+                        }
+                        .labelsHidden()
+                        Button {
+                            spec.innerLoops.removeAll { $0.id == l.id }
+                        } label: {
+                            Image(systemName: "trash").foregroundStyle(.red)
+                        }
                     }
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 1)
-                            .onChanged { value in moveSketchNode(value.location, size: geo.size) }
-                            .onEnded { _ in dragNode = nil }
-                    )
-                }
-                .frame(height: 330)
-                .background(Color.white)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                Text("橙色是轮廓，蓝色尺寸是长度/角度；自由轮廓可直接拖节点，右侧数字改尺寸")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("外形尺寸") {
-                switch spec.template {
-                case .rect:
-                    numRow("长 L (mm)", $spec.rectL)
-                    numRow("宽 W (mm)", $spec.rectW)
-                    numRow("四角 R（0=直角）", $spec.rectR)
-                case .circle:
-                    numRow("直径 D (mm)", $spec.circleD)
-                case .slot:
-                    numRow("槽总长 L（含圆弧）", $spec.slotL)
-                    numRow("槽宽 W", $spec.slotW)
-                case .free:
-                    EmptyView()
-                }
-                numRow("零件厚度 H (mm)", $spec.height)
-            }
-
-            if spec.template == .free {
-                Section("自由轮廓节点（末点自动连回起点）") {
-                    ForEach(spec.nodes.indices, id: \.self) { i in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text("点 \(i + 1)").font(.system(size: 13, weight: .semibold))
-                                Spacer()
-                                if spec.nodes.count > 1 {
-                                    Button {
-                                        spec.nodes.remove(at: i)
-                                    } label: {
-                                        Image(systemName: "minus.circle").foregroundStyle(.red)
-                                    }
-                                }
-                            }
-                            HStack(spacing: 6) {
-                                miniNum("X", Binding(get: { spec.nodes[i].x }, set: { spec.nodes[i].x = $0 }))
-                                miniNum("Y", Binding(get: { spec.nodes[i].y }, set: { spec.nodes[i].y = $0 }))
-                                Picker("", selection: Binding(get: { spec.nodes[i].kind }, set: { spec.nodes[i].kind = $0 })) {
-                                    ForEach(ContourKind.allCases) { k in
-                                        Text(k.rawValue).tag(k)
-                                    }
-                                }
-                                .labelsHidden()
-                                if spec.nodes[i].kind != .line {
-                                    miniNum("R", Binding(get: { spec.nodes[i].r }, set: { spec.nodes[i].r = $0 }))
-                                }
-                            }
+                    HStack(spacing: 6) {
+                        miniNum("X", $l.cx)
+                        miniNum("Y", $l.cy)
+                        switch l.template {
+                        case .circle:
+                            miniNum("Ø", $l.circleD)
+                        case .rect:
+                            miniNum("长", $l.rectL)
+                            miniNum("宽", $l.rectW)
+                            miniNum("R", $l.rectR)
+                        case .slot:
+                            miniNum("长", $l.slotL)
+                            miniNum("宽", $l.slotW)
+                        case .free:
+                            Text("自由轮廓在下方的节点里编辑").font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    Toggle("挖穿（通孔/通腔）", isOn: $l.through)
+                    if !l.through {
+                        HStack {
+                            Text("挖深").font(.system(size: 12))
+                            TextField("0", value: $l.depth, format: .number)
+                                .keyboardType(.decimalPad).multilineTextAlignment(.trailing)
+                                .frame(width: 70)
+                            Text("mm").font(.caption).foregroundStyle(.secondary)
+                            Spacer()
                         }
                     }
                 }
             }
+        }
 
-            Section {
+        if spec.template == .free {
+            Section("自由轮廓节点（末点自动连回起点）") {
+                ForEach(spec.nodes.indices, id: \.self) { i in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("点 \(i + 1)").font(.system(size: 13, weight: .semibold))
+                            Spacer()
+                            if spec.nodes.count > 1 {
+                                Button {
+                                    spec.nodes.remove(at: i)
+                                } label: {
+                                    Image(systemName: "minus.circle").foregroundStyle(.red)
+                                }
+                            }
+                        }
+                        HStack(spacing: 6) {
+                            miniNum("X", Binding(get: { spec.nodes[i].x }, set: { spec.nodes[i].x = $0 }))
+                            miniNum("Y", Binding(get: { spec.nodes[i].y }, set: { spec.nodes[i].y = $0 }))
+                            Picker("", selection: Binding(get: { spec.nodes[i].kind }, set: { spec.nodes[i].kind = $0 })) {
+                                ForEach(ContourKind.allCases) { k in
+                                    Text(k.rawValue).tag(k)
+                                }
+                            }
+                            .labelsHidden()
+                            if spec.nodes[i].kind != .line {
+                                miniNum("R", Binding(get: { spec.nodes[i].r }, set: { spec.nodes[i].r = $0 }))
+                            }
+                        }
+                    }
+                }
                 Button {
-                    spec.template = .free
-                    fillRectNodes()
+                    addNode()
                 } label: {
-                    Label("把当前外形转成可拖动轮廓", systemImage: "scribble")
+                    Label("加节点", systemImage: "plus.circle")
                 }
             }
         }
     }
 
     @State private var dragNode: Int? = nil
+    @State private var sketchTool: String = ""
 
     private func moveSketchNode(_ loc: CGPoint, size: CGSize) {
         guard spec.template == .free, !spec.nodes.isEmpty else { return }
@@ -230,6 +315,37 @@ struct StudioScreen: View {
             }
         }
         ctx.stroke(path, with: .color(.orange), lineWidth: 2)
+
+        // 同一张草图上的内轮廓（挖孔 / 型腔）
+        for l in spec.innerLoops {
+            let d = PartProg.drawForLoop(l, spec, depth: l.through ? spec.height + 1 : l.depth,
+                                         dia: max(spec.pocketDia, 1), hNo: spec.pocketTool)
+            let segs = ContourGeo.segments(ContourGeo.buildNodes(d))
+            var lp = Path()
+            if let f = segs.first {
+                lp.move(to: P(f.p0.x + l.cx, f.p0.y + l.cy))
+            }
+            for sg in segs {
+                if sg.isArc {
+                    let flat = ContourGeo.flatten([sg], arcStep: 24)
+                    for q in flat.dropFirst() { lp.addLine(to: P(q.x + l.cx, q.y + l.cy)) }
+                } else {
+                    lp.addLine(to: P(sg.p1.x + l.cx, sg.p1.y + l.cy))
+                }
+            }
+            ctx.stroke(lp, with: .color(.red),
+                       style: StrokeStyle(lineWidth: 1.6, dash: [5, 4]))
+            let c = P(l.cx, l.cy)
+            let text: String
+            switch l.template {
+            case .circle: text = "Ø" + ncf(l.circleD)
+            case .rect: text = ncf(l.rectL) + "×" + ncf(l.rectW)
+            case .slot: text = ncf(l.slotL) + "×" + ncf(l.slotW)
+            case .free: text = l.name
+            }
+            ctx.draw(Text(text).font(.system(size: 9, weight: .semibold)).foregroundColor(.red),
+                     at: CGPoint(x: c.x, y: c.y - 10))
+        }
 
         // 自由轮廓节点
         if spec.template == .free {
@@ -331,17 +447,116 @@ struct StudioScreen: View {
         spec.nodes.append(ContourNode(x: last.x + 20, y: last.y))
     }
 
+    private func makeLine() {
+        sketchTool = "直线"
+        spec.nodes = []
+        spec.template = .free
+    }
+
+    private func addPointAt(_ loc: CGPoint, size: CGSize) {
+        let b = sketchBBox()
+        let k = sketchScale(b: b, size: size)
+        let x = b.midX + (Double(loc.x) - Double(size.width) / 2) / k
+        let y = b.midY - (Double(loc.y) - Double(size.height) / 2) / k
+        if spec.nodes.isEmpty {
+            spec.nodes.append(ContourNode(x: x, y: y))
+        } else if let last = spec.nodes.last, hypot(x - last.x, y - last.y) > 0.2 {
+            spec.nodes.append(ContourNode(x: x, y: y))
+        }
+    }
+
+    private func makeEllipse() {
+        let rx = max(spec.rectL, 20) / 2
+        let ry = max(spec.rectW, 12) / 2
+        spec.nodes = (0..<28).map { i in
+            let a = Double(i) / 28 * 2 * Double.pi
+            return ContourNode(x: rx * cos(a), y: ry * sin(a))
+        }
+        spec.template = .free
+    }
+
+    private func makePolygon(_ n: Int) {
+        let r = max(spec.circleD, 20) / 2
+        spec.nodes = (0..<n).map { i in
+            let a = Double(i) / Double(n) * 2 * Double.pi + Double.pi / 2
+            return ContourNode(x: r * cos(a), y: r * sin(a))
+        }
+        spec.template = .free
+    }
+
+    private func makeStar() {
+        let R = max(spec.circleD, 20) / 2
+        let r = R * 0.42
+        spec.nodes = (0..<10).map { i in
+            let a = Double(i) / 10 * 2 * Double.pi + Double.pi / 2
+            let rr = i % 2 == 0 ? R : r
+            return ContourNode(x: rr * cos(a), y: rr * sin(a))
+        }
+        spec.template = .free
+    }
+
+    private func makeSpline() {
+        let R = max(spec.circleD, 20) / 2
+        spec.nodes = (0..<16).map { i in
+            let a = Double(i) / 16 * 2 * Double.pi
+            let rr = R * (1 + 0.16 * sin(3 * a))
+            return ContourNode(x: rr * cos(a), y: rr * sin(a))
+        }
+        spec.template = .free
+    }
+
+    private func addInner(_ t: ContourTemplate) {
+        let b = PartProg.bbox(spec)
+        var l = SketchLoop(template: t)
+        l.cx = Double(b.midX)
+        l.cy = Double(b.midY)
+        if t == .rect {
+            l.rectL = min(30, max(8, Double(b.width) * 0.3))
+            l.rectW = min(20, max(6, Double(b.height) * 0.3))
+        } else {
+            l.circleD = min(20, max(6, min(Double(b.width), Double(b.height)) * 0.25))
+        }
+        spec.innerLoops.append(l)
+    }
+
+    private func mirrorOuter() {
+        if spec.template != .free { fillRectNodes() }
+        for i in spec.nodes.indices { spec.nodes[i].x = -spec.nodes[i].x }
+    }
+
+    private func offsetOuter(_ d: Double) {
+        if spec.template != .free { fillRectNodes() }
+        let b = sketchBBox()
+        for i in spec.nodes.indices {
+            let dx = spec.nodes[i].x - b.midX
+            let dy = spec.nodes[i].y - b.midY
+            let len = max(hypot(dx, dy), 0.001)
+            spec.nodes[i].x += dx / len * d
+            spec.nodes[i].y += dy / len * d
+        }
+    }
+
+    private func arrayInner() {
+        let base = spec.innerLoops
+        for l in base {
+            var n = l
+            n.id = UUID()
+            n.cx += 35
+            spec.innerLoops.append(n)
+        }
+    }
+
     // MARK: - 2 建模
 
     private var modelPage: some View {
-        Group {
-            Section("建模视图（手指 360° 旋转 / 缩放）") {
-                GeometryReader { geo in
-                    Canvas { context, size in
-                        drawModel(context: context, size: size)
-                    }
-                    .contentShape(Rectangle())
-                    .simultaneousGesture(DragGesture(minimumDistance: 2)
+        VStack(spacing: 0) {
+            GeometryReader { geo in
+                Canvas { context, size in
+                    drawModel(context: context, size: size)
+                }
+                .contentShape(Rectangle())
+                .highPriorityGesture(
+                    DragGesture(minimumDistance: 2)
                         .onChanged { g in
                             guard !tapOnModel else { return }
                             let dx = Double(g.translation.width - lastDrag.width)
@@ -351,96 +566,122 @@ struct StudioScreen: View {
                             pitch = min(1.55, max(-1.55, pitch - dy * 0.010))
                         }
                         .onEnded { _ in lastDrag = .zero }
-                    )
-                    .simultaneousGesture(MagnificationGesture()
-                        .onChanged { v in zoom = min(3.0, max(0.4, zoomBase * Double(v))) }
-                        .onEnded { _ in zoomBase = zoom }
-                    )
-                    .simultaneousGesture(SpatialTapGesture().onEnded { v in
-                        guard tapOnModel else { return }
-                        let xy = modelXY(at: v.location, size: geo.size)
-                        ptrX = xy.0; ptrY = xy.1; hasPtr = true
-                    })
-                    .onTapGesture(count: 2) {
-                        yaw = 0.78; pitch = 0.62; zoom = 1; zoomBase = 1
-                    }
+                )
+                .simultaneousGesture(MagnificationGesture()
+                    .onChanged { v in zoom = min(3.0, max(0.4, zoomBase * Double(v))) }
+                    .onEnded { _ in zoomBase = zoom }
+                )
+                .simultaneousGesture(SpatialTapGesture().onEnded { v in
+                    guard tapOnModel else { return }
+                    let xy = modelXY(at: v.location, size: geo.size)
+                    ptrX = xy.0; ptrY = xy.1; hasPtr = true
+                })
+                .onTapGesture(count: 2) {
+                    yaw = 0.78; pitch = 0.62; zoom = 1; zoomBase = 1
                 }
-                .frame(height: 360)
-                .background(Color.white)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .frame(height: 400)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 14)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
 
-                HStack(spacing: 5) {
+            Form {
+                modelControls
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var modelControls: some View {
+        Section("视角") {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
                     viewChip("等轴") { setView(0.78, 0.62) }
                     viewChip("俯视") { setView(0, 1.5) }
                     viewChip("正视") { setView(0, 0) }
                     viewChip("右视") { setView(1.5708, 0) }
                     viewChip("仰视") { setView(0, -1.5) }
-                    viewChip("复位") { yaw = 0.78; pitch = 0.62; zoom = 1; zoomBase = 1 }
+                    viewChip("适合窗口") { setView(0.78, 0.62) }
                 }
+                .padding(.vertical, 2)
             }
+            Text("画布已独立，手指左右拖可一直转（360°不限），上下翻到仰视；双指缩放，不再带着页面上下跑。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
 
-            Section("指针 / 加特征") {
-                Toggle("点图上顶面取 XY", isOn: $tapOnModel)
-                HStack {
-                    miniNum("X", $ptrX)
-                    miniNum("Y", $ptrY)
-                    Button("用这个点加孔") {
-                        addFeat(.hole)
-                    }
+        Section("指针 / 加特征") {
+            Toggle("点图上顶面取 XY", isOn: $tapOnModel)
+            HStack {
+                miniNum("X", $ptrX)
+                miniNum("Y", $ptrY)
+                Button("用这个点加孔") { addFeat(.hole) }
                     .font(.system(size: 12, weight: .semibold))
-                }
-                Text(hasPtr ? "当前指针 X\(ncf(ptrX)) Y\(ncf(ptrY))" : "还没落点：打开上面的开关，再点一下零件顶面")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
+            Text(hasPtr ? "当前指针 X\(ncf(ptrX)) Y\(ncf(ptrY))" : "还没落点：打开上面的开关，再点一下零件顶面")
+                .font(.caption).foregroundStyle(.secondary)
+        }
 
-            Section("特征（孔 / 型腔）") {
-                ForEach($spec.feats) { $f in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Picker("", selection: $f.kind) {
-                                ForEach(PartFeatKind.allCases) { k in Text(k.rawValue).tag(k) }
-                            }
-                            .labelsHidden()
-                            Spacer()
-                            Button {
-                                spec.feats.removeAll { $0.id == f.id }
-                            } label: {
-                                Image(systemName: "trash").foregroundStyle(.red)
-                            }
+        Section("特征（孔 / 型腔）") {
+            ForEach($spec.feats) { $f in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Picker("", selection: $f.kind) {
+                            ForEach(PartFeatKind.allCases) { k in Text(k.rawValue).tag(k) }
                         }
-                        HStack(spacing: 6) {
-                            miniNum("X", $f.x)
-                            miniNum("Y", $f.y)
-                            miniNum("Ø", $f.dia)
-                            miniNum("深", $f.depth)
+                        .labelsHidden()
+                        Spacer()
+                        Button {
+                            spec.feats.removeAll { $0.id == f.id }
+                        } label: {
+                            Image(systemName: "trash").foregroundStyle(.red)
                         }
-                        Text(f.kind == .hole ? "Ø\(ncf(f.dia)) 通孔"
-                             : "Ø\(ncf(f.dia)) 深\(ncf(f.depth))")
-                            .font(.caption2).foregroundStyle(.secondary)
                     }
-                }
-                HStack {
-                    Button { addFeat(.hole) } label: { Label("加孔", systemImage: "circle.circle") }
-                    Spacer()
-                    Button { addFeat(.pocket) } label: { Label("加型腔", systemImage: "circle.dashed") }
+                    HStack(spacing: 6) {
+                        miniNum("X", $f.x)
+                        miniNum("Y", $f.y)
+                        if f.kind == .rectPocket {
+                            miniNum("长", $f.w)
+                            miniNum("宽", $f.h)
+                        } else {
+                            miniNum("Ø", $f.dia)
+                        }
+                        miniNum("深", $f.depth)
+                    }
+                    Text(f.kind == .hole ? "Ø\(ncf(f.dia)) 通孔"
+                         : (f.kind == .rectPocket ? "\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth))"
+                            : "Ø\(ncf(f.dia)) 深\(ncf(f.depth))"))
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
             }
-
-            Section("拉伸 / 整件变换") {
-                numRow("厚度 H (mm)", $spec.height)
-                numRow("顶面余量 (mm)", $spec.topStock)
-                HStack {
-                    Button("旋转零件…") { showRotate = true }
-                    Spacer()
-                    Button("缩放零件…") { showScale = true }
-                    Spacer()
-                    Button("适合窗口") { yaw = 0.78; pitch = 0.62; zoom = 1; zoomBase = 1 }
-                }
-                .font(.system(size: 13, weight: .semibold))
+            HStack {
+                Button { addFeat(.hole) } label: { Label("加孔", systemImage: "circle.circle") }
+                Spacer()
+                Button { addFeat(.pocket) } label: { Label("加圆腔", systemImage: "circle.dashed") }
+                Spacer()
+                Button { addFeat(.rectPocket) } label: { Label("加方腔", systemImage: "rectangle.dashed") }
+            }
+            if !spec.innerLoops.isEmpty {
+                Text("草图里还有 \(spec.innerLoops.count) 个内轮廓，会自动作为挖孔/型腔加进工序。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
+
+        Section("拉伸 / 整件变换") {
+            numRow("厚度 H (mm)", $spec.height)
+            numRow("顶面余量 (mm)", $spec.topStock)
+            HStack {
+                Button("旋转零件…") { showRotate = true }
+                Spacer()
+                Button("缩放零件…") { showScale = true }
+                Spacer()
+                Button("适合窗口") { setView(0.78, 0.62) }
+            }
+            .font(.system(size: 13, weight: .semibold))
+        }
     }
+
 
     private func setView(_ y: Double, _ p: Double) {
         yaw = y; pitch = p; zoom = 0.95; zoomBase = 0.95
@@ -511,7 +752,59 @@ struct StudioScreen: View {
         ctx.fill(ringPath(0), with: .color(Color.orange.opacity(0.08)))
         ctx.stroke(ringPath(0), with: .color(.orange), lineWidth: 2)
 
+        for l in spec.innerLoops {
+            let d = PartProg.drawForLoop(l, spec, depth: l.through ? spec.height + 1 : l.depth,
+                                         dia: max(spec.pocketDia, 1), hNo: spec.pocketTool)
+            let segs = ContourGeo.segments(ContourGeo.buildNodes(d))
+            let flat = ContourGeo.flatten(segs, arcStep: 24)
+            let cut = l.through ? spec.height : min(l.depth, spec.height)
+            func loopPath(_ z: Double) -> Path {
+                var p = Path()
+                guard let f = flat.first else { return p }
+                p.move(to: cam.p(f.x + l.cx, f.y + l.cy, z))
+                for q in flat.dropFirst() { p.addLine(to: cam.p(q.x + l.cx, q.y + l.cy, z)) }
+                return p
+            }
+            let topLoop = loopPath(0)
+            ctx.fill(topLoop, with: .color(Color.red.opacity(0.12)))
+            ctx.stroke(topLoop, with: .color(.red),
+                       style: StrokeStyle(lineWidth: 1.4, dash: [4, 3]))
+            ctx.stroke(loopPath(-cut), with: .color(Color.red.opacity(0.55)), lineWidth: 0.9)
+            let c = cam.p(l.cx, l.cy, 0)
+            let text: String
+            switch l.template {
+            case .circle: text = "Ø" + ncf(l.circleD)
+            case .rect: text = ncf(l.rectL) + "×" + ncf(l.rectW)
+            case .slot: text = ncf(l.slotL) + "×" + ncf(l.slotW)
+            case .free: text = l.name
+            }
+            ctx.draw(Text(text).font(.system(size: 9, weight: .semibold)).foregroundColor(.red),
+                     at: CGPoint(x: c.x, y: c.y - 10))
+        }
+
         for f in spec.feats {
+            if f.kind == .rectPocket {
+                let d = min(f.depth, spec.height)
+                var top = Path()
+                let x0 = f.x - f.w / 2, x1 = f.x + f.w / 2
+                let y0 = f.y - f.h / 2, y1 = f.y + f.h / 2
+                top.move(to: cam.p(x0, y0, 0))
+                top.addLine(to: cam.p(x1, y0, 0))
+                top.addLine(to: cam.p(x1, y1, 0))
+                top.addLine(to: cam.p(x0, y1, 0))
+                top.closeSubpath()
+                ctx.fill(top, with: .color(Color(red: 1.0, green: 0.42, blue: 0.10).opacity(0.18)))
+                ctx.stroke(top, with: .color(Color(red: 0.95, green: 0.55, blue: 0.20)), lineWidth: 1.4)
+                var bot = Path()
+                bot.move(to: cam.p(x0, y0, -d))
+                bot.addLine(to: cam.p(x1, y0, -d))
+                bot.addLine(to: cam.p(x1, y1, -d))
+                bot.addLine(to: cam.p(x0, y1, -d))
+                bot.closeSubpath()
+                ctx.stroke(bot, with: .color(Color(red: 0.95, green: 0.55, blue: 0.20).opacity(0.75)), lineWidth: 1)
+                label(ctx, cam, f, "\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth))")
+                continue
+            }
             let r = f.dia / 2
             if f.kind == .hole {
                 let c = circle(f.x, f.y, 0, r)
@@ -590,7 +883,36 @@ struct StudioScreen: View {
         for q in pts.dropFirst() { path.addLine(to: P(q.x, q.y)) }
         ctx.stroke(path, with: .color(.orange), lineWidth: 2)
 
+        for l in spec.innerLoops {
+            let d = PartProg.drawForLoop(l, spec, depth: l.through ? spec.height + 1 : l.depth,
+                                         dia: max(spec.pocketDia, 1), hNo: spec.pocketTool)
+            let flat = ContourGeo.flatten(ContourGeo.segments(ContourGeo.buildNodes(d)), arcStep: 24)
+            var lp = Path()
+            if let f = flat.first { lp.move(to: P(f.x + l.cx, f.y + l.cy)) }
+            for q in flat.dropFirst() { lp.addLine(to: P(q.x + l.cx, q.y + l.cy)) }
+            ctx.stroke(lp, with: .color(.red), style: StrokeStyle(lineWidth: 1.4, dash: [4, 3]))
+            let text: String
+            switch l.template {
+            case .circle: text = "Ø" + ncf(l.circleD)
+            case .rect: text = ncf(l.rectL) + "×" + ncf(l.rectW)
+            case .slot: text = ncf(l.slotL) + "×" + ncf(l.slotW)
+            case .free: text = l.name
+            }
+            ctx.draw(Text(text).font(.system(size: 9)).foregroundColor(.red),
+                     at: CGPoint(x: P(l.cx, l.cy).x, y: P(l.cx, l.cy).y - 10))
+        }
+
         for f in spec.feats {
+            if f.kind == .rectPocket {
+                var rp = Path()
+                rp.addRect(CGRect(x: P(f.x - f.w / 2, f.y - f.h / 2).x,
+                                  y: P(f.x - f.w / 2, f.y + f.h / 2).y,
+                                  width: CGFloat(f.w) * k, height: CGFloat(f.h) * k))
+                ctx.stroke(rp, with: .color(.orange), lineWidth: 1.4)
+                ctx.draw(Text("\(ncf(f.w))×\(ncf(f.h))").font(.system(size: 9)).foregroundColor(.blue),
+                         at: CGPoint(x: P(f.x, f.y).x, y: P(f.x, f.y).y - 12))
+                continue
+            }
             let r = f.dia / 2
             var c = Path()
             for i in 0...30 {
@@ -898,11 +1220,22 @@ private struct TransformSheet: View {
             }
             if spec.template != .free { spec.template = .free }
         }
+        let rad = a * Double.pi / 180
         for i in spec.feats.indices {
             let x = spec.feats[i].x, y = spec.feats[i].y
-            let rad = a * Double.pi / 180
             spec.feats[i].x = x * cos(rad) - y * sin(rad)
             spec.feats[i].y = x * sin(rad) + y * cos(rad)
+        }
+        for i in spec.innerLoops.indices {
+            let x = spec.innerLoops[i].cx, y = spec.innerLoops[i].cy
+            spec.innerLoops[i].cx = x * cos(rad) - y * sin(rad)
+            spec.innerLoops[i].cy = x * sin(rad) + y * cos(rad)
+            if spec.innerLoops[i].template == .rect && abs(a.truncatingRemainder(dividingBy: 90)) < 0.01
+                && Int(round(a / 90)) % 2 != 0 {
+                let t = spec.innerLoops[i].rectL
+                spec.innerLoops[i].rectL = spec.innerLoops[i].rectW
+                spec.innerLoops[i].rectW = t
+            }
         }
     }
 
@@ -916,6 +1249,19 @@ private struct TransformSheet: View {
         for i in spec.feats.indices {
             spec.feats[i].x *= s; spec.feats[i].y *= s
             spec.feats[i].dia *= s; spec.feats[i].depth *= s
+            spec.feats[i].w *= s; spec.feats[i].h *= s
+        }
+        for i in spec.innerLoops.indices {
+            spec.innerLoops[i].cx *= s; spec.innerLoops[i].cy *= s
+            spec.innerLoops[i].rectL *= s; spec.innerLoops[i].rectW *= s
+            spec.innerLoops[i].rectR *= s; spec.innerLoops[i].circleD *= s
+            spec.innerLoops[i].slotL *= s; spec.innerLoops[i].slotW *= s
+            spec.innerLoops[i].depth *= s
+            for j in spec.innerLoops[i].nodes.indices {
+                spec.innerLoops[i].nodes[j].x *= s
+                spec.innerLoops[i].nodes[j].y *= s
+                spec.innerLoops[i].nodes[j].r *= s
+            }
         }
         spec.height *= s; spec.topStock *= s
     }

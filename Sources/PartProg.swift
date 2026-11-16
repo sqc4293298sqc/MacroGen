@@ -13,7 +13,8 @@ enum HoleMode: String, CaseIterable, Identifiable {
 
 enum PartFeatKind: String, CaseIterable, Identifiable {
     case hole = "孔（贯通）"
-    case pocket = "沉台（盲腔）"
+    case pocket = "圆型腔（盲腔）"
+    case rectPocket = "方型腔（盲腔）"
     var id: String { rawValue }
 }
 
@@ -23,7 +24,37 @@ struct PartFeat: Identifiable, Equatable {
     var x: Double = 0
     var y: Double = 0
     var dia: Double = 10
-    var depth: Double = 5      // 沉台深度（孔不用）
+    var w: Double = 30
+    var h: Double = 20
+    var depth: Double = 5      // 型腔深度（孔不用）
+
+    init(kind: PartFeatKind = .hole, x: Double = 0, y: Double = 0,
+         dia: Double = 10, w: Double = 30, h: Double = 20, depth: Double = 5) {
+        self.kind = kind
+        self.x = x
+        self.y = y
+        self.dia = dia
+        self.w = w
+        self.h = h
+        self.depth = depth
+    }
+}
+
+struct SketchLoop: Identifiable {
+    var id = UUID()
+    var name: String = "内轮廓"
+    var template: ContourTemplate = .circle
+    var rectL: Double = 40
+    var rectW: Double = 20
+    var rectR: Double = 0
+    var circleD: Double = 20
+    var slotL: Double = 40
+    var slotW: Double = 12
+    var nodes: [ContourNode] = []
+    var cx: Double = 0
+    var cy: Double = 0
+    var through: Bool = true
+    var depth: Double = 5
 }
 
 struct PartSpec {
@@ -41,6 +72,8 @@ struct PartSpec {
     var topStock: Double = 1       // 顶面余量（平面铣深度）
 
     var feats: [PartFeat] = []
+    /// 同一张草图上的内轮廓：内圆/内方/异形，建模时自动当挖孔或型腔
+    var innerLoops: [SketchLoop] = []
 
     // 切削
     var spindle: Int = 2000
@@ -106,6 +139,35 @@ enum PartProg {
         return d
     }
 
+    /// 内轮廓转成可以画/出程序的轮廓
+    static func drawForLoop(_ l: SketchLoop, _ p: PartSpec, depth: Double,
+                            dia: Double, hNo: Int) -> DrawSpec {
+        var d = DrawSpec()
+        d.template = l.template
+        d.rectL = l.rectL
+        d.rectW = l.rectW
+        d.rectR = l.rectR
+        d.circleD = l.circleD
+        d.slotL = l.slotL
+        d.slotW = l.slotW
+        d.nodes = l.nodes
+        d.toolDia = dia
+        d.depth = depth
+        d.stepDown = p.stepDown
+        d.feed = Double(p.feed)
+        d.rpm = Double(p.spindle)
+        d.safeZ = p.safeZ
+        d.hNo = hNo
+        d.outward = false
+        return d
+    }
+
+    static func loopPoints(_ l: SketchLoop) -> [CGPoint] {
+        ContourGeo.flatten(ContourGeo.segments(ContourGeo.buildNodes(
+            drawForLoop(l, PartSpec(), depth: l.depth, dia: 6, hNo: 1)))
+        )
+    }
+
     static func pts(_ p: PartSpec) -> [CGPoint] {
         ContourGeo.flatten(ContourGeo.segments(ContourGeo.buildNodes(outline(p)))
         )
@@ -144,8 +206,20 @@ enum PartProg {
                 case .tap:
                     out.append("孔 Ø\(ncf(f.dia)) · 攻丝 G84　T\(p.tapTool) P\(ncf(p.tapPitch))")
                 }
+            } else if p.doPocket && f.kind == .rectPocket {
+                out.append("方腔 \(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth)) · 型腔铣　T\(p.pocketTool) D\(ncf(p.pocketDia))")
             } else if p.doPocket {
                 out.append("沉台 Ø\(ncf(f.dia)) 深\(ncf(f.depth)) · 型腔铣　T\(p.pocketTool) D\(ncf(p.pocketDia))")
+            }
+        }
+        for l in p.innerLoops {
+            let depth = l.through ? p.height + 1 : min(l.depth, p.height)
+            if l.template == .circle && l.through && p.holeMode != .spiral {
+                out.append("\(l.name) Ø\(ncf(l.circleD)) · \(p.holeMode.rawValue)　T\(p.holeTool)")
+            } else if l.template == .circle && l.through {
+                out.append("\(l.name) Ø\(ncf(l.circleD)) · 螺旋铣　T\(p.holeTool) D\(ncf(p.holeDia))")
+            } else {
+                out.append("\(l.name) \(l.template.rawValue) 深\(ncf(depth)) · 型腔铣　T\(p.pocketTool) D\(ncf(p.pocketDia))")
             }
         }
         return out
@@ -173,6 +247,12 @@ enum PartProg {
                     out.append("特征 \(i + 1)：沉台 Ø\(ncf(f.dia))，刀径不能超过半径")
                 }
                 if f.depth > p.height { out.append("特征 \(i + 1)：沉台深度超过零件厚度") }
+            }
+            if f.kind == .rectPocket {
+                if f.w <= p.pocketDia || f.h <= p.pocketDia {
+                    out.append("特征 \(i + 1)：方腔 \(ncf(f.w))×\(ncf(f.h)) 比刀径小")
+                }
+                if f.depth > p.height { out.append("特征 \(i + 1)：方腔深度超过零件厚度") }
             }
         }
         return out
@@ -244,12 +324,59 @@ enum PartProg {
                     add("孔 Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) 攻丝 G84 P\(ncf(p.tapPitch))",
                         p.tapTool, tapBlock(p, f))
                 }
+            } else if p.doPocket && f.kind == .rectPocket {
+                var d = asDraw(p, outward: false, template: .rect,
+                               dia: p.pocketDia, depth: f.depth, hNo: p.pocketTool)
+                d.rectL = f.w
+                d.rectW = f.h
+                d.rectR = 0
+                var code = ContourProg.generate(d)
+                code = shift(code, dx: f.x, dy: f.y)
+                add("方腔 \(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth)) @X\(ncf(f.x)) Y\(ncf(f.y)) 型腔铣 T\(p.pocketTool) D\(ncf(p.pocketDia))",
+                    p.pocketTool, code)
             } else if p.doPocket {
                 let d = asDraw(p, outward: false, template: .circle, circleD: f.dia,
                                dia: p.pocketDia, depth: f.depth, hNo: p.pocketTool)
                 var code = ContourProg.generate(d)
                 code = shift(code, dx: f.x, dy: f.y)
                 add("沉台 Ø\(ncf(f.dia)) 深\(ncf(f.depth)) @X\(ncf(f.x)) Y\(ncf(f.y)) 型腔铣 T\(p.pocketTool) D\(ncf(p.pocketDia))",
+                    p.pocketTool, code)
+            }
+        }
+
+        for l in p.innerLoops {
+            let depth = l.through ? p.height + 1 : min(l.depth, p.height)
+            if l.template == .circle && l.through {
+                switch p.holeMode {
+                case .spiral:
+                    var s = PocketSpec()
+                    s.mode = .spiral
+                    s.spiralDia = l.circleD
+                    s.toolDia = p.holeDia
+                    s.depth = depth
+                    s.stepDown = p.stepDown
+                    s.spindle = p.spindle
+                    s.feed = p.feed
+                    s.safeZ = p.safeZ
+                    s.hNo = p.holeTool
+                    s.cx = l.cx
+                    s.cy = l.cy
+                    add("\(l.name) Ø\(ncf(l.circleD)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 螺旋铣 T\(p.holeTool) D\(ncf(p.holeDia))",
+                        p.holeTool, GCodeGenerator.generate(s))
+                case .g81, .g83:
+                    let f = PartFeat(kind: .hole, x: l.cx, y: l.cy, dia: l.circleD, depth: depth)
+                    add("\(l.name) Ø\(ncf(l.circleD)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 钻孔 \(p.holeMode == .g81 ? "G81" : "G83")",
+                        p.holeTool, drillBlock(p, f))
+                case .tap:
+                    let f = PartFeat(kind: .hole, x: l.cx, y: l.cy, dia: l.circleD, depth: depth)
+                    add("\(l.name) Ø\(ncf(l.circleD)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 攻丝 G84 P\(ncf(p.tapPitch))",
+                        p.tapTool, tapBlock(p, f))
+                }
+            } else {
+                let d = drawForLoop(l, p, depth: depth, dia: p.pocketDia, hNo: p.pocketTool)
+                var code = ContourProg.generate(d)
+                code = shift(code, dx: l.cx, dy: l.cy)
+                add("\(l.name) \(l.template.rawValue) 深\(ncf(depth)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 型腔铣 T\(p.pocketTool) D\(ncf(p.pocketDia))",
                     p.pocketTool, code)
             }
         }
