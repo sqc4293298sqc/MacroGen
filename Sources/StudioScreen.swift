@@ -34,7 +34,7 @@ struct StudioScreen: View {
     @State private var dimEditTitle = ""
     @State private var dimEditText = ""
     @State private var dimTarget: DimTarget = .none
-    @State private var showSketchTools = false
+    @State private var sketchSidePanel: SketchSidePanel = .none
     @State private var showModelTools = false
     @State private var drawInner = false
     @State private var innerDraft: [ContourNode] = []
@@ -42,7 +42,8 @@ struct StudioScreen: View {
     @State private var redoStack: [PartSpec] = []
 
     // Digit 式界面状态
-    @State private var modelPanel: StudioModelPanel = .tree
+    @State private var modelPanel: StudioModelPanel = .none
+    @State private var bodyVisible = true
     @State private var selectedTreeID: String? = nil
     @State private var hiddenTreeIDs: Set<String> = []
     @State private var selectedNode: Int? = nil
@@ -64,12 +65,16 @@ struct StudioScreen: View {
     @State private var arrayRadius = 36.0
 
     private enum DimTarget: Equatable {
-        case none, rectL, rectW, circleD, slotL
+        case none, rectL, rectW, rectR, circleD, slotL, slotW
         case nodeLen(Int), nodeAngle(Int), nodeR(Int)
     }
 
     private enum StudioModelPanel: Equatable {
-        case none, tree, section, measure, display, tools
+        case none, tree, body, section, measure, display, tools
+    }
+
+    private enum SketchSidePanel: Hashable {
+        case none, tools, params, dim, angle
     }
 
     private enum SectionAxis: String, CaseIterable, Identifiable {
@@ -281,6 +286,7 @@ struct StudioScreen: View {
     }
 
     private var studioBlue: Color { Color(red: 0.15, green: 0.35, blue: 0.86) }
+    private var bodyTint: Color { Color(red: 0.08, green: 0.56, blue: 0.46) }
 
 
     // MARK: - 1 草图
@@ -298,7 +304,7 @@ struct StudioScreen: View {
                         .onEnded { _ in dragNode = nil }
                 )
                 .simultaneousGesture(SpatialTapGesture().onEnded { v in
-                    showSketchTools = false
+                    sketchSidePanel = .none
                     if isDrawTool(sketchTool) || drawInner {
                         addPointAt(v.location, size: geo.size)
                     } else {
@@ -324,9 +330,9 @@ struct StudioScreen: View {
                 sketchBottomBar
             }
 
-            if showSketchTools {
+            if sketchSidePanel != .none {
                 HStack(alignment: .top, spacing: 0) {
-                    sketchToolPanel
+                    sketchSidePanelView
                     Spacer(minLength: 0)
                 }
                 .padding(.leading, 76)
@@ -362,8 +368,8 @@ struct StudioScreen: View {
                 railButton("圆角", "square.bottomleft", active: false) { pushUndo(); filletOuter(filletR) }
                 railButton("倒角", "square.topright", active: false) { pushUndo(); chamferOuter(chamferC) }
 
-                railButton("更多", "square.grid.2x2", active: showSketchTools) {
-                    showSketchTools.toggle()
+                railButton("更多", "square.grid.2x2", active: sketchSidePanel == .tools) {
+                    sketchSidePanel = sketchSidePanel == .tools ? .none : .tools
                 }
             }
             .padding(.vertical, 6)
@@ -379,13 +385,11 @@ struct StudioScreen: View {
     private var sketchConstraintRail: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 3) {
-                railButton("尺寸", "ruler", active: false) {
-                    showSketchTools = true
-                    showToastView("在画布上双击尺寸/角度可直接改值")
+                railButton("尺寸", "ruler", active: sketchSidePanel == .dim) {
+                    sketchSidePanel = sketchSidePanel == .dim ? .none : .dim
                 }
-                railButton("角度", "angle", active: false) {
-                    showSketchTools = true
-                    showToastView("双击顶点角度可改；约束按钮对当前轮廓生效")
+                railButton("角度", "angle", active: sketchSidePanel == .angle) {
+                    sketchSidePanel = sketchSidePanel == .angle ? .none : .angle
                 }
                 railButton("水平", "line.3.horizontal", active: false) { pushUndo(); constrain(horizontal: true) }
                 railButton("竖直", "line.3.horizontal.decrease", active: false) { pushUndo(); constrain(horizontal: false) }
@@ -460,15 +464,15 @@ struct StudioScreen: View {
         .padding(.bottom, 8)
     }
 
-    private var sketchToolPanel: some View {
+    private var sketchSidePanelView: some View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("草图工具").font(.system(size: 16, weight: .bold))
-                    Text("\(sketchToolCount) 项 · 点画布连续绘制").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text(sketchPanelTitle).font(.system(size: 16, weight: .bold))
+                    Text(sketchPanelSubtitle).font(.system(size: 10)).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button { showSketchTools = false } label: {
+                Button { sketchSidePanel = .none } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(.secondary)
@@ -481,10 +485,33 @@ struct StudioScreen: View {
             .padding(.top, 12)
             .padding(.bottom, 8)
 
-            Form { sketchControls }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .background(Color.white)
+            if sketchSidePanel == .tools || sketchSidePanel == .params {
+                Picker("", selection: $sketchSidePanel) {
+                    Text("工具").tag(SketchSidePanel.tools)
+                    Text("参数").tag(SketchSidePanel.params)
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 13)
+                .padding(.bottom, 8)
+            }
+
+            Group {
+                switch sketchSidePanel {
+                case .tools:
+                    sketchToolGridPanel
+                case .params:
+                    Form { sketchControls }
+                        .listStyle(.plain)
+                        .scrollContentBackground(.hidden)
+                        .background(Color.white)
+                case .dim:
+                    sketchDimPanel
+                case .angle:
+                    sketchAnglePanel
+                case .none:
+                    EmptyView()
+                }
+            }
         }
         .frame(width: 300)
         .frame(maxHeight: 540)
@@ -492,6 +519,204 @@ struct StudioScreen: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white, lineWidth: 1))
         .shadow(color: .black.opacity(0.14), radius: 18, y: 8)
         .clipShape(RoundedRectangle(cornerRadius: 18))
+    }
+
+    private var sketchPanelTitle: String {
+        switch sketchSidePanel {
+        case .tools: return "草图工具"
+        case .params: return "草图参数"
+        case .dim: return "尺寸"
+        case .angle: return "角度"
+        case .none: return ""
+        }
+    }
+
+    private var sketchPanelSubtitle: String {
+        switch sketchSidePanel {
+        case .tools: return "\(sketchToolCount) 项 · 点画布连续绘制"
+        case .params: return "外形 / 内轮廓 / 阵列参数"
+        case .dim: return "外形与分段长度 · 点一项改值"
+        case .angle: return "顶点夹角 · 点一项改值"
+        case .none: return ""
+        }
+    }
+
+    private var sketchToolGridPanel: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("绘制").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 6) {
+                    ForEach(drawToolNames, id: \.self) { name in
+                        sketchToolChip(name)
+                    }
+                }
+
+                Text("编辑").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 6) {
+                    ForEach(editToolNames, id: \.self) { name in
+                        sketchToolChip(name)
+                    }
+                }
+
+                Divider()
+
+                Text("内轮廓").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Button { addInner(.circle) } label: { Label("内圆", systemImage: "circle") }
+                    Button { addInner(.rect) } label: { Label("内方", systemImage: "rectangle") }
+                    Button {
+                        pushUndo()
+                        drawInner.toggle()
+                        innerDraft.removeAll()
+                        sketchTool = drawInner ? "多段线" : ""
+                        sketchSidePanel = .none
+                    } label: {
+                        Label(drawInner ? "结束手画" : "手画", systemImage: "pencil.tip")
+                    }
+                }
+                .font(.system(size: 12, weight: .semibold))
+                .buttonStyle(.bordered)
+                if drawInner {
+                    Button("完成这个内轮廓") { finishInner(); sketchSidePanel = .none }
+                        .font(.system(size: 12, weight: .bold))
+                }
+
+                Button { sketchSidePanel = .params } label: {
+                    Label("尺寸 / 内轮廓 / 阵列参数", systemImage: "slider.horizontal.3")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.horizontal, 13)
+            .padding(.bottom, 14)
+        }
+    }
+
+    private func sketchToolChip(_ name: String) -> some View {
+        Button {
+            selectSketchTool(name)
+            sketchSidePanel = .none
+        } label: {
+            Text(name)
+                .font(.system(size: 11, weight: .medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 8)
+                    .fill(sketchTool == name ? studioBlue.opacity(0.14) : Color(.secondarySystemBackground)))
+                .foregroundStyle(sketchTool == name ? studioBlue : .primary)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var sketchDimPanel: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                switch spec.template {
+                case .rect:
+                    dimRow("长 L", spec.rectL, .rectL)
+                    dimRow("宽 W", spec.rectW, .rectW)
+                    dimRow("四角 R", spec.rectR, .rectR)
+                case .circle:
+                    dimRow("直径 Ø", spec.circleD, .circleD)
+                case .slot:
+                    dimRow("槽长 L", spec.slotL, .slotL)
+                    dimRow("槽宽 W", spec.slotW, .slotW)
+                case .free:
+                    Text("手绘轮廓：外形尺寸按下面每段长度控制。")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+
+                if spec.nodes.count > 1 {
+                    Divider().padding(.vertical, 2)
+                    Text("分段长度").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                    ForEach(0..<spec.nodes.count, id: \.self) { i in
+                        let a = spec.nodes[i]
+                        let c = spec.nodes[(i + 1) % spec.nodes.count]
+                        dimRow("第 \(i + 1) 段", hypot(c.x - a.x, c.y - a.y), .nodeLen(i))
+                    }
+                }
+                Text("也可以直接在画布上双击尺寸改值。")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 13)
+            .padding(.bottom, 14)
+        }
+    }
+
+    private var sketchAnglePanel: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                switch spec.template {
+                case .rect:
+                    Text("矩形：四角由外形约束保持 90°。")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                case .circle:
+                    Text("圆 / 椭圆：角度由圆心、半径和起始角决定。")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                case .slot:
+                    Text("槽：两端圆弧按槽宽自动保持 R=W/2。")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                case .free:
+                    EmptyView()
+                }
+
+                if spec.nodes.count > 2 {
+                    Text("顶点夹角").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                    ForEach(0..<spec.nodes.count, id: \.self) { i in
+                        dimRow("点 \(i + 1) 夹角", vertexAngle(spec.nodes, i), .nodeAngle(i), unit: "°")
+                    }
+                } else if spec.template == .free {
+                    Text("至少画 3 个点后，这里会列出每个顶点的夹角。")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+
+                if spec.nodes.count > 1 && spec.template == .free {
+                    Divider().padding(.vertical, 2)
+                    Text("圆弧半径").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                    ForEach(0..<spec.nodes.count, id: \.self) { i in
+                        if spec.nodes[i].kind != .line {
+                            dimRow("点 \(i + 1) 半径", spec.nodes[i].r, .nodeR(i))
+                        }
+                    }
+                }
+                Text("点一项即可改；画布上双击顶点也能改角度。")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 13)
+            .padding(.bottom, 14)
+        }
+    }
+
+    private func dimRow(_ title: String, _ value: Double, _ target: DimTarget, unit: String = "mm") -> some View {
+        Button {
+            openDimEdit(target, title, value)
+        } label: {
+            HStack {
+                Text(title).font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text("\(ncf(value)) \(unit)")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(studioBlue)
+                Image(systemName: "pencil")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color(.secondarySystemBackground).opacity(0.75)))
+        }
+        .buttonStyle(.plain)
+        .disabled(target == .none)
+    }
+
+    private func openDimEdit(_ target: DimTarget, _ title: String, _ value: Double) {
+        guard target != .none else { return }
+        dimTarget = target
+        dimEditTitle = "改 " + title
+        dimEditText = String(format: "%.2f", value)
+        showDimEdit = true
     }
 
     private func railButton(_ title: String, _ icon: String, active: Bool = false,
@@ -1164,10 +1389,14 @@ struct StudioScreen: View {
             if v > 0.1 { spec.rectL = v }
         case .rectW:
             if v > 0.1 { spec.rectW = v }
+        case .rectR:
+            if v >= 0 { spec.rectR = v }
         case .circleD:
             if v > 0.1 { spec.circleD = v }
         case .slotL:
             if v > 0.1 { spec.slotL = v }
+        case .slotW:
+            if v > 0.1 { spec.slotW = v }
         case .nodeLen(let i):
             guard spec.nodes.count > 1, v > 0.05 else { return }
             let a = spec.nodes[i]
@@ -1866,13 +2095,22 @@ struct StudioScreen: View {
                     showToastView("拉伸高度在“更多”里改")
                 }
                 railButton("孔", "circle.circle", active: false) {
-                    pushUndo(); addFeat(.hole); modelPanel = .tree
+                    pushUndo(); let f = addFeat(.hole)
+                    selectedTreeID = "feat-\(f.id.uuidString)"
+                    modelPanel = .none
+                    showToastView("孔已加到 X\(ncf(f.x)) Y\(ncf(f.y))")
                 }
                 railButton("圆腔", "circle.dashed", active: false) {
-                    pushUndo(); addFeat(.pocket); modelPanel = .tree
+                    pushUndo(); let f = addFeat(.pocket)
+                    selectedTreeID = "feat-\(f.id.uuidString)"
+                    modelPanel = .none
+                    showToastView("圆腔已加到 X\(ncf(f.x)) Y\(ncf(f.y))")
                 }
                 railButton("方腔", "rectangle.dashed", active: false) {
-                    pushUndo(); addFeat(.rectPocket); modelPanel = .tree
+                    pushUndo(); let f = addFeat(.rectPocket)
+                    selectedTreeID = "feat-\(f.id.uuidString)"
+                    modelPanel = .none
+                    showToastView("方腔已加到 X\(ncf(f.x)) Y\(ncf(f.y))")
                 }
                 railButton("更多", "square.grid.2x2", active: modelPanel == .tools) {
                     modelPanel = modelPanel == .tools ? .none : .tools
@@ -1894,9 +2132,8 @@ struct StudioScreen: View {
                 railButton("树", "list.bullet.indent", active: modelPanel == .tree) {
                     modelPanel = modelPanel == .tree ? .none : .tree
                 }
-                railButton("体", "cube", active: false) {
-                    modelPanel = .tree
-                    showToastView("当前为单一 2.5D 实体")
+                railButton("体", "cube", active: modelPanel == .body) {
+                    modelPanel = modelPanel == .body ? .none : .body
                 }
                 railButton("剖切", "square.split.2x1", active: modelPanel == .section) {
                     modelPanel = modelPanel == .section ? .none : .section
@@ -1957,7 +2194,7 @@ struct StudioScreen: View {
 
     private var modelBottomBar: some View {
         HStack {
-            Text("X\(ncf(ptrX))  Y\(ncf(ptrY))  Z0")
+            Text("指针 X\(ncf(ptrX))  Y\(ncf(ptrY))  Z0")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
             if sectionOn {
@@ -2001,6 +2238,8 @@ struct StudioScreen: View {
             switch modelPanel {
             case .tree:
                 modelTreePanel
+            case .body:
+                bodyPanel
             case .section:
                 sectionPanel
             case .measure:
@@ -2027,6 +2266,7 @@ struct StudioScreen: View {
     private var modelPanelTitle: String {
         switch modelPanel {
         case .tree: return "建模树"
+        case .body: return "体"
         case .section: return "剖切"
         case .measure: return "测量"
         case .display: return "显示"
@@ -2038,6 +2278,7 @@ struct StudioScreen: View {
     private var modelPanelSubtitle: String {
         switch modelPanel {
         case .tree: return "\(treeItems.count) 项 · 可见/排序/编辑"
+        case .body: return "实体属性 · 体积/重量/材料"
         case .section: return "X/Y/Z · 实时预览"
         case .measure: return "体积/重量/尺寸/面积"
         case .display: return "视角与网格"
@@ -2189,7 +2430,8 @@ struct StudioScreen: View {
         } else if item.id == "extrude" {
             modelPanel = .tools
         } else {
-            showToastView("已选中 \(item.title)，可在右侧参数区继续改")
+            modelPanel = .tools
+            showToastView("已选中 \(item.title)，参数在“建模工具”里")
         }
     }
 
@@ -2204,6 +2446,53 @@ struct StudioScreen: View {
             spec.feats.removeAll { $0.id == id }
         }
         selectedTreeID = nil
+    }
+
+    private var bodyPanel: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    Image(systemName: "cube.fill")
+                        .font(.system(size: 20))
+                        .foregroundStyle(studioBlue)
+                        .frame(width: 34, height: 34)
+                        .background(RoundedRectangle(cornerRadius: 9).fill(studioBlue.opacity(0.10)))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("体 1").font(.system(size: 14, weight: .bold))
+                        Text("单一 2.5D 实体 · 由草图拉伸").font(.system(size: 9)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Toggle("", isOn: $bodyVisible).labelsHidden().tint(studioBlue)
+                }
+
+                Divider()
+
+                metricCard("外形尺寸", "\(ncf(Double(partBBox.width))) × \(ncf(Double(partBBox.height))) × \(ncf(spec.height)) mm")
+                metricCard("体积", "\(ncf(partVolume)) mm³")
+                metricCard("重量", "\(ncf(partWeight)) g（\(material.rawValue)）")
+                metricCard("材料", material.rawValue)
+                metricCard("特征", "\(spec.innerLoops.count) 内轮廓 · \(spec.feats.count) 孔/型腔")
+
+                Picker("材料", selection: $material) {
+                    ForEach(StudioMaterial.allCases) { m in Text(m.rawValue).tag(m) }
+                }
+                .pickerStyle(.menu)
+
+                HStack {
+                    Button("高亮实体") { modelPanel = .none; showToastView("实体已在画布中高亮") }
+                    Spacer()
+                    Button("适合窗口") { setView(0.78, 0.62); modelPanel = .none }
+                }
+                .buttonStyle(.bordered)
+                .font(.system(size: 12, weight: .semibold))
+
+                Text("工件坐标系在“加工”第 4 步里设置；这里只显示实体属性。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 13)
+            .padding(.bottom, 14)
+        }
     }
 
     private var sectionPanel: some View {
@@ -2497,7 +2786,8 @@ struct StudioScreen: View {
         yaw = y; pitch = p; zoom = 0.95; zoomBase = 0.95
     }
 
-    private func addFeat(_ kind: PartFeatKind) {
+    @discardableResult
+    private func addFeat(_ kind: PartFeatKind) -> PartFeat {
         let b = PartProg.bbox(spec)
         var f = PartFeat(kind: kind)
         f.x = hasPtr ? ptrX : Double(b.midX)
@@ -2505,6 +2795,7 @@ struct StudioScreen: View {
         f.dia = kind == .hole ? 10 : 30
         f.depth = min(5, max(1, spec.height / 2))
         spec.feats.append(f)
+        return f
     }
 
     private func modelCam(size: CGSize) -> Cam {
@@ -2516,6 +2807,7 @@ struct StudioScreen: View {
     }
 
     private func drawModel(context: GraphicsContext, size: CGSize) {
+        if !bodyVisible { return }
         if hiddenTreeIDs.contains("sketch") || hiddenTreeIDs.contains("extrude") { return }
         var ctx = context
         let cam = modelCam(size: size)
@@ -2545,15 +2837,36 @@ struct StudioScreen: View {
             return path
         }
 
+        func selectedMarker(_ f: PartFeat, radius: Double) {
+            let r = max(radius, 1)
+            ctx.stroke(circle(f.x, f.y, 0, r), with: .color(studioBlue), lineWidth: 2)
+            let q = cam.p(f.x, f.y, 0)
+            ctx.stroke(Path { p in
+                p.move(to: CGPoint(x: q.x - 7, y: q.y)); p.addLine(to: CGPoint(x: q.x + 7, y: q.y))
+                p.move(to: CGPoint(x: q.x, y: q.y - 7)); p.addLine(to: CGPoint(x: q.x, y: q.y + 7))
+            }, with: .color(studioBlue), lineWidth: 1.2)
+        }
+
         let bottom = ringPath(-visibleDepth)
-        ctx.fill(bottom, with: .color(Color.orange.opacity(0.10)))
-        ctx.stroke(bottom, with: .color(Color(red: 0.70, green: 0.72, blue: 0.76)), lineWidth: 1)
+        ctx.fill(bottom, with: .color(bodyTint.opacity(0.14)))
+        ctx.stroke(bottom, with: .color(bodyTint.opacity(0.55)), lineWidth: 1)
+
+        for i in pts.indices {
+            let a = pts[i], b = pts[(i + 1) % pts.count]
+            var side = Path()
+            side.move(to: cam.p(a.x, a.y, 0))
+            side.addLine(to: cam.p(b.x, b.y, 0))
+            side.addLine(to: cam.p(b.x, b.y, -visibleDepth))
+            side.addLine(to: cam.p(a.x, a.y, -visibleDepth))
+            side.closeSubpath()
+            ctx.fill(side, with: .color(bodyTint.opacity(0.16)))
+        }
 
         let layers = max(1, Int(ceil(visibleDepth / max(spec.stepDown, 0.1))))
         if layers > 1 {
             for i in 1..<layers {
                 let z = -min(visibleDepth, Double(i) * spec.stepDown)
-                ctx.stroke(ringPath(z), with: .color(Color.orange.opacity(0.20)), lineWidth: 0.7)
+                ctx.stroke(ringPath(z), with: .color(bodyTint.opacity(0.22)), lineWidth: 0.7)
             }
         }
         for i in Swift.stride(from: 0, to: pts.count, by: max(1, pts.count / 30)) {
@@ -2561,14 +2874,14 @@ struct StudioScreen: View {
             ctx.stroke(Path { p in
                 p.move(to: cam.p(q.x, q.y, 0))
                 p.addLine(to: cam.p(q.x, q.y, -visibleDepth))
-            }, with: .color(Color(red: 0.78, green: 0.80, blue: 0.83)), lineWidth: 0.8)
+            }, with: .color(bodyTint.opacity(0.35)), lineWidth: 0.8)
         }
 
-        ctx.fill(ringPath(0), with: .color(Color.orange.opacity(0.08)))
-        ctx.stroke(ringPath(0), with: .color(.orange), lineWidth: 2)
+        ctx.fill(ringPath(0), with: .color(bodyTint.opacity(0.30)))
+        ctx.stroke(ringPath(0), with: .color(bodyTint), lineWidth: 2)
 
         if showZCut {
-            ctx.fill(ringPath(-visibleDepth), with: .color(Color.orange.opacity(0.38)))
+            ctx.fill(ringPath(-visibleDepth), with: .color(Color.orange.opacity(0.42)))
             ctx.stroke(ringPath(-visibleDepth), with: .color(.orange), lineWidth: 2)
         }
 
@@ -2604,6 +2917,7 @@ struct StudioScreen: View {
         }
 
         for f in spec.feats where !hiddenTreeIDs.contains("feat-\(f.id.uuidString)") {
+            let isSelected = selectedTreeID == "feat-\(f.id.uuidString)"
             if f.kind == .rectPocket {
                 let d = min(f.depth, spec.height)
                 var top = Path()
@@ -2624,6 +2938,7 @@ struct StudioScreen: View {
                 bot.closeSubpath()
                 ctx.stroke(bot, with: .color(Color(red: 0.95, green: 0.55, blue: 0.20).opacity(0.75)), lineWidth: 1)
                 label(ctx, cam, f, "\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth))")
+                if isSelected { selectedMarker(f, radius: max(f.w, f.h) / 2 + 4) }
                 continue
             }
             let r = f.dia / 2
@@ -2633,6 +2948,7 @@ struct StudioScreen: View {
                 ctx.stroke(c, with: .color(Color(white: 0.35)), lineWidth: 1.4)
                 ctx.stroke(circle(f.x, f.y, -min(depth, visibleDepth), r), with: .color(Color(white: 0.45)), lineWidth: 0.9)
                 label(ctx, cam, f, "Ø\(ncf(f.dia))")
+                if isSelected { selectedMarker(f, radius: r + 4) }
             } else {
                 let d = min(f.depth, spec.height)
                 let c = circle(f.x, f.y, 0, r)
@@ -2640,6 +2956,7 @@ struct StudioScreen: View {
                 ctx.stroke(c, with: .color(Color(red: 0.95, green: 0.55, blue: 0.20)), lineWidth: 1.4)
                 ctx.stroke(circle(f.x, f.y, -d, r), with: .color(Color(red: 0.95, green: 0.55, blue: 0.20).opacity(0.75)), lineWidth: 1)
                 label(ctx, cam, f, "Ø\(ncf(f.dia)) 深\(ncf(f.depth))")
+                if isSelected { selectedMarker(f, radius: r + 4) }
             }
         }
 
@@ -2649,6 +2966,8 @@ struct StudioScreen: View {
         if measureOn {
             drawMeasureBox(&ctx, cam)
         }
+
+        drawAxisTriad(&ctx, size: size)
 
         if hasPtr {
             let o = cam.p(ptrX, ptrY, 0)
@@ -2661,6 +2980,35 @@ struct StudioScreen: View {
             ctx.draw(Text("X\(ncf(ptrX)) Y\(ncf(ptrY))").font(.system(size: 9, weight: .medium)).foregroundColor(.black),
                  at: CGPoint(x: o.x + 2, y: o.y - 16))
         }
+    }
+
+    private func drawAxisTriad(_ ctx: inout GraphicsContext, size: CGSize) {
+        let origin = CGPoint(x: 96, y: CGFloat(size.height) - 84)
+        let c = cos(yaw), s = sin(yaw)
+        let sp = sin(pitch), cp = cos(pitch)
+        func tip(_ x: Double, _ y: Double, _ z: Double) -> CGPoint {
+            let rx = x * c - y * s
+            let ry = x * s + y * c
+            let syy = -(ry * sp + z * cp)
+            return CGPoint(x: origin.x + CGFloat(rx * 22), y: origin.y + CGFloat(syy * 22))
+        }
+        let axes: [(CGPoint, Color, String)] = [
+            (tip(1, 0, 0), .red, "X"),
+            (tip(0, 1, 0), .green, "Y"),
+            (tip(0, 0, 1), .blue, "Z")
+        ]
+        for (end, color, name) in axes {
+            ctx.stroke(Path { p in p.move(to: origin); p.addLine(to: end) }, with: .color(color), lineWidth: 1.8)
+            ctx.fill(Path(ellipseIn: CGRect(x: end.x - 2.5, y: end.y - 2.5, width: 5, height: 5)),
+                     with: .color(color))
+            ctx.draw(Text(name).font(.system(size: 9, weight: .bold)).foregroundColor(color),
+                     at: CGPoint(x: end.x + (end.x >= origin.x ? 8 : -8),
+                                 y: end.y + (end.y >= origin.y ? 6 : -7)))
+        }
+        ctx.fill(Path(ellipseIn: CGRect(x: origin.x - 3, y: origin.y - 3, width: 6, height: 6)),
+                 with: .color(.white))
+        ctx.stroke(Path(ellipseIn: CGRect(x: origin.x - 3, y: origin.y - 3, width: 6, height: 6)),
+                   with: .color(Color(white: 0.35)), lineWidth: 1)
     }
 
     private func drawSectionPlane(_ ctx: inout GraphicsContext, _ cam: Cam, size: CGSize) {
