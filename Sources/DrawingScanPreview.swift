@@ -11,6 +11,7 @@ struct DrawingScanPreviewView: View {
     @State private var lengthText: String
     @State private var widthText: String
     @State private var heightText: String
+    @State private var removedFeatIDs: Set<UUID> = []
 
     init(result: DrawingScanResult, onUse: @escaping (DrawingScanResult) -> Void, onRetry: @escaping () -> Void) {
         self.result = result
@@ -29,7 +30,7 @@ struct DrawingScanPreviewView: View {
                     HStack(spacing: 8) {
                         chip("置信度 \(Int(result.confidence * 100))%")
                         chip(result.spec.template == .free ? "自由轮廓 \(result.spec.nodes.count) 段" : "矩形外形")
-                        chip("孔 \(result.spec.feats.count)")
+                        chip("孔 \(max(0, result.spec.feats.count - removedFeatIDs.count))")
                     }
 
                     VStack(alignment: .leading, spacing: 6) {
@@ -44,12 +45,33 @@ struct DrawingScanPreviewView: View {
                             editMetric("厚", $heightText)
                         }
                         if !result.spec.feats.isEmpty {
-                            ForEach(result.spec.feats) { f in
-                                Text(f.kind == .hole
-                                     ? "孔 Ø\(ncf(f.dia)) @ X\(ncf(f.x)) Y\(ncf(f.y))"
-                                     : "型腔 \(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth)) @ X\(ncf(f.x)) Y\(ncf(f.y))")
-                                    .font(.system(size: 13))
-                                    .foregroundColor(.secondary)
+                            Text("误识别孔/腔点右侧删除；采用后不会再生成。")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                            ForEach(result.spec.feats.filter { !removedFeatIDs.contains($0.id) }) { f in
+                                HStack(spacing: 8) {
+                                    Text(f.kind == .hole
+                                         ? "孔 Ø\(ncf(f.dia)) @ X\(ncf(f.x)) Y\(ncf(f.y))"
+                                         : "型腔 \(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth)) @ X\(ncf(f.x)) Y\(ncf(f.y))")
+                                        .font(.system(size: 13))
+                                        .foregroundColor(.secondary)
+                                    Spacer()
+                                    Button {
+                                        removedFeatIDs.insert(f.id)
+                                    } label: {
+                                        Image(systemName: "trash")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundColor(.red)
+                                            .frame(width: 26, height: 26)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            if !removedFeatIDs.isEmpty {
+                                Button("恢复全部识别特征") {
+                                    removedFeatIDs.removeAll()
+                                }
+                                .font(.system(size: 12, weight: .semibold))
                             }
                         }
                         if result.spec.template == .free, result.spec.nodes.count > 1 {
@@ -152,6 +174,7 @@ struct DrawingScanPreviewView: View {
                     }
 
                     for a in result.annotations {
+                        if let id = a.featID, removedFeatIDs.contains(id) { continue }
                         let r = CGRect(
                             x: a.rect.minX * size.width,
                             y: (1 - a.rect.maxY) * size.height,
@@ -229,6 +252,7 @@ struct DrawingScanPreviewView: View {
 
     private func use() {
         var spec = result.spec
+        spec.feats.removeAll { removedFeatIDs.contains($0.id) }
         let oldL = max(spec.rectL, 0.001)
         let oldW = max(spec.rectW, 0.001)
         let newL = max(Double(lengthText) ?? oldL, 0.1)

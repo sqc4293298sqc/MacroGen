@@ -18,6 +18,8 @@ struct ScanAnnotation: Identifiable {
     /// Vision 归一化坐标：原点在左下角
     var rect: CGRect
     var kind: ScanAnnotationKind
+    /// 对应的特征 id，用于预览里删除误识别孔后同步隐藏标注
+    var featID: UUID? = nil
 }
 
 struct DrawingScanResult: Identifiable {
@@ -520,10 +522,12 @@ enum DrawingScanner {
                              depth: height + 1, name: "识别孔 \(feats.count + 1)")
             f.depth = height + 1
             feats.append(f)
-            annotations.append(ScanAnnotation(
+            var annotation = ScanAnnotation(
                 text: "Ø\(ncf(dia))",
                 rect: b,
-                kind: .hole))
+                kind: .hole)
+            annotation.featID = f.id
+            annotations.append(annotation)
         }
         return (feats, annotations)
     }
