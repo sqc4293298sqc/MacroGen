@@ -170,7 +170,7 @@ struct StudioScreen: View {
                     chip("竖直约束", false) { constrain(horizontal: false) }
                     chip("等长约束", false) { equalizeSegments() }
                     chip("镜像", false) { mirrorOuter() }
-                    chip("偏置", false) { offsetOuter(5) }
+                    chip("偏置", false) { offsetOuter(offsetD) }
                     chip("阵列", false) { arrayInner() }
                     chip("三点圆", false) { threePointCircle() }
                     chip("圆弧", false) { threePointArc() }
@@ -237,6 +237,17 @@ struct StudioScreen: View {
                     Button("移动轮廓") { moveOuter() }
                         .font(.system(size: 13, weight: .semibold))
                 }
+                numRow("偏置距离 (mm)", $offsetD)
+                HStack(spacing: 6) {
+                    Stepper("行 \(arrayRows)", value: $arrayRows, in: 1...6)
+                    Stepper("列 \(arrayCols)", value: $arrayCols, in: 1...6)
+                }
+                HStack(spacing: 6) {
+                    miniNum("阵列 dx", $arrayDX)
+                    miniNum("阵列 dy", $arrayDY)
+                }
+                Button("阵列内轮廓") { arrayInner() }
+                    .font(.system(size: 13, weight: .semibold))
             }
         }
 
@@ -343,6 +354,11 @@ struct StudioScreen: View {
     @State private var trimY1 = 20.0
     @State private var moveDX = 10.0
     @State private var moveDY = 0.0
+    @State private var offsetD = 5.0
+    @State private var arrayRows = 2
+    @State private var arrayCols = 1
+    @State private var arrayDX = 50.0
+    @State private var arrayDY = 0.0
 
     private func moveSketchNode(_ loc: CGPoint, size: CGSize) {
         guard spec.template == .free, !spec.nodes.isEmpty else { return }
@@ -793,11 +809,19 @@ struct StudioScreen: View {
 
     private func arrayInner() {
         let base = spec.innerLoops
+        guard !base.isEmpty else { return }
         for l in base {
-            var n = l
-            n.id = UUID()
-            n.cx += 35
-            spec.innerLoops.append(n)
+            for r in 0..<max(arrayRows, 1) {
+                for c in 0..<max(arrayCols, 1) {
+                    if r == 0 && c == 0 { continue }
+                    var n = l
+                    n.id = UUID()
+                    n.name = l.name + " 阵列\(r + 1)-\(c + 1)"
+                    n.cx += arrayDX * Double(c)
+                    n.cy += arrayDY * Double(r)
+                    spec.innerLoops.append(n)
+                }
+            }
         }
     }
 
