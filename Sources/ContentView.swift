@@ -256,6 +256,16 @@ struct ContentView: View {
                         }
                     }
 
+                    NavigationLink {
+                        DrawScreen()
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Label("绘图编程 · 任意轮廓", systemImage: "scribble.variable")
+                            Spacer()
+                        }
+                    }
+
                     Button {
                         showImport = true
                     } label: {
