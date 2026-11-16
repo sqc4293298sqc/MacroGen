@@ -7,6 +7,12 @@ struct DrawScreen: View {
     @State private var code = ""
     @State private var showResult = false
     @State private var showHelp = false
+    @State private var solid = false          // 立体草图
+    @State private var yaw = 0.78             // 水平旋转角
+    @State private var pitch = 0.62           // 俯视角
+    @State private var zoom = 1.0
+    @State private var zoomBase = 1.0
+    @State private var lastDrag: CGSize = .zero
 
     private var segs: [ContourSeg] {
         ContourGeo.segments(ContourGeo.buildNodes(spec))
@@ -124,13 +130,48 @@ struct DrawScreen: View {
                 }
             }
 
-            Section("画布预览") {
-                Canvas { context, size in
-                    drawPreview(context: context, size: size)
+            Section("画布 · 草图 / 立体") {
+                HStack(spacing: 10) {
+                    Spacer()
+                    viewChip("草图 2D", on: !solid) { solid = false }
+                    viewChip("立体 3D", on: solid) { solid = true }
                 }
-                .frame(height: 240)
+                .padding(.bottom, 2)
+
+                Canvas { context, size in
+                    if solid { drawSolid(context: context, size: size) }
+                    else { drawPreview(context: context, size: size) }
+                }
+                .frame(height: solid ? 300 : 240)
                 .background(Color.white)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
+                .simultaneousGesture(DragGesture(minimumDistance: 2)
+                    .onChanged { g in
+                        guard solid else { return }
+                        let dx = Double(g.translation.width - lastDrag.width)
+                        let dy = Double(g.translation.height - lastDrag.height)
+                        lastDrag = g.translation
+                        yaw += dx * 0.012
+                        pitch = min(1.45, max(0.12, pitch - dy * 0.010))
+                    }
+                    .onEnded { _ in lastDrag = .zero }
+                )
+                .simultaneousGesture(MagnificationGesture()
+                    .onChanged { v in
+                        guard solid else { return }
+                        zoom = min(3.0, max(0.4, zoomBase * Double(v)))
+                    }
+                    .onEnded { _ in zoomBase = zoom }
+                )
+                .onTapGesture(count: 2) {
+                    if solid { yaw = 0.78; pitch = 0.62; zoom = 1; zoomBase = 1 }
+                }
+
+                Text(solid
+                     ? "拖动转视角 · 双指缩放 · 双击复位（立体是草图按深度拉出来的，不是切削结果）"
+                     : "橙线是轮廓，橙点是起刀点，虚线和淡橙圆是半圆进刀")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("刀具与切削") {
@@ -315,6 +356,139 @@ struct DrawScreen: View {
         }
     }
 }
+
+    private func viewChip(_ text: String, on: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(text)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(on ? Color.white : Color(red: 0.45, green: 0.49, blue: 0.55))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(on ? Color(red: 1.0, green: 0.42, blue: 0.10) : Color(.systemGray6))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - 立体草图
+
+    /// 把草图轮廓按「加工深度」拉成一块立体，画出顶面、每层轮廓、竖边和进刀圆
+    private func drawSolid(context: GraphicsContext, size: CGSize) {
+        var ctx = context
+        let pts = ContourGeo.flatten(segs, arcStep: 26)
+        guard pts.count > 2 else { return }
+
+        let depth = max(spec.depth, 0.1)
+        let step = max(spec.stepDown, 0.1)
+        let layers = max(1, Int(ceil(depth / step)))
+
+        var minX = pts[0].x, maxX = pts[0].x, minY = pts[0].y, maxY = pts[0].y
+        for p in pts {
+            minX = min(minX, p.x); maxX = max(maxX, p.x)
+            minY = min(minY, p.y); maxY = max(maxY, p.y)
+        }
+
+        let cy = cos(yaw), sy = sin(yaw)
+        let sp = sin(pitch), cp = cos(pitch)
+
+        func raw(_ x: Double, _ y: Double, _ z: Double) -> (Double, Double) {
+            let rx = x * cy - y * sy
+            let ry = x * sy + y * cy
+            return (rx, -(ry * sp + z * cp))
+        }
+
+        var pminX = Double.infinity, pmaxX = -Double.infinity
+        var pminY = Double.infinity, pmaxY = -Double.infinity
+        for zz in [0.0, -depth] {
+            for (xx, yy) in [(minX, minY), (maxX, minY), (maxX, maxY), (minX, maxY)] {
+                let r = raw(xx, yy, zz)
+                pminX = min(pminX, r.0); pmaxX = max(pmaxX, r.0)
+                pminY = min(pminY, r.1); pmaxY = max(pmaxY, r.1)
+            }
+        }
+        let pad = 26.0
+        let w = max(pmaxX - pminX, 1), h = max(pmaxY - pminY, 1)
+        let k = min((size.width - pad * 2) / w, (size.height - pad * 2) / h) * zoom
+        let ox = size.width / 2, oy = size.height / 2
+        let mx = (pminX + pmaxX) / 2, my = (pminY + pmaxY) / 2
+
+        func P(_ x: Double, _ y: Double, _ z: Double) -> CGPoint {
+            let r = raw(x, y, z)
+            return CGPoint(x: ox + (r.0 - mx) * k, y: oy + (r.1 - my) * k)
+        }
+
+        func ringPath(_ z: Double) -> Path {
+            var path = Path()
+            guard let f = pts.first else { return path }
+            path.move(to: P(f.x, f.y, z))
+            for q in pts.dropFirst() {
+                path.addLine(to: P(q.x, q.y, z))
+            }
+            return path
+        }
+
+        // 底面（最深处）
+        let bottom = ringPath(-depth)
+        ctx.fill(bottom, with: .color(Color.orange.opacity(0.10)))
+        ctx.stroke(bottom, with: .color(Color(red: 0.70, green: 0.72, blue: 0.76)), lineWidth: 1)
+
+        // 每层轮廓（浅橙，表示分层切深）
+        if layers > 1 {
+            for i in 1..<layers {
+                let z = -min(depth, Double(i) * step)
+                ctx.stroke(ringPath(z), with: .color(Color.orange.opacity(0.25)), lineWidth: 0.7)
+            }
+        }
+
+        // 竖边（每 2 个点取一个，最多 30 条，避免太乱）
+        let strideStep = max(1, pts.count / 30)
+        for i in Swift.stride(from: 0, to: pts.count, by: strideStep) {
+            let q = pts[i]
+            ctx.stroke(Path { p in
+                p.move(to: P(q.x, q.y, 0))
+                p.addLine(to: P(q.x, q.y, -depth))
+            }, with: .color(Color(red: 0.78, green: 0.80, blue: 0.83)), lineWidth: 0.8)
+        }
+
+        // 顶面（草图轮廓）
+        let top = ringPath(0)
+        ctx.fill(top, with: .color(Color.orange.opacity(0.06)))
+        ctx.stroke(top, with: .color(.orange), lineWidth: 2)
+
+        // 进刀点与半圆进刀（同样投影到 3D 顶面上）
+        if let first = segs.first {
+            let p0 = first.p0
+            let t0 = ContourGeo.tangent(first)
+            let ccw = ContourGeo.signedArea(pts) > 0
+            let useLeft = spec.outward ? !ccw : ccw
+            let n = useLeft ? CGPoint(x: -t0.y, y: t0.x) : CGPoint(x: t0.y, y: -t0.x)
+            let lead = ContourProg.leadRadius(spec)
+            let ap = CGPoint(x: p0.x + n.x * lead * 2, y: p0.y + n.y * lead * 2)
+            let cp = CGPoint(x: p0.x + n.x * lead, y: p0.y + n.y * lead)
+
+            var circle = Path()
+            for i in 0...24 {
+                let a = Double(i) / 24.0 * 2 * Double.pi
+                let q = CGPoint(x: cp.x + lead * cos(a), y: cp.y + lead * sin(a))
+                let sp2 = P(q.x, q.y, 0)
+                if i == 0 { circle.move(to: sp2) } else { circle.addLine(to: sp2) }
+            }
+            ctx.stroke(circle, with: .color(Color.orange.opacity(0.35)), lineWidth: 1)
+
+            ctx.stroke(Path { p in
+                p.move(to: P(p0.x, p0.y, 0))
+                p.addLine(to: P(ap.x, ap.y, 0))
+            }, with: .color(Color(red: 0.62, green: 0.65, blue: 0.70)),
+               style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+
+            let apP = P(ap.x, ap.y, 0)
+            ctx.fill(Path(ellipseIn: CGRect(x: apP.x - 4, y: apP.y - 4, width: 8, height: 8)),
+                     with: .color(Color(red: 0.72, green: 0.74, blue: 0.78)))
+            let p0P = P(p0.x, p0.y, 0)
+            ctx.fill(Path(ellipseIn: CGRect(x: p0P.x - 4.5, y: p0P.y - 4.5, width: 9, height: 9)),
+                     with: .color(.orange))
+        }
+    }
 
 // MARK: - 结果页
 

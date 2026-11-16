@@ -2,6 +2,12 @@ import SwiftUI
 import Foundation
 
 struct ContentView: View {
+    init(mode: MachiningMode = .pocket) {
+        var s = PocketSpec()
+        s.mode = mode
+        _spec = State(initialValue: s)
+    }
+
     @State private var spec = PocketSpec()
     @State private var result: String = ""
     @State private var manual: String = ""
@@ -43,7 +49,6 @@ struct ContentView: View {
     @State private var syncSource: SyncSource = .small
 
     var body: some View {
-        NavigationStack {
             Form {
                 Section("加工类型") {
                     Picker("类型", selection: $spec.mode) {
@@ -291,7 +296,8 @@ struct ContentView: View {
                     .disabled(!spec.canGenerate)
                 }
             }
-            .navigationTitle(AppInfo.appTitle)
+            .navigationTitle(spec.mode.rawValue)
+            .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showRef) {
                 CodeRefView()
             }
@@ -310,7 +316,6 @@ struct ContentView: View {
             .navigationDestination(isPresented: $showResult) {
                 ResultView(code: result, manual: manual, fileURL: fileURL, spec: spec)
             }
-        }
     }
 
     private func numRow(_ title: String, value: Binding<Double>) -> some View {

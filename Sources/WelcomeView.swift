@@ -9,7 +9,9 @@ struct WelcomeView: View {
 
     var body: some View {
         if entered {
-            ContentView()
+            NavigationStack {
+                HomeView()
+            }
         } else {
             VStack(spacing: 0) {
                 Spacer(minLength: 24)
