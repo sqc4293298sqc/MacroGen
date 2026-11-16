@@ -4,6 +4,7 @@ import UIKit
 /// 拍照/相册后先框住一个视图，避免把整张多视图总图当成一个零件。
 struct DrawingCropView: View {
     let image: UIImage
+    private let displayImage: UIImage
     var onCrop: (UIImage) -> Void
     var onCancel: () -> Void
     @Environment(\.dismiss) private var dismiss
@@ -12,6 +13,13 @@ struct DrawingCropView: View {
     @State private var dragStart: CGPoint?
     @State private var dragCurrent: CGPoint?
     @State private var lastValidCrop = CGRect(x: 0.06, y: 0.06, width: 0.88, height: 0.88)
+
+    init(image: UIImage, onCrop: @escaping (UIImage) -> Void, onCancel: @escaping () -> Void) {
+        self.image = image
+        self.displayImage = DrawingScanner.prepare(image, maxDimension: 3000)
+        self.onCrop = onCrop
+        self.onCancel = onCancel
+    }
 
     var body: some View {
         NavigationStack {
@@ -23,10 +31,10 @@ struct DrawingCropView: View {
                     .padding(.horizontal, 16)
 
                 GeometryReader { geo in
-                    let fit = fitRect(imageSize: image.size, in: geo.size)
+                    let fit = fitRect(imageSize: displayImage.size, in: geo.size)
                     ZStack {
                         Color.black.opacity(0.04)
-                        Image(uiImage: image)
+                        Image(uiImage: displayImage)
                             .resizable()
                             .frame(width: fit.width, height: fit.height)
                             .position(x: fit.midX, y: fit.midY)

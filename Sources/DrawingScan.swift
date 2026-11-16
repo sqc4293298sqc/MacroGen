@@ -199,6 +199,9 @@ enum DrawingScanner {
         let warnings: [String] = {
             var w: [String] = []
             if geometryFallback { w.append("没识别到闭合轮廓，先按矩形生成，请核对外形") }
+            let touchesCropEdge = rawBox.minX < 0.015 || rawBox.maxX > 0.985
+                || rawBox.minY < 0.015 || rawBox.maxY > 0.985
+            if touchesCropEdge { w.append("外轮廓贴着裁剪边，可能把图框/视图边框当成零件；框选时留一点边") }
             if ocr.pair == nil { w.append(ocr.numbers.isEmpty ? "没读到尺寸，按 100 mm 估算，请核对" : "只读到一个尺寸，另一个按图比例推算") }
             if ocr.thickness == nil { w.append("厚度没读到，按 10 mm 生成，请核对") }
             if holes.feats.isEmpty && !ocr.holeDias.isEmpty { w.append("读到孔径标注，但没识别到圆的闭合轮廓，孔请手动加") }
@@ -243,6 +246,9 @@ enum DrawingScanner {
             let a = abs(signedArea(p))
             guard b.width > 0.12, b.height > 0.12, a > 0.025 else { continue }
             if a > 0.82 { continue }
+            // 贴满裁剪框的通常不是零件轮廓，而是图纸边框/视图框
+            let touchesEdges = b.minX < 0.015 && b.maxX > 0.985 && b.minY < 0.015 && b.maxY > 0.985
+            if touchesEdges && a > 0.65 { continue }
             if best == nil || a > best!.2 {
                 best = (c, p, a)
             }
