@@ -355,7 +355,6 @@ struct DrawScreen: View {
                      with: .color(.orange))
         }
     }
-}
 
     private func viewChip(_ text: String, on: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -489,6 +488,7 @@ struct DrawScreen: View {
                      with: .color(.orange))
         }
     }
+}
 
 // MARK: - 结果页
 
