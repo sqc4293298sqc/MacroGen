@@ -20,6 +20,7 @@ enum PartFeatKind: String, CaseIterable, Identifiable {
 
 struct PartFeat: Identifiable, Equatable {
     var id = UUID()
+    var name: String = ""
     var kind: PartFeatKind = .hole
     var x: Double = 0
     var y: Double = 0
@@ -29,7 +30,9 @@ struct PartFeat: Identifiable, Equatable {
     var depth: Double = 5      // 型腔深度（孔不用）
 
     init(kind: PartFeatKind = .hole, x: Double = 0, y: Double = 0,
-         dia: Double = 10, w: Double = 30, h: Double = 20, depth: Double = 5) {
+         dia: Double = 10, w: Double = 30, h: Double = 20, depth: Double = 5,
+         name: String = "") {
+        self.name = name
         self.kind = kind
         self.x = x
         self.y = y
@@ -106,6 +109,8 @@ struct PartSpec {
     var tapDia: Double = 10
 
     var coord: Int = 54           // G54~G59
+    var originX: Double = 0       // G54/G55… 的 X0Y0 落在草图坐标的哪个点
+    var originY: Double = 0
 }
 
 // MARK: - 多工序程序
@@ -173,6 +178,24 @@ enum PartProg {
         )
     }
 
+    /// 按工件原点平移整件：让设定的 X0Y0 点变成程序里的 0,0
+    static func shifted(_ p: PartSpec, dx: Double, dy: Double) -> PartSpec {
+        var q = p
+        q.nodes = p.nodes.map { n in
+            var m = n; m.x += dx; m.y += dy; return m
+        }
+        q.feats = p.feats.map { f in
+            var m = f; m.x += dx; m.y += dy; return m
+        }
+        q.innerLoops = p.innerLoops.map { l in
+            var m = l
+            m.cx += dx; m.cy += dy
+            m.nodes = l.nodes.map { n in var k = n; k.x += dx; k.y += dy; return k }
+            return m
+        }
+        return q
+    }
+
     static func bbox(_ p: PartSpec) -> CGRect {
         let ps = pts(p)
         guard let f = ps.first else { return CGRect(x: -50, y: -30, width: 100, height: 60) }
@@ -198,7 +221,7 @@ enum PartProg {
                 guard p.doHole else { continue }
                 switch p.holeMode {
                 case .spiral:
-                    out.append("孔 Ø\(ncf(f.dia)) · 螺旋铣　T\(p.holeTool) D\(ncf(p.holeDia))")
+                    out.append("\(f.name.isEmpty ? "孔" : f.name) Ø\(ncf(f.dia)) · 螺旋铣　T\(p.holeTool) D\(ncf(p.holeDia))")
                 case .g81:
                     out.append("孔 Ø\(ncf(f.dia)) · 钻孔 G81　T\(p.holeTool) D\(ncf(f.dia))")
                 case .g83:
@@ -261,7 +284,12 @@ enum PartProg {
     }
 
     /// 把所有工序串成一个程序：共用一段抬头，每段自己带换刀后要用的 G43 H、S、F
-    static func build(_ p: PartSpec) -> String {
+    static func build(_ spec: PartSpec) -> String {
+        var p = spec
+        let ox = spec.originX, oy = spec.originY
+        if abs(ox) > 1e-9 || abs(oy) > 1e-9 {
+            p = shifted(spec, dx: -ox, dy: -oy)
+        }
         var blocks: [String] = []
         var seq = 0
         var lastTool = -1
@@ -390,9 +418,10 @@ enum PartProg {
         L.append("O1010 (绘图编程 · 多工序)")
         let b = bbox(p)
         L.append("( 外形 \(ncf(Double(b.width))) × \(ncf(Double(b.height)))  厚\(ncf(p.height))  顶面余量\(ncf(p.topStock)) )")
+        L.append("( 工件坐标系 G\(p.coord)  X0=\(ncf(ox)) Y0=\(ncf(oy)) (草图坐标)  Z0=工件顶面 )")
         L.append("( 共 \(blocks.count) 道工序，每段前面注明了用哪把刀，换刀后从该段重新启动 )")
         L.append("G17 G21 G40 G49 G80 G90 G\(p.coord)")
-        L.append("( X0 Y0 为 G\(p.coord) 零点；外形按中心对称编程，毛坯装夹请对中心 )")
+        L.append("( X0 Y0 为 G\(p.coord) 零点；已按上面基准平移，程序坐标为工件坐标 )")
         L.append(blocks.joined(separator: "\n"))
         L.append("G0 Z\(ncf(p.safeZ, 1))")
         L.append("M5")

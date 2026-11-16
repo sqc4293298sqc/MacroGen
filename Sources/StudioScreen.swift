@@ -23,6 +23,21 @@ struct StudioScreen: View {
 
     @State private var showRotate = false
     @State private var showScale = false
+    @State private var showOpSheet = false
+    @State private var opSheetName = ""
+    @State private var gridStep = 10.0
+    @State private var snapGrid = false
+    @State private var snapVertex = false
+    @State private var dragFeatID: UUID? = nil
+    @State private var showDimEdit = false
+    @State private var dimEditTitle = ""
+    @State private var dimEditText = ""
+    @State private var dimTarget: DimTarget = .none
+
+    private enum DimTarget: Equatable {
+        case none, rectL, rectW, circleD, slotL
+        case nodeLen(Int), nodeAngle(Int), nodeR(Int)
+    }
 
     init() {
         var s = PartSpec()
@@ -64,6 +79,16 @@ struct StudioScreen: View {
         .sheet(isPresented: $showScale) {
             TransformSheet(spec: $spec, rotate: false)
         }
+        .sheet(isPresented: $showOpSheet) {
+            OpParamsSheet(spec: $spec, op: opSheetName)
+        }
+        .alert("改尺寸", isPresented: $showDimEdit) {
+            TextField("数值", text: $dimEditText).keyboardType(.decimalPad)
+            Button("确定") { applyDimEdit() }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text(dimEditTitle + "：输入新的毫米值 / 角度值")
+        }
     }
 
     // MARK: - 1 草图
@@ -85,6 +110,9 @@ struct StudioScreen: View {
                         addPointAt(v.location, size: geo.size)
                     }
                 })
+                .simultaneousGesture(SpatialTapGesture(count: 2).onEnded { v in
+                    pickDim(at: v.location, size: geo.size)
+                })
             }
             .frame(height: 320)
             .background(Color.white)
@@ -105,15 +133,20 @@ struct StudioScreen: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 7) {
                     chip("直线", spec.template == .free) { makeLine() }
+                    chip("多段线", spec.template == .free && sketchTool == "直线") { makeLine() }
                     chip("矩形", spec.template == .rect) { sketchTool = ""; spec.template = .rect }
                     chip("中心矩形", spec.template == .rect) { sketchTool = ""; spec.template = .rect }
                     chip("圆角矩形", spec.template == .rect && spec.rectR > 0) { sketchTool = ""; spec.template = .rect; spec.rectR = 8 }
                     chip("圆", spec.template == .circle) { sketchTool = ""; spec.template = .circle }
+                    chip("三点圆", sketchTool == "三点圆") { sketchTool = "三点圆" }
+                    chip("圆弧", sketchTool == "圆弧") { sketchTool = "圆弧" }
                     chip("椭圆", false) { sketchTool = ""; makeEllipse() }
                     chip("多边形", false) { sketchTool = ""; makePolygon(6) }
                     chip("五角星", false) { sketchTool = ""; makeStar() }
                     chip("样条", false) { sketchTool = ""; makeSpline() }
                     chip("腰形槽", spec.template == .slot) { sketchTool = ""; spec.template = .slot }
+                    chip("平行四边形", false) { sketchTool = ""; makeParallelogram() }
+                    chip("点", sketchTool == "点") { sketchTool = "点" }
                     chip("自由", spec.template == .free) { sketchTool = ""; spec.template = .free; if spec.nodes.isEmpty { fillRectNodes() } }
                 }
                 .padding(.vertical, 2)
@@ -131,13 +164,17 @@ struct StudioScreen: View {
                     chip("圆角", false) { filletOuter(filletR) }
                     chip("倒角", false) { chamferOuter(chamferC) }
                     chip("围栏修剪", false) { regionTrim() }
+                    chip("区域修剪", false) { regionTrim() }
+                    chip("几何约束", false) { constrain(horizontal: true) }
                     chip("水平约束", false) { constrain(horizontal: true) }
                     chip("竖直约束", false) { constrain(horizontal: false) }
+                    chip("等长约束", false) { equalizeSegments() }
                     chip("镜像", false) { mirrorOuter() }
                     chip("偏置", false) { offsetOuter(5) }
                     chip("阵列", false) { arrayInner() }
-                    chip("点", false) { sketchTool = "点" }
                     chip("三点圆", false) { threePointCircle() }
+                    chip("圆弧", false) { threePointArc() }
+                    chip("移动轮廓", false) { moveOuter() }
                     chip("旋转零件", false) { showRotate = true }
                     chip("缩放零件", false) { showScale = true }
                     chip("清空内轮廓", false) { spec.innerLoops.removeAll() }
@@ -164,6 +201,22 @@ struct StudioScreen: View {
             }
             numRow("零件厚度 H（拉伸高度）", $spec.height)
             numRow("顶面余量 (mm)", $spec.topStock)
+        }
+
+        Section("草图视图") {
+            HStack {
+                Text("网格大小").font(.system(size: 13))
+                Spacer()
+                Picker("", selection: $gridStep) {
+                    Text("5 mm").tag(5.0)
+                    Text("10 mm").tag(10.0)
+                    Text("20 mm").tag(20.0)
+                    Text("50 mm").tag(50.0)
+                }
+                .labelsHidden()
+            }
+            Toggle("对象捕捉（吸附节点）", isOn: $snapVertex)
+            Toggle("网格吸附", isOn: $snapGrid)
         }
 
         Section {
@@ -305,8 +358,14 @@ struct StudioScreen: View {
             }
         }
         guard let i = dragNode, i < spec.nodes.count else { return }
-        spec.nodes[i].x = b.midX + (Double(loc.x) - Double(size.width) / 2) / k
-        spec.nodes[i].y = b.midY - (Double(loc.y) - Double(size.height) / 2) / k
+        var nx = b.midX + (Double(loc.x) - Double(size.width) / 2) / k
+        var ny = b.midY - (Double(loc.y) - Double(size.height) / 2) / k
+        if snapGrid, gridStep > 0.01 {
+            nx = round(nx / gridStep) * gridStep
+            ny = round(ny / gridStep) * gridStep
+        }
+        spec.nodes[i].x = nx
+        spec.nodes[i].y = ny
     }
 
     private func drawSketch(context: GraphicsContext, size: CGSize) {
@@ -319,8 +378,8 @@ struct StudioScreen: View {
             CGPoint(x: ox + (x - b.midX) * k, y: oy - (y - b.midY) * k)
         }
 
-        // 网格 10mm
-        let stepMM = 10.0
+        // 网格（默认 10mm，可切 5/20/50）
+        let stepMM = max(gridStep, 1)
         let halfW = Double(size.width) / 2 / k
         let halfH = Double(size.height) / 2 / k
         var gx = floor((b.midX - halfW) / stepMM) * stepMM
@@ -429,6 +488,18 @@ struct StudioScreen: View {
                     ctx.draw(Text(String(format: "%.1f", len)).font(.system(size: 9)).foregroundColor(.blue),
                  at: CGPoint(x: mid.x, y: mid.y - 10))
                 }
+                for i in nodes.indices {
+                    let deg = vertexAngle(nodes, i)
+                    let q = P(nodes[i].x, nodes[i].y)
+                    ctx.draw(Text(String(format: "%.0f°", deg)).font(.system(size: 8)).foregroundColor(.purple),
+                             at: CGPoint(x: q.x + 12, y: q.y + 10))
+                    if nodes[i].kind != .line {
+                        let a = nodes[i], c = nodes[(i + 1) % nodes.count]
+                        let mid = P((a.x + c.x) / 2, (a.y + c.y) / 2)
+                        ctx.draw(Text("R" + ncf(a.r)).font(.system(size: 8)).foregroundColor(.green),
+                                 at: CGPoint(x: mid.x, y: mid.y + 9))
+                    }
+                }
             }
         }
     }
@@ -440,6 +511,112 @@ struct StudioScreen: View {
         ctx.stroke(p, with: .color(.blue), lineWidth: 0.8)
         ctx.draw(Text(text).font(.system(size: 10, weight: .medium)).foregroundColor(.blue),
                  at: CGPoint(x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 - 9))
+    }
+
+    private func vertexAngle(_ nodes: [ContourNode], _ i: Int) -> Double {
+        guard nodes.count > 2 else { return 0 }
+        let cur = nodes[i]
+        let prev = nodes[(i + nodes.count - 1) % nodes.count]
+        let next = nodes[(i + 1) % nodes.count]
+        let ux = prev.x - cur.x, uy = prev.y - cur.y
+        let vx = next.x - cur.x, vy = next.y - cur.y
+        let lu = hypot(ux, uy), lv = hypot(vx, vy)
+        guard lu > 1e-9, lv > 1e-9 else { return 0 }
+        let dot = max(-1.0, min(1.0, (ux * vx + uy * vy) / (lu * lv)))
+        return acos(dot) * 180 / Double.pi
+    }
+
+    private func pickDim(at loc: CGPoint, size: CGSize) {
+        let b = sketchBBox()
+        let k = sketchScale(b: b, size: size)
+        let ox = Double(size.width) / 2, oy = Double(size.height) / 2
+        func P(_ x: Double, _ y: Double) -> CGPoint {
+            CGPoint(x: ox + (x - Double(b.midX)) * k, y: oy - (y - Double(b.midY)) * k)
+        }
+        var hits: [(DimTarget, CGPoint, String, Double)] = []
+        switch spec.template {
+        case .rect:
+            hits.append((.rectL, P(0, -spec.rectW / 2 - 14), "长 L", spec.rectL))
+            hits.append((.rectW, P(-spec.rectL / 2 - 14, 0), "宽 W", spec.rectW))
+        case .circle:
+            hits.append((.circleD, P(0, 0), "直径 Ø", spec.circleD))
+        case .slot:
+            hits.append((.slotL, P(0, -spec.slotW / 2 - 12), "槽长 L", spec.slotL))
+        case .free:
+            let nodes = spec.nodes
+            if nodes.count > 1 {
+                for i in nodes.indices {
+                    let a = nodes[i], c = nodes[(i + 1) % nodes.count]
+                    let mid = P((a.x + c.x) / 2, (a.y + c.y) / 2 - 10 / k)
+                    hits.append((.nodeLen(i), mid, "第 \(i + 1) 段长度", hypot(c.x - a.x, c.y - a.y)))
+                }
+                for i in nodes.indices {
+                    let q = P(nodes[i].x, nodes[i].y)
+                    hits.append((.nodeAngle(i), CGPoint(x: q.x + 12, y: q.y + 10), "点 \(i + 1) 角度", vertexAngle(nodes, i)))
+                }
+                for i in nodes.indices where nodes[i].kind != .line {
+                    let a = nodes[i], c = nodes[(i + 1) % nodes.count]
+                    let mid = P((a.x + c.x) / 2, (a.y + c.y) / 2)
+                    hits.append((.nodeR(i), CGPoint(x: mid.x, y: mid.y + 9), "点 \(i + 1) 圆弧 R", nodes[i].r))
+                }
+            }
+        }
+        var best: (DimTarget, String, Double)? = nil
+        var bestD = 30.0
+        for h in hits {
+            let d = hypot(Double(loc.x) - Double(h.1.x), Double(loc.y) - Double(h.1.y))
+            if d < bestD { bestD = d; best = (h.0, h.2, h.3) }
+        }
+        guard let b2 = best else { return }
+        dimTarget = b2.0
+        dimEditTitle = "改 " + b2.1
+        dimEditText = String(format: "%.2f", b2.2)
+        showDimEdit = true
+    }
+
+    private func applyDimEdit() {
+        guard let v = Double(dimEditText), v.isFinite else { return }
+        switch dimTarget {
+        case .rectL:
+            if v > 0.1 { spec.rectL = v }
+        case .rectW:
+            if v > 0.1 { spec.rectW = v }
+        case .circleD:
+            if v > 0.1 { spec.circleD = v }
+        case .slotL:
+            if v > 0.1 { spec.slotL = v }
+        case .nodeLen(let i):
+            guard spec.nodes.count > 1, v > 0.05 else { return }
+            let a = spec.nodes[i]
+            let c = spec.nodes[(i + 1) % spec.nodes.count]
+            let dx = c.x - a.x, dy = c.y - a.y
+            let len = hypot(dx, dy)
+            guard len > 1e-6 else { return }
+            let nx = a.x + dx / len * v
+            let ny = a.y + dy / len * v
+            let j = (i + 1) % spec.nodes.count
+            spec.nodes[j].x = nx
+            spec.nodes[j].y = ny
+        case .nodeAngle(let i):
+            guard spec.nodes.count > 2 else { return }
+            let cur = spec.nodes[i]
+            let prev = spec.nodes[(i + spec.nodes.count - 1) % spec.nodes.count]
+            let next = spec.nodes[(i + 1) % spec.nodes.count]
+            let old = vertexAngle(spec.nodes, i)
+            let delta = (v - old) * Double.pi / 180
+            let ux = prev.x - cur.x, uy = prev.y - cur.y
+            let vx = next.x - cur.x, vy = next.y - cur.y
+            let cross = ux * vy - uy * vx
+            let sign = cross >= 0 ? 1.0 : -1.0
+            let ca = cos(delta * sign), sa = sin(delta * sign)
+            let j = (i + 1) % spec.nodes.count
+            spec.nodes[j].x = cur.x + vx * ca - vy * sa
+            spec.nodes[j].y = cur.y + vx * sa + vy * ca
+        case .nodeR(let i):
+            if v > 0.01 { spec.nodes[i].r = v }
+        case .none:
+            break
+        }
     }
 
     private func sketchDrawSpec() -> DrawSpec {
@@ -507,8 +684,20 @@ struct StudioScreen: View {
         let k = sketchScale(b: b, size: size)
         let x = b.midX + (Double(loc.x) - Double(size.width) / 2) / k
         let y = b.midY - (Double(loc.y) - Double(size.height) / 2) / k
-        if sketchTool == "点" {
-            refPoints.append(CGPoint(x: x, y: y))
+        var px = x, py = y
+        if snapGrid, gridStep > 0.01 {
+            px = round(px / gridStep) * gridStep
+            py = round(py / gridStep) * gridStep
+        }
+        if snapVertex, let near = spec.nodes.min(by: {
+            hypot($0.x - px, $0.y - py) < hypot($1.x - px, $1.y - py)
+        }), hypot(near.x - px, near.y - py) < 8 {
+            px = near.x; py = near.y
+        }
+        if sketchTool == "点" || sketchTool == "三点圆" || sketchTool == "圆弧" {
+            refPoints.append(CGPoint(x: px, y: py))
+            if sketchTool == "三点圆" && refPoints.count >= 3 { threePointCircle() }
+            if sketchTool == "圆弧" && refPoints.count >= 3 { threePointArc() }
             return
         }
         if spec.nodes.isEmpty {
@@ -545,6 +734,19 @@ struct StudioScreen: View {
             let rr = i % 2 == 0 ? R : r
             return ContourNode(x: rr * cos(a), y: rr * sin(a))
         }
+        spec.template = .free
+    }
+
+    private func makeParallelogram() {
+        let L = max(spec.rectL, 20)
+        let H = max(spec.rectW, 12)
+        let skew = H / 3
+        spec.nodes = [
+            ContourNode(x: -L / 2 + skew, y: -H / 2),
+            ContourNode(x: L / 2 + skew, y: -H / 2),
+            ContourNode(x: L / 2 - skew, y: H / 2),
+            ContourNode(x: -L / 2 - skew, y: H / 2)
+        ]
         spec.template = .free
     }
 
@@ -646,6 +848,43 @@ struct StudioScreen: View {
         for i in spec.nodes.indices {
             if horizontal { spec.nodes[i].y = f.y } else { spec.nodes[i].x = f.x }
         }
+    }
+
+    private func equalizeSegments() {
+        if spec.template == .rect {
+            spec.rectW = spec.rectL
+            return
+        }
+        var pts = outerPoints()
+        if pts.count > 3, let f = pts.first, let l = pts.last, hypot(f.x - l.x, f.y - l.y) < 0.01 {
+            pts.removeLast()
+        }
+        guard pts.count >= 3 else { return }
+        let n = pts.count
+        var total = 0.0
+        for i in 0..<n {
+            let a = pts[i], b = pts[(i + 1) % n]
+            total += hypot(Double(b.x - a.x), Double(b.y - a.y))
+        }
+        let avg = total / Double(n)
+        var out = [pts[0]]
+        for i in 0..<(n - 1) {
+            let a = out[i]
+            let b = pts[(i + 1) % n]
+            let dx = Double(b.x - a.x), dy = Double(b.y - a.y)
+            let len = hypot(dx, dy)
+            guard len > 1e-6 else { continue }
+            out.append(CGPoint(x: Double(a.x) + dx / len * avg,
+                               y: Double(a.y) + dy / len * avg))
+        }
+        var nodes = out.map { ContourNode(x: Double($0.x), y: Double($0.y)) }
+        let last = nodes[nodes.count - 1], first = nodes[0]
+        let closing = hypot(Double(last.x - first.x), Double(last.y - first.y))
+        if closing > 1e-6 {
+            nodes.append(ContourNode(x: Double(first.x) + (Double(last.x - first.x)) / closing * avg,
+                                     y: Double(first.y) + (Double(last.y - first.y)) / closing * avg))
+        }
+        if nodes.count >= 3 { spec.nodes = nodes; spec.template = .free }
     }
 
     private func regionTrim() {
@@ -805,14 +1044,33 @@ struct StudioScreen: View {
                 .highPriorityGesture(
                     DragGesture(minimumDistance: 2)
                         .onChanged { g in
-                            guard !tapOnModel else { return }
+                            if tapOnModel {
+                                if dragFeatID == nil {
+                                    let cam = modelCam(size: geo.size)
+                                    var best = 40.0
+                                    for f in spec.feats {
+                                        let q = cam.p(f.x, f.y, 0)
+                                        let d = hypot(Double(g.startLocation.x) - Double(q.x),
+                                                      Double(g.startLocation.y) - Double(q.y))
+                                        if d < best { best = d; dragFeatID = f.id }
+                                    }
+                                }
+                                if let id = dragFeatID,
+                                   let idx = spec.feats.firstIndex(where: { $0.id == id }) {
+                                    let xy = modelXY(at: g.location, size: geo.size)
+                                    spec.feats[idx].x = xy.0
+                                    spec.feats[idx].y = xy.1
+                                    hasPtr = true; ptrX = xy.0; ptrY = xy.1
+                                    return
+                                }
+                            }
                             let dx = Double(g.translation.width - lastDrag.width)
                             let dy = Double(g.translation.height - lastDrag.height)
                             lastDrag = g.translation
                             yaw += dx * 0.012
                             pitch = min(1.55, max(-1.55, pitch - dy * 0.010))
                         }
-                        .onEnded { _ in lastDrag = .zero }
+                        .onEnded { _ in lastDrag = .zero; dragFeatID = nil }
                 )
                 .simultaneousGesture(MagnificationGesture()
                     .onChanged { v in zoom = min(3.0, max(0.4, zoomBase * Double(v))) }
@@ -874,6 +1132,9 @@ struct StudioScreen: View {
             ForEach($spec.feats) { $f in
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
+                        TextField("名称", text: $f.name)
+                            .font(.system(size: 13, weight: .semibold))
+                            .textFieldStyle(.roundedBorder)
                         Picker("", selection: $f.kind) {
                             ForEach(PartFeatKind.allCases) { k in Text(k.rawValue).tag(k) }
                         }
@@ -1186,27 +1447,119 @@ struct StudioScreen: View {
 
     // MARK: - 4 加工
 
+    private var hasHoleFeature: Bool {
+        spec.feats.contains { $0.kind == .hole }
+            || spec.innerLoops.contains { $0.template == .circle && $0.through }
+    }
+
+    private var hasPocketFeature: Bool {
+        spec.feats.contains { $0.kind != .hole }
+            || spec.innerLoops.contains { !($0.template == .circle && $0.through) }
+    }
+
+    private func openOp(_ name: String) {
+        opSheetName = name
+        showOpSheet = true
+    }
+
+    private func openOp(for text: String) {
+        if text.contains("平面铣") { openOp("平面铣") }
+        else if text.contains("轮廓铣") { openOp("轮廓铣") }
+        else if text.contains("螺旋铣") { openOp("螺旋铣") }
+        else if text.contains("型腔铣") { openOp("型腔铣") }
+        else if text.contains("攻丝") { openOp("攻丝") }
+        else if text.contains("钻") { openOp("钻孔") }
+    }
+
     private var camPage: some View {
         Group {
-            Section("加工工序（自动识别）") {
-                Toggle("平面铣（顶面余量 > 0）", isOn: $spec.doFace)
-                Toggle("轮廓铣（闭合外形）", isOn: $spec.doContour)
-                Toggle("孔加工", isOn: $spec.doHole)
-                Picker("孔方式", selection: $spec.holeMode) {
-                    ForEach(HoleMode.allCases) { m in Text(m.rawValue).tag(m) }
-                }
-                if spec.holeMode == .g83 {
-                    numRow("G83 啄钻 Q (mm)", $spec.peck)
-                }
-                if spec.holeMode == .tap {
-                    numRow("攻丝螺距 P (mm)", $spec.tapPitch)
-                    intRow("攻丝转速 S", $spec.tapRpm)
-                    toolRow("丝锥", $spec.tapTool, $spec.tapDia)
-                }
-                Toggle("型腔铣", isOn: $spec.doPocket)
-                Picker("工件坐标系", selection: $spec.coord) {
+            Section("工件坐标系") {
+                Picker("坐标系", selection: $spec.coord) {
                     ForEach([54, 55, 56, 57, 58, 59], id: \.self) { n in Text("G\(n)").tag(n) }
                 }
+                let bb = PartProg.bbox(spec)
+                HStack(spacing: 6) {
+                    Button("左下角") {
+                        spec.originX = Double(bb.minX)
+                        spec.originY = Double(bb.minY)
+                    }
+                    Button("中心") {
+                        spec.originX = Double(bb.midX)
+                        spec.originY = Double(bb.midY)
+                    }
+                    Button("自定义") { }
+                }
+                .buttonStyle(.bordered)
+                .font(.system(size: 12, weight: .semibold))
+                HStack(spacing: 6) {
+                    miniNum("X0", $spec.originX)
+                    miniNum("Y0", $spec.originY)
+                }
+                Text("当前 X0=\(ncf(spec.originX))  Y0=\(ncf(spec.originY))（草图坐标）  Z0=工件顶面")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("加工工序（自动识别）") {
+                let hasHole = hasHoleFeature
+                let hasPocket = hasPocketFeature
+                HStack {
+                    Toggle("平面铣（顶面余量 > 0）", isOn: $spec.doFace)
+                    Button("参数") { openOp("平面铣") }.buttonStyle(.borderless)
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                HStack {
+                    Toggle("轮廓铣（闭合外形）", isOn: $spec.doContour)
+                    Button("参数") { openOp("轮廓铣") }.buttonStyle(.borderless)
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                HStack {
+                    Toggle("螺旋铣", isOn: Binding(get: { spec.doHole && spec.holeMode == .spiral },
+                                                set: { v in
+                                                    spec.doHole = v && hasHole
+                                                    if v && hasHole { spec.holeMode = .spiral }
+                                                }))
+                        .disabled(!hasHole)
+                    Button("参数") { openOp("螺旋铣") }.buttonStyle(.borderless)
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                HStack {
+                    Toggle("型腔铣", isOn: $spec.doPocket)
+                        .disabled(!hasPocket)
+                    Button("参数") { openOp("型腔铣") }.buttonStyle(.borderless)
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                HStack {
+                    Toggle("钻孔", isOn: Binding(get: { spec.doHole && (spec.holeMode == .g81 || spec.holeMode == .g83) },
+                                                set: { v in
+                                                    spec.doHole = v && hasHole
+                                                    if v && hasHole && !(spec.holeMode == .g81 || spec.holeMode == .g83) {
+                                                        spec.holeMode = .g83
+                                                    }
+                                                }))
+                        .disabled(!hasHole)
+                    Picker("", selection: $spec.holeMode) {
+                        Text("G81").tag(HoleMode.g81)
+                        Text("G83").tag(HoleMode.g83)
+                    }
+                    .labelsHidden()
+                    .frame(width: 86)
+                    Button("参数") { openOp("钻孔") }.buttonStyle(.borderless)
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                HStack {
+                    Toggle("攻丝", isOn: Binding(get: { spec.doHole && spec.holeMode == .tap },
+                                                set: { v in
+                                                    spec.doHole = v && hasHole
+                                                    if v && hasHole { spec.holeMode = .tap }
+                                                }))
+                        .disabled(!hasHole)
+                    Button("参数") { openOp("攻丝") }.buttonStyle(.borderless)
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                Text(hasHole ? "图上识别到孔：可钻孔/螺旋铣/攻丝" : "图上没有孔，孔相关工序已锁")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(hasPocket ? "图上识别到型腔/内轮廓：可型腔铣" : "图上没有型腔，型腔铣已锁")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("本次程序包含") {
@@ -1215,6 +1568,7 @@ struct StudioScreen: View {
                     Text("没有工序：检查上面的开关和模型").font(.caption).foregroundStyle(.secondary)
                 } else {
                     ForEach(ops.indices, id: \.self) { i in
+                        Button { openOp(for: ops[i]) } label: {
                         HStack(spacing: 8) {
                             Text("\(i + 1)")
                                 .font(.system(size: 11, weight: .semibold)).foregroundStyle(.white)
@@ -1223,7 +1577,10 @@ struct StudioScreen: View {
                             Text(ops[i]).font(.system(size: 13))
                             Spacer()
                             Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.secondary)
                         }
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -1522,5 +1879,86 @@ private struct TransformSheet: View {
         d.circleD = spec.circleD; d.slotL = spec.slotL; d.slotW = spec.slotW
         spec.nodes = ContourGeo.buildNodes(d)
         spec.template = .free
+    }
+}
+
+
+// MARK: - 单工序参数（安卓式逐行参数弹框）
+
+private struct OpParamsSheet: View {
+    @Binding var spec: PartSpec
+    let op: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                switch op {
+                case "平面铣":
+                    dRow("刀径 Ø (mm)", $spec.faceDia)
+                    dRow("顶面余量 (mm)", $spec.topStock)
+                    dRow("每层 AP (mm)", $spec.stepDown)
+                    iRow("转速 S", $spec.spindle)
+                    iRow("进给 F", $spec.feed)
+                case "轮廓铣":
+                    dRow("刀径 Ø (mm)", $spec.contourDia)
+                    dRow("总深 (mm)", $spec.height)
+                    dRow("每层 AP (mm)", $spec.stepDown)
+                    iRow("T 刀号", $spec.contourTool)
+                case "螺旋铣":
+                    dRow("刀径 Ø (mm)", $spec.holeDia)
+                    dRow("每层 AP (mm)", $spec.stepDown)
+                    iRow("转速 S", $spec.spindle)
+                    iRow("进给 F", $spec.feed)
+                case "型腔铣":
+                    dRow("刀径 Ø (mm)", $spec.pocketDia)
+                    dRow("每层 AP (mm)", $spec.stepDown)
+                case "钻孔":
+                    dRow("G83 啄钻 Q (mm)", $spec.peck)
+                    iRow("转速 S", $spec.spindle)
+                    iRow("进给 F", $spec.feed)
+                    iRow("T 刀号", $spec.holeTool)
+                case "攻丝":
+                    dRow("螺距 P (mm)", $spec.tapPitch)
+                    iRow("转速 S", $spec.tapRpm)
+                    dRow("丝锥 Ø (mm)", $spec.tapDia)
+                    iRow("T 刀号", $spec.tapTool)
+                default:
+                    Text("没有这个工序")
+                }
+                Section {
+                    Text("改完返回，程序按新参数重新生成；孔/型腔尺寸仍在建模页改。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle(op + " 参数")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() }.bold() }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func dRow(_ t: String, _ v: Binding<Double>) -> some View {
+        HStack {
+            Text(t)
+            Spacer()
+            TextField("0", value: v, format: .number)
+                .keyboardType(.decimalPad)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 100)
+        }
+    }
+
+    private func iRow(_ t: String, _ v: Binding<Int>) -> some View {
+        HStack {
+            Text(t)
+            Spacer()
+            TextField("0", value: v, format: .number)
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 100)
+        }
     }
 }
