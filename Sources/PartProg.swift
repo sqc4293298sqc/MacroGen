@@ -125,7 +125,7 @@ struct PartStep: Identifiable, Equatable {
     }
 }
 
-enum SketchConstraintKind: String, CaseIterable, Identifiable {
+enum SketchConstraintKind: String, CaseIterable, Identifiable, Hashable {
     case horizontal = "水平（全部点）"
     case vertical = "竖直（全部点）"
     case coincident = "重合（首尾）"
@@ -146,6 +146,19 @@ struct SketchConstraint: Identifiable, Equatable {
     var c: Int = 0
     var d: Int = 0
     var label: String { kind.rawValue }
+    var symbol: String {
+        switch kind {
+        case .horizontal: return "H"
+        case .vertical: return "V"
+        case .coincident: return "C"
+        case .parallel: return "∥"
+        case .perpendicular: return "⊥"
+        case .equal: return "="
+        case .tangent: return "T"
+        case .midpoint: return "M"
+        case .concentric: return "◎"
+        }
+    }
 }
 
 struct PartSpec: Equatable {

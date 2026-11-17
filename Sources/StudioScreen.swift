@@ -94,6 +94,7 @@ struct StudioScreen: View {
     @State private var pickedFace: ModelPickFace? = nil
     @State private var pickedHole: ModelPickHole? = nil
     @State private var measurePickHint = "点模型上的边、面或孔进行拾取"
+    @State private var pickTolerance = 22.0
     @State private var bodyHighlight = false
     @State private var drawingExportURL: URL?
     @State private var material: StudioMaterial = .abs
@@ -155,6 +156,7 @@ struct StudioScreen: View {
         var a: CGPoint
         var b: CGPoint
         var z: Double
+        var distance: Double = 0
     }
 
     private struct ModelPickFace: Identifiable, Equatable {
@@ -1123,9 +1125,13 @@ struct StudioScreen: View {
         }
 
         Section("草图约束") {
+            let issues = constraintIssues
             HStack {
                 Text("已加 \(spec.constraints.count) 条").font(.system(size: 13, weight: .semibold))
                 Spacer()
+                if !issues.isEmpty {
+                    Text("过约束/冲突").font(.system(size: 11, weight: .bold)).foregroundStyle(.red)
+                }
                 if !spec.constraints.isEmpty {
                     Button("清空") { clearSketchConstraints() }
                         .font(.system(size: 12, weight: .semibold))
@@ -1136,8 +1142,19 @@ struct StudioScreen: View {
                 Text("右侧约束按钮添加后，拖动节点会按约束自动求解；改模板尺寸会清空约束。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            ForEach(issues, id: \.self) { issue in
+                Text(issue)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             ForEach(spec.constraints) { c in
                 HStack {
+                    Text(c.symbol)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 20, height: 18)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(studioBlue))
                     Text(c.label).font(.system(size: 12))
                     Spacer()
                     Button {
@@ -1700,6 +1717,24 @@ struct StudioScreen: View {
                                with: .color(.orange.opacity(0.6)), lineWidth: 1.5)
                 }
             }
+        }
+
+        // 约束图标：贴在关联几何旁，冲突约束显示红色
+        var badgeSlots: [String: Int] = [:]
+        for c in spec.constraints {
+            guard let a = constraintAnchor(c) else { continue }
+            let base = P(a.0, a.1)
+            let key = "\(Int(base.x / 18))-\(Int(base.y / 18))"
+            let slot = badgeSlots[key, default: 0]
+            badgeSlots[key] = slot + 1
+            let pos = CGPoint(x: base.x + 12 + CGFloat(slot % 3) * 16,
+                              y: base.y - 12 - CGFloat(slot / 3) * 16)
+            let bad = constraintResidual(c) > constraintTolerance(c)
+            let rect = CGRect(x: pos.x - 8, y: pos.y - 8, width: 16, height: 16)
+            ctx.fill(Path(roundedRect: rect, cornerRadius: 5),
+                     with: .color(bad ? Color.red : studioBlue))
+            ctx.draw(Text(c.symbol).font(.system(size: 8, weight: .bold)).foregroundColor(.white),
+                     at: pos)
         }
 
         // 尺寸标注
@@ -2457,7 +2492,8 @@ struct StudioScreen: View {
         pushUndo()
         spec.constraints.append(c)
         solveSketchConstraints()
-        showToastView("已加约束：\(kind.rawValue)")
+        let issues = constraintIssues
+        showToastView(issues.isEmpty ? "已加约束：\(kind.rawValue)" : "已加约束：\(kind.rawValue)；存在冲突，请检查红色提示")
     }
 
     private func solveSketchConstraints() {
@@ -2534,6 +2570,116 @@ struct StudioScreen: View {
                 spec.innerLoops[i].cx = Double(b.midX)
                 spec.innerLoops[i].cy = Double(b.midY)
             }
+        }
+    }
+
+    private func constraintTolerance(_ c: SketchConstraint) -> Double {
+        switch c.kind {
+        case .parallel, .perpendicular: return 0.02
+        case .tangent: return 0.10
+        default: return 0.05
+        }
+    }
+
+    private func constraintResidual(_ c: SketchConstraint) -> Double {
+        let n = spec.nodes.count
+        guard n >= 3 else { return 0 }
+        switch c.kind {
+        case .horizontal:
+            guard let first = spec.nodes.first else { return 0 }
+            return spec.nodes.map { abs($0.y - first.y) }.max() ?? 0
+        case .vertical:
+            guard let first = spec.nodes.first else { return 0 }
+            return spec.nodes.map { abs($0.x - first.x) }.max() ?? 0
+        case .coincident:
+            guard c.a < n, c.b < n else { return 0 }
+            return hypot(Double(spec.nodes[c.a].x - spec.nodes[c.b].x),
+                         Double(spec.nodes[c.a].y - spec.nodes[c.b].y))
+        case .parallel, .perpendicular, .equal:
+            guard c.a < n, c.b < n, c.c < n, c.d < n else { return 0 }
+            let ux = spec.nodes[c.b].x - spec.nodes[c.a].x
+            let uy = spec.nodes[c.b].y - spec.nodes[c.a].y
+            let vx = spec.nodes[c.d].x - spec.nodes[c.c].x
+            let vy = spec.nodes[c.d].y - spec.nodes[c.c].y
+            let lu = hypot(ux, uy), lv = hypot(vx, vy)
+            guard lu > 1e-6, lv > 1e-6 else { return 0 }
+            if c.kind == .equal { return abs(lu - lv) }
+            if c.kind == .parallel { return abs(ux * vy - uy * vx) / (lu * lv) }
+            return abs(ux * vx + uy * vy) / (lu * lv)
+        case .midpoint:
+            guard c.a < n else { return 0 }
+            let prev = spec.nodes[(c.a + n - 1) % n]
+            let next = spec.nodes[(c.a + 1) % n]
+            return hypot(Double(spec.nodes[c.a].x - (prev.x + next.x) / 2),
+                         Double(spec.nodes[c.a].y - (prev.y + next.y) / 2))
+        case .tangent:
+            guard c.a < n, c.a >= 2 else { return 0 }
+            let p0 = spec.nodes[c.a - 1], p1 = spec.nodes[c.a]
+            let prev = spec.nodes[c.a - 2]
+            let seg = ContourSeg(p0: CGPoint(x: p0.x, y: p0.y),
+                                 p1: CGPoint(x: p1.x, y: p1.y),
+                                 kind: spec.nodes[c.a].kind,
+                                 r: spec.nodes[c.a].r)
+            let t = ContourGeo.tangent(seg)
+            let vx = prev.x - p0.x, vy = prev.y - p0.y
+            let lv = hypot(vx, vy)
+            guard lv > 1e-6 else { return 0 }
+            return abs(vx * Double(t.y) - vy * Double(t.x))
+        case .concentric:
+            let b = PartProg.bbox(spec)
+            return spec.innerLoops.map {
+                hypot($0.cx - Double(b.midX), $0.cy - Double(b.midY))
+            }.max() ?? 0
+        }
+    }
+
+    private var constraintIssues: [String] {
+        var out: [String] = []
+        guard !spec.constraints.isEmpty else { return out }
+        let kinds = Set(spec.constraints.map(\.kind))
+        if kinds.contains(.horizontal) && kinds.contains(.vertical) {
+            out.append("过约束：水平 + 竖直同时存在，轮廓会被压成一条线")
+        }
+        if kinds.contains(.parallel) && kinds.contains(.perpendicular) {
+            out.append("约束冲突：同两段同时要求平行和垂直")
+        }
+        var seen = Set<String>()
+        for c in spec.constraints {
+            let key = "\(c.kind.rawValue)-\(c.a)-\(c.b)-\(c.c)-\(c.d)"
+            if !seen.insert(key).inserted {
+                out.append("重复约束：\(c.label)，建议删除一条")
+            }
+        }
+        for c in spec.constraints {
+            let r = constraintResidual(c)
+            if r > constraintTolerance(c) {
+                out.append("约束未同时满足：\(c.label) 残差 \(ncf(r))")
+            }
+        }
+        return Array(out.prefix(4))
+    }
+
+    private func constraintAnchor(_ c: SketchConstraint) -> (Double, Double)? {
+        let n = spec.nodes.count
+        guard n >= 3 else { return nil }
+        switch c.kind {
+        case .horizontal, .vertical:
+            let a = spec.nodes[0], b = spec.nodes[1]
+            return ((a.x + b.x) / 2, (a.y + b.y) / 2)
+        case .coincident:
+            guard c.b < n else { return nil }
+            return (spec.nodes[c.b].x, spec.nodes[c.b].y)
+        case .parallel, .perpendicular, .equal:
+            guard c.c < n, c.d < n else { return nil }
+            return ((spec.nodes[c.c].x + spec.nodes[c.d].x) / 2,
+                    (spec.nodes[c.c].y + spec.nodes[c.d].y) / 2)
+        case .midpoint, .tangent:
+            guard c.a < n else { return nil }
+            return (spec.nodes[c.a].x, spec.nodes[c.a].y)
+        case .concentric:
+            if let l = spec.innerLoops.first { return (l.cx, l.cy) }
+            let b = PartProg.bbox(spec)
+            return (Double(b.midX), Double(b.midY))
         }
     }
 
@@ -3700,7 +3846,7 @@ struct StudioScreen: View {
     }
 
     private func nearestEdge(_ cam: Cam, at loc: CGPoint) -> ModelPickEdge? {
-        var best = 15.0
+        var best = pickTolerance
         var hit: ModelPickEdge? = nil
         func scan(_ pts: [CGPoint], z: Double, prefix: String) {
             guard pts.count > 1 else { return }
@@ -3711,7 +3857,7 @@ struct StudioScreen: View {
                 let d = distanceToSegment(loc, pa, pb)
                 if d < best {
                     best = d
-                    hit = ModelPickEdge(id: "\(prefix)-\(i)", a: a, b: b, z: z)
+                    hit = ModelPickEdge(id: "\(prefix)-\(i)", a: a, b: b, z: z, distance: d)
                 }
             }
         }
@@ -3723,14 +3869,17 @@ struct StudioScreen: View {
     }
 
     private func nearestHole(_ cam: Cam, at loc: CGPoint) -> ModelPickHole? {
-        var best = 30.0
+        var best = Double.infinity
         var hit: ModelPickHole? = nil
         for f in spec.feats {
             let host = PartProg.hostZ(spec, f.x, f.y)
             let q = cam.p(f.x, f.y, host)
             let d = hypot(Double(loc.x) - Double(q.x), Double(loc.y) - Double(q.y))
             let dia = f.kind == .rectPocket ? max(f.w, f.h) : f.dia
-            if d < best, d < 12 + dia / 2 {
+            let qEdge = cam.p(f.x + dia / 2, f.y, host)
+            let screenRadius = abs(Double(qEdge.x - q.x))
+            let tol = min(max(pickTolerance, screenRadius * 0.7), 65)
+            if d < best, d < tol {
                 best = d
                 hit = ModelPickHole(id: "feat-\(f.id.uuidString)",
                                     name: f.name.isEmpty ? f.kind.rawValue : f.name,
@@ -3745,7 +3894,10 @@ struct StudioScreen: View {
             let host = PartProg.hostZ(spec, l.cx, l.cy)
             let q = cam.p(l.cx, l.cy, host)
             let d = hypot(Double(loc.x) - Double(q.x), Double(loc.y) - Double(q.y))
-            if d < best, d < 12 + l.circleD / 2 {
+            let qEdge = cam.p(l.cx + l.circleD / 2, l.cy, host)
+            let screenRadius = abs(Double(qEdge.x - q.x))
+            let tol = min(max(pickTolerance, screenRadius * 0.7), 65)
+            if d < best, d < tol {
                 best = d
                 hit = ModelPickHole(id: "loop-\(l.id.uuidString)",
                                     name: l.name, x: l.cx, y: l.cy, z: host,
@@ -3805,7 +3957,9 @@ struct StudioScreen: View {
             if pickedEdges.count >= 2 { pickedEdges = [] }
             pickedEdges.append(edge)
             pickedFace = nil; pickedHole = nil
+            let nearOther = edgeIsAmbiguous(cam, at: loc)
             measurePickHint = pickedEdges.count == 1 ? "边1 已拾取；再点一条边可测间距" : "两条边已拾取"
+            if nearOther { measurePickHint += "；附近边较近，放大后再点更稳" }
             showToastView("已拾取边")
         case .face:
             guard let face else {
@@ -3836,7 +3990,8 @@ struct StudioScreen: View {
                 if pickedEdges.count >= 2 { pickedEdges = [] }
                 pickedEdges.append(edge)
                 pickedFace = nil; pickedHole = nil
-                measurePickHint = "边已拾取"
+                let nearOther = edgeIsAmbiguous(cam, at: loc)
+                measurePickHint = nearOther ? "边已拾取；附近边较近，放大后再点更稳" : "边已拾取"
                 showToastView("已拾取边")
             } else {
                 measurePickHint = "未拾取到实体对象"
@@ -3852,9 +4007,77 @@ struct StudioScreen: View {
         (Double(e.a.x + e.b.x) / 2, Double(e.a.y + e.b.y) / 2, e.z)
     }
 
+    private func dot3(_ a: (Double, Double, Double), _ b: (Double, Double, Double)) -> Double {
+        a.0 * b.0 + a.1 * b.1 + a.2 * b.2
+    }
+
+    private func sub3(_ a: (Double, Double, Double), _ b: (Double, Double, Double)) -> (Double, Double, Double) {
+        (a.0 - b.0, a.1 - b.1, a.2 - b.2)
+    }
+
+    private func len3(_ a: (Double, Double, Double)) -> Double {
+        sqrt(dot3(a, a))
+    }
+
+    private func add3(_ a: (Double, Double, Double), _ b: (Double, Double, Double), _ s: Double = 1) -> (Double, Double, Double) {
+        (a.0 + b.0 * s, a.1 + b.1 * s, a.2 + b.2 * s)
+    }
+
+    private func clamp01(_ v: Double) -> Double { max(0, min(1, v)) }
+
+    /// 两条 3D 线段之间的最短距离（Ericson 线段-线段最近点算法）
+    private func segmentDistance3D(_ p1: (Double, Double, Double), _ p2: (Double, Double, Double),
+                                   _ q1: (Double, Double, Double), _ q2: (Double, Double, Double)) -> Double {
+        let d1 = sub3(p2, p1), d2 = sub3(q2, q1), r = sub3(p1, q1)
+        let a = dot3(d1, d1), e = dot3(d2, d2), f = dot3(d2, r)
+        var s = 0.0, t = 0.0
+        if a <= 1e-9, e <= 1e-9 { return len3(sub3(p1, q1)) }
+        if a <= 1e-9 {
+            t = clamp01(f / e)
+        } else {
+            let c = dot3(d1, r)
+            if e <= 1e-9 {
+                s = clamp01(-c / a)
+            } else {
+                let b = dot3(d1, d2)
+                let denom = a * e - b * b
+                s = denom > 1e-9 ? clamp01((b * f - c * e) / denom) : 0
+                t = (b * s + f) / e
+                if t < 0 {
+                    t = 0; s = clamp01(-c / a)
+                } else if t > 1 {
+                    t = 1; s = clamp01((b - c) / a)
+                }
+            }
+        }
+        let c1 = add3(p1, d1, s)
+        let c2 = add3(q1, d2, t)
+        return len3(sub3(c1, c2))
+    }
+
     private func edgeGap(_ a: ModelPickEdge, _ b: ModelPickEdge) -> Double {
-        let ma = midpoint(a), mb = midpoint(b)
-        return hypot(hypot(ma.0 - mb.0, ma.1 - mb.1), ma.2 - mb.2)
+        segmentDistance3D(
+            (Double(a.a.x), Double(a.a.y), a.z),
+            (Double(a.b.x), Double(a.b.y), a.z),
+            (Double(b.a.x), Double(b.a.y), b.z),
+            (Double(b.b.x), Double(b.b.y), b.z))
+    }
+
+    private func edgeIsAmbiguous(_ cam: Cam, at loc: CGPoint) -> Bool {
+        var ds: [Double] = []
+        func scan(_ pts: [CGPoint], z: Double) {
+            guard pts.count > 1 else { return }
+            for i in pts.indices {
+                let a = pts[i], b = pts[(i + 1) % pts.count]
+                let d = distanceToSegment(loc, cam.p(Double(a.x), Double(a.y), z),
+                                           cam.p(Double(b.x), Double(b.y), z))
+                if d <= pickTolerance { ds.append(d) }
+            }
+        }
+        scan(PartProg.pts(spec), z: 0)
+        for st in spec.steps { scan(PartProg.pts(st, spec), z: st.drawTop) }
+        ds.sort()
+        return ds.count > 1 && ds[1] - ds[0] < 3
     }
 
     private var measurePanel: some View {
@@ -3880,6 +4103,16 @@ struct StudioScreen: View {
                         }
                         .buttonStyle(.plain)
                     }
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("拾取半径").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(Int(pickTolerance)) pt").font(.system(size: 11, weight: .bold)).foregroundStyle(studioBlue)
+                    }
+                    Slider(value: $pickTolerance, in: 12...40, step: 1).tint(studioBlue)
+                    Text("边/孔太难点就调大；点错相邻边就调小。")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
                 }
                 HStack(spacing: 6) {
                     Text(measurePickHint)
@@ -3918,9 +4151,9 @@ struct StudioScreen: View {
                     }
                     if pickedEdges.count > 1 {
                         metricCard("边2 长度", "\(ncf(edgeLength(pickedEdges[1]))) mm")
-                        metricCard("两边中点距离", "\(ncf(edgeGap(pickedEdges[0], pickedEdges[1]))) mm")
+                        metricCard("两边最短距离（3D）", "\(ncf(edgeGap(pickedEdges[0], pickedEdges[1]))) mm")
                     } else if pickedEdges.count == 1 {
-                        metricCard("下一步", "再点一条边可测两条边中点距离")
+                        metricCard("下一步", "再点一条边可测两条边 3D 最短距离")
                     }
                     metricCard("外轮廓边数", "\(pts.count) 段")
                     metricCard("最长边", "\(ncf(longestEdge)) mm")
