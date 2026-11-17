@@ -2869,9 +2869,7 @@ struct StudioScreen: View {
                 }
                 Toggle("显示测量框", isOn: $measureOn).tint(studioBlue)
                 let pts = PartProg.pts(spec)
-                let longestEdge = zip(pts, Array(pts.dropFirst()) + [pts.first ?? .zero])
-                    .map { hypot(Double($0.x - $1.x), Double($0.y - $1.y)) }
-                    .max() ?? 0
+                let longestEdge = longestEdgeLength(pts)
                 switch measureTarget {
                 case .point:
                     metricCard("取点", hasPtr ? "X\(ncf(ptrX))  Y\(ncf(ptrY))" : "未取点")
@@ -2986,6 +2984,17 @@ struct StudioScreen: View {
     }
 
     // MARK: - 测量数据（2.5D 真实几何近似）
+
+    private func longestEdgeLength(_ pts: [CGPoint]) -> Double {
+        guard pts.count >= 2 else { return 0 }
+        var best = 0.0
+        for i in pts.indices {
+            let a = pts[i]
+            let b = pts[(i + 1) % pts.count]
+            best = max(best, hypot(Double(a.x - b.x), Double(a.y - b.y)))
+        }
+        return best
+    }
 
     private var partBBox: CGRect { PartProg.bbox(spec) }
 
