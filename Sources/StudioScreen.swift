@@ -286,7 +286,7 @@ struct StudioScreen: View {
             .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showMeasureSheet) {
-            measureSheet
+            AnyView(measureSheet)
         }
         .sheet(isPresented: $showRotate) {
             TransformSheet(spec: $spec, rotate: true, onUndo: { pushUndo() })
