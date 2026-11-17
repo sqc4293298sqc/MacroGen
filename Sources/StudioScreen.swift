@@ -84,6 +84,7 @@ struct StudioScreen: View {
     @State private var selectedSegB: Int? = nil
     @State private var constraintPickMode = false
     @State private var continuousDraw = true
+    @State private var autoConstrain = true
     @State private var gridAuto = true
     @State private var sketchFixed = false
     @State private var sectionOn = false
@@ -113,6 +114,7 @@ struct StudioScreen: View {
     @State private var showToast = false
     @State private var arrayCount = 6
     @State private var arrayRadius = 36.0
+    @State private var toolLibrary: [ToolRecord] = ToolLibraryStore.load()
 
     // 拍照图纸
     @State private var showPhotoMenu = false
