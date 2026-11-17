@@ -95,6 +95,8 @@ struct StudioScreen: View {
     @State private var pickedHole: ModelPickHole? = nil
     @State private var measurePickHint = "点模型上的边、面或孔进行拾取"
     @State private var pickTolerance = 22.0
+    @State private var pickToleranceByTarget: [String: Double] = [:]
+    @State private var measureHost: UIHostingController<AnyView>? = nil
     @State private var showConstraintBadges = true
     @State private var calibratingPick = false
     @State private var calibrationSample: PickCalibration? = nil
@@ -159,7 +161,9 @@ struct StudioScreen: View {
         var a: CGPoint
         var b: CGPoint
         var z: Double
+        var z2: Double? = nil
         var distance: Double = 0
+        var zEnd: Double { z2 ?? z }
     }
 
     private struct ModelPickFace: Identifiable, Equatable {
@@ -180,6 +184,10 @@ struct StudioScreen: View {
         var depth: Double
         var through: Bool
         var isPocket: Bool
+        var w: Double = 0
+        var h: Double = 0
+        var bottomZ: Double = 0
+        var onBottom: Bool = false
     }
 
     private struct ModelPickPoint: Equatable {
@@ -264,6 +272,10 @@ struct StudioScreen: View {
         }
         .onAppear {
             cam2DPaths = PartProg.toolpaths2D(spec)
+            pickTolerance = storedTolerance(for: measureTarget)
+        }
+        .onDisappear {
+            dismissMeasureSheet()
         }
         .sheet(isPresented: $showOpCode) {
             NavigationStack {
@@ -3231,7 +3243,7 @@ struct StudioScreen: View {
                 railButton("显示", "eye", active: modelPanel == .display) {
                     modelPanel = modelPanel == .display ? .none : .display
                 }
-                railButton("测量", "ruler", active: measureOn) {
+                railButton("测量", "ruler", active: measureHost != nil) {
                     presentMeasureSheet()
                 }
                 railButton("适合", "arrow.up.left.and.arrow.down.right", active: false) {
@@ -3861,8 +3873,17 @@ struct StudioScreen: View {
         return hypot(Double(p.x) - qx, Double(p.y) - qy)
     }
 
+    private func activeSectionCutZ() -> Double? {
+        guard sectionOn, sectionAxis == .z else { return nil }
+        let zTop = PartProg.maxZ(spec)
+        let zBottom = PartProg.minZ(spec)
+        let span = max(zTop - zBottom, 0.2)
+        return zTop - span * (sectionReverse ? (1 - sectionT) : sectionT)
+    }
+
     private func edgeCandidates(_ cam: Cam, at loc: CGPoint) -> [(ModelPickEdge, Double)] {
         var out: [(ModelPickEdge, Double)] = []
+        let cutZ = activeSectionCutZ()
         func scan(_ pts: [CGPoint], z: Double, prefix: String) {
             guard pts.count > 1 else { return }
             for i in pts.indices {
@@ -3873,9 +3894,31 @@ struct StudioScreen: View {
                 out.append((ModelPickEdge(id: "\(prefix)-\(i)", a: a, b: b, z: z, distance: d), d))
             }
         }
+        func scanVertical(_ pts: [CGPoint], top: Double, bottom: Double, prefix: String) {
+            guard top > bottom + 0.0001, pts.count > 1 else { return }
+            for i in pts.indices {
+                let p = pts[i]
+                let pa = cam.p(Double(p.x), Double(p.y), top)
+                let pb = cam.p(Double(p.x), Double(p.y), bottom)
+                let d = distanceToSegment(loc, pa, pb)
+                out.append((ModelPickEdge(id: "\(prefix)-v\(i)", a: p, b: p,
+                                           z: top, z2: bottom, distance: d), d))
+            }
+        }
         scan(PartProg.pts(spec), z: 0, prefix: "base")
+        let baseBottom = max(-spec.height, cutZ ?? -Double.greatestFiniteMagnitude)
+        if 0 > baseBottom + 0.0001 {
+            scanVertical(PartProg.pts(spec), top: 0, bottom: baseBottom, prefix: "base")
+        }
         for s in spec.steps {
             scan(PartProg.pts(s, spec), z: s.drawTop, prefix: "step-\(s.id.uuidString)")
+            let top = s.mode == .add ? s.z1 : s.drawTop
+            let bottom0 = s.mode == .add ? s.z0 : s.drawBottom
+            let bottom = max(bottom0, cutZ ?? -Double.greatestFiniteMagnitude)
+            if top > bottom + 0.0001 {
+                scanVertical(PartProg.pts(s, spec), top: top, bottom: bottom,
+                             prefix: "step-\(s.id.uuidString)")
+            }
         }
         return out.sorted { $0.1 < $1.1 }
     }
@@ -3884,45 +3927,95 @@ struct StudioScreen: View {
         edgeCandidates(cam, at: loc).first(where: { $0.1 <= pickTolerance })?.0
     }
 
+    private func holePolygon(_ cam: Cam, cx: Double, cy: Double, z: Double,
+                             w: Double, h: Double, rect: Bool) -> [CGPoint] {
+        if rect {
+            let x0 = cx - w / 2, x1 = cx + w / 2
+            let y0 = cy - h / 2, y1 = cy + h / 2
+            return [cam.p(x0, y0, z), cam.p(x1, y0, z),
+                    cam.p(x1, y1, z), cam.p(x0, y1, z)]
+        }
+        let r = max(max(w, h) / 2, 0.1)
+        return (0..<20).map { i in
+            let a = Double(i) / 20 * 2 * Double.pi
+            return cam.p(cx + r * cos(a), cy + r * sin(a), z)
+        }
+    }
+
     private func nearestHole(_ cam: Cam, at loc: CGPoint) -> ModelPickHole? {
         var best = Double.infinity
         var hit: ModelPickHole? = nil
+
+        func consider(_ id: String, _ name: String, cx: Double, cy: Double,
+                      host: Double, w: Double, h: Double, rect: Bool,
+                      depth: Double, through: Bool, isPocket: Bool) {
+            let bottomZ = through ? PartProg.minZ(spec) : host - depth
+            let topPoly = holePolygon(cam, cx: cx, cy: cy, z: host, w: w, h: h, rect: rect)
+            let bottomPoly = holePolygon(cam, cx: cx, cy: cy, z: bottomZ, w: w, h: h, rect: rect)
+            let topCenter = cam.p(cx, cy, host)
+            let bottomCenter = cam.p(cx, cy, bottomZ)
+            let topD = hypot(Double(loc.x) - Double(topCenter.x), Double(loc.y) - Double(topCenter.y))
+            let bottomD = hypot(Double(loc.x) - Double(bottomCenter.x), Double(loc.y) - Double(bottomCenter.y))
+            let topHit = pointInScreenPolygon(loc, topPoly)
+            let bottomHit = pointInScreenPolygon(loc, bottomPoly)
+            let onBottom = bottomHit && (!topHit || bottomD < topD - 2)
+            let d = onBottom ? bottomD : topD
+            let chosenCenter = onBottom ? bottomCenter : topCenter
+            let qEdge = cam.p(cx + max(w, h) / 2, cy, onBottom ? bottomZ : host)
+            let screenRadius = abs(Double(qEdge.x - chosenCenter.x))
+            let tol = min(max(pickTolerance, screenRadius * 0.6), 52)
+            let qualifies = onBottom ? bottomHit : (topHit || topD < tol)
+            guard qualifies, d < best else { return }
+            best = d
+            hit = ModelPickHole(id: id, name: name, x: cx, y: cy, z: host,
+                                dia: max(w, h), depth: through ? 0 : depth,
+                                through: through, isPocket: isPocket,
+                                w: w, h: h, bottomZ: bottomZ, onBottom: onBottom)
+        }
+
         for f in spec.feats {
             let host = PartProg.hostZ(spec, f.x, f.y)
-            let q = cam.p(f.x, f.y, host)
-            let d = hypot(Double(loc.x) - Double(q.x), Double(loc.y) - Double(q.y))
-            let dia = f.kind == .rectPocket ? max(f.w, f.h) : f.dia
-            let qEdge = cam.p(f.x + dia / 2, f.y, host)
-            let screenRadius = abs(Double(qEdge.x - q.x))
-            let tol = min(max(pickTolerance, screenRadius * 0.6), 52)
-            if d < best, d < tol {
-                best = d
-                hit = ModelPickHole(id: "feat-\(f.id.uuidString)",
-                                    name: f.name.isEmpty ? f.kind.rawValue : f.name,
-                                    x: f.x, y: f.y, z: host,
-                                    dia: f.kind == .rectPocket ? max(f.w, f.h) : f.dia,
-                                    depth: f.kind == .hole ? 0 : f.depth,
-                                    through: f.kind == .hole,
-                                    isPocket: f.kind != .hole)
-            }
+            let w = f.kind == .rectPocket ? f.w : f.dia
+            let h = f.kind == .rectPocket ? f.h : f.dia
+            consider("feat-\(f.id.uuidString)",
+                     f.name.isEmpty ? f.kind.rawValue : f.name,
+                     cx: f.x, cy: f.y, host: host,
+                     w: w, h: h, rect: f.kind == .rectPocket,
+                     depth: f.depth, through: f.kind == .hole,
+                     isPocket: f.kind != .hole)
         }
         for l in spec.innerLoops where l.template == .circle {
             let host = PartProg.hostZ(spec, l.cx, l.cy)
-            let q = cam.p(l.cx, l.cy, host)
-            let d = hypot(Double(loc.x) - Double(q.x), Double(loc.y) - Double(q.y))
-            let qEdge = cam.p(l.cx + l.circleD / 2, l.cy, host)
-            let screenRadius = abs(Double(qEdge.x - q.x))
-            let tol = min(max(pickTolerance, screenRadius * 0.6), 52)
-            if d < best, d < tol {
-                best = d
-                hit = ModelPickHole(id: "loop-\(l.id.uuidString)",
-                                    name: l.name, x: l.cx, y: l.cy, z: host,
-                                    dia: l.circleD,
-                                    depth: l.through ? 0 : l.depth,
-                                    through: l.through, isPocket: false)
-            }
+            consider("loop-\(l.id.uuidString)", l.name,
+                     cx: l.cx, cy: l.cy, host: host,
+                     w: l.circleD, h: l.circleD, rect: false,
+                     depth: l.depth, through: l.through,
+                     isPocket: false)
         }
         return hit
+    }
+
+    private func centroid(_ pts: [CGPoint]) -> CGPoint {
+        guard !pts.isEmpty else { return .zero }
+        let x = pts.reduce(0.0) { $0 + Double($1.x) } / Double(pts.count)
+        let y = pts.reduce(0.0) { $0 + Double($1.y) } / Double(pts.count)
+        return CGPoint(x: x, y: y)
+    }
+
+    private func pointInScreenPolygon(_ p: CGPoint, _ poly: [CGPoint]) -> Bool {
+        guard poly.count >= 3 else { return false }
+        var inside = false
+        var j = poly.count - 1
+        for i in poly.indices {
+            let xi = poly[i].x, yi = poly[i].y
+            let xj = poly[j].x, yj = poly[j].y
+            if (yi > p.y) != (yj > p.y) {
+                let x = (xj - xi) * (p.y - yi) / (yj - yi) + xi
+                if p.x < x { inside.toggle() }
+            }
+            j = i
+        }
+        return inside
     }
 
     private func faceAt(_ xy: (Double, Double), basePts: [CGPoint]) -> ModelPickFace? {
@@ -3930,7 +4023,7 @@ struct StudioScreen: View {
         if PartProg.pointIn(basePts, xy.0, xy.1) {
             best = ModelPickFace(id: "base-face", name: "基础顶面", z: 0,
                                  area: abs(ContourGeo.signedArea(basePts)),
-                                 center: CGPoint(x: xy.0, y: xy.1))
+                                 center: centroid(basePts))
         }
         for s in spec.steps {
             let pts = PartProg.pts(s, spec)
@@ -3939,10 +4032,62 @@ struct StudioScreen: View {
                 best = ModelPickFace(id: "step-\(s.id.uuidString)",
                                      name: "\(s.name) 顶面", z: s.drawTop,
                                      area: abs(ContourGeo.signedArea(pts)),
-                                     center: CGPoint(x: xy.0, y: xy.1))
+                                     center: centroid(pts))
             }
         }
         return best
+    }
+
+    private func sideFaceAt(_ cam: Cam, at loc: CGPoint) -> ModelPickFace? {
+        let cutZ = activeSectionCutZ()
+        var best: (ModelPickFace, Double)? = nil
+        func scan(_ ring: [CGPoint], top: Double, bottom: Double,
+                  prefix: String, name: String) {
+            guard ring.count > 1, top > bottom + 0.0001 else { return }
+            for i in ring.indices {
+                let a = ring[i], b = ring[(i + 1) % ring.count]
+                let quad = [cam.p(Double(a.x), Double(a.y), top),
+                            cam.p(Double(b.x), Double(b.y), top),
+                            cam.p(Double(b.x), Double(b.y), bottom),
+                            cam.p(Double(a.x), Double(a.y), bottom)]
+                guard pointInScreenPolygon(loc, quad) else { continue }
+                let mx = (Double(a.x) + Double(b.x)) / 2
+                let my = (Double(a.y) + Double(b.y)) / 2
+                let q = cam.p(mx, my, (top + bottom) / 2)
+                let d = hypot(Double(loc.x) - Double(q.x), Double(loc.y) - Double(q.y))
+                let len = hypot(Double(b.x - a.x), Double(b.y - a.y))
+                let f = ModelPickFace(id: "\(prefix)-side\(i)", name: "\(name) \(i + 1)",
+                                      z: (top + bottom) / 2,
+                                      area: len * (top - bottom),
+                                      center: CGPoint(x: mx, y: my))
+                if best == nil || d < best!.1 { best = (f, d) }
+            }
+        }
+        let baseBottom = max(-spec.height, cutZ ?? -Double.greatestFiniteMagnitude)
+        if 0 > baseBottom + 0.0001 {
+            scan(PartProg.pts(spec), top: 0, bottom: baseBottom,
+                 prefix: "base", name: "基础侧面")
+        }
+        for s in spec.steps {
+            let top = s.mode == .add ? s.z1 : s.drawTop
+            let bottom0 = s.mode == .add ? s.z0 : s.drawBottom
+            let bottom = max(bottom0, cutZ ?? -Double.greatestFiniteMagnitude)
+            if top > bottom + 0.0001 {
+                scan(PartProg.pts(s, spec), top: top, bottom: bottom,
+                     prefix: "step-\(s.id.uuidString)", name: "\(s.name) 侧面")
+            }
+        }
+        return best?.0
+    }
+
+    private func closerFace(_ a: ModelPickFace?, _ b: ModelPickFace?, cam: Cam, at loc: CGPoint) -> ModelPickFace? {
+        guard let a else { return b }
+        guard let b else { return a }
+        let qa = cam.p(Double(a.center.x), Double(a.center.y), a.z)
+        let qb = cam.p(Double(b.center.x), Double(b.center.y), b.z)
+        let da = hypot(Double(loc.x) - Double(qa.x), Double(loc.y) - Double(qa.y))
+        let db = hypot(Double(loc.x) - Double(qb.x), Double(loc.y) - Double(qb.y))
+        return da <= db ? a : b
     }
 
     private func clearMeasurePicks() {
@@ -3959,9 +4104,11 @@ struct StudioScreen: View {
         let basePts = PartProg.pts(spec)
         let candidates = edgeCandidates(cam, at: loc)
         let edge = candidates.first(where: { $0.1 <= pickTolerance })?.0
-        let face = faceAt(xy, basePts: basePts)
+        let topFace = faceAt(xy, basePts: basePts)
+        let sideFace = sideFaceAt(cam, at: loc)
+        let face = closerFace(sideFace, topFace, cam: cam, at: loc)
         let hole = nearestHole(cam, at: loc)
-        let z = hole?.z ?? face?.z ?? 0
+        let z = (hole?.onBottom == true ? hole?.bottomZ : hole?.z) ?? face?.z ?? 0
 
         if calibratingPick {
             calibrationSample = PickCalibration(
@@ -4034,11 +4181,14 @@ struct StudioScreen: View {
     }
 
     private func edgeLength(_ e: ModelPickEdge) -> Double {
-        hypot(Double(e.b.x - e.a.x), Double(e.b.y - e.a.y))
+        let dx = Double(e.b.x - e.a.x)
+        let dy = Double(e.b.y - e.a.y)
+        let dz = e.zEnd - e.z
+        return sqrt(dx * dx + dy * dy + dz * dz)
     }
 
     private func midpoint(_ e: ModelPickEdge) -> (Double, Double, Double) {
-        (Double(e.a.x + e.b.x) / 2, Double(e.a.y + e.b.y) / 2, e.z)
+        (Double(e.a.x + e.b.x) / 2, Double(e.a.y + e.b.y) / 2, (e.z + e.zEnd) / 2)
     }
 
     private func dot3(_ a: (Double, Double, Double), _ b: (Double, Double, Double)) -> Double {
@@ -4092,9 +4242,9 @@ struct StudioScreen: View {
     private func edgeGap(_ a: ModelPickEdge, _ b: ModelPickEdge) -> Double {
         segmentDistance3D(
             (Double(a.a.x), Double(a.a.y), a.z),
-            (Double(a.b.x), Double(a.b.y), a.z),
+            (Double(a.b.x), Double(a.b.y), a.zEnd),
             (Double(b.a.x), Double(b.a.y), b.z),
-            (Double(b.b.x), Double(b.b.y), b.z))
+            (Double(b.b.x), Double(b.b.y), b.zEnd))
     }
 
     private func edgeIsAmbiguous(_ cam: Cam, at loc: CGPoint) -> Bool {
@@ -4107,9 +4257,54 @@ struct StudioScreen: View {
         return String(format: "%.0f pt", min(max(v, 12), 40))
     }
 
+    private func defaultTolerance(for target: MeasureTarget) -> Double {
+        switch target {
+        case .point: return 18
+        case .edge: return 16
+        case .face, .body, .compound: return 22
+        }
+    }
+
+    private func toleranceKey(for target: MeasureTarget) -> String {
+        "measureTolerance.\(target.rawValue)"
+    }
+
+    private func storedTolerance(for target: MeasureTarget) -> Double {
+        let fallback = defaultTolerance(for: target)
+        let v = UserDefaults.standard.object(forKey: toleranceKey(for: target)) as? Double ?? fallback
+        return v.isFinite ? min(max(v, 12), 40) : fallback
+    }
+
+    private func storeTolerance(_ value: Double, for target: MeasureTarget) {
+        UserDefaults.standard.set(min(max(value, 12), 40), forKey: toleranceKey(for: target))
+    }
+
+    private var measureTargetBinding: Binding<MeasureTarget> {
+        Binding(
+            get: { measureTarget },
+            set: { newTarget in
+                pickToleranceByTarget[measureTarget.rawValue] = pickTolerance
+                storeTolerance(pickTolerance, for: measureTarget)
+                measureTarget = newTarget
+                let saved = pickToleranceByTarget[newTarget.rawValue] ?? storedTolerance(for: newTarget)
+                pickTolerance = min(max(saved, 12), 40)
+            })
+    }
+
     private func adjustTolerance(_ delta: Double) {
-        let v = pickTolerance.isFinite ? pickTolerance : 22
-        pickTolerance = min(max(v + delta, 12), 40)
+        let v = pickTolerance.isFinite ? pickTolerance : defaultTolerance(for: measureTarget)
+        setTolerance(min(max(v + delta, 12), 40))
+    }
+
+    private func setTolerance(_ value: Double) {
+        let v = value.isFinite ? min(max(value, 12), 40) : defaultTolerance(for: measureTarget)
+        pickTolerance = v
+        pickToleranceByTarget[measureTarget.rawValue] = v
+        storeTolerance(v, for: measureTarget)
+    }
+
+    private func resetTolerance() {
+        setTolerance(defaultTolerance(for: measureTarget))
     }
 
     private func topViewController() -> UIViewController? {
@@ -4120,27 +4315,44 @@ struct StudioScreen: View {
     }
 
     private func presentMeasureSheet() {
+        guard measureHost == nil, let top = topViewController() else { return }
         measureOn = true
         modelPanel = .none
-        guard let top = topViewController() else { return }
         let host = UIHostingController(rootView: AnyView(measureSheet))
-        host.modalPresentationStyle = .pageSheet
-        if let sheet = host.sheetPresentationController {
-            sheet.detents = [.large()]
-            sheet.prefersGrabberVisible = true
-        }
-        top.present(host, animated: true)
+        host.view.backgroundColor = .clear
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        host.view.layer.cornerRadius = 18
+        host.view.layer.shadowColor = UIColor.black.cgColor
+        host.view.layer.shadowOpacity = 0.18
+        host.view.layer.shadowRadius = 18
+        host.view.layer.shadowOffset = CGSize(width: 0, height: 8)
+        top.addChild(host)
+        top.view.addSubview(host.view)
+        let width = min(320, max(270, top.view.bounds.width * 0.78))
+        let height = min(560, max(380, top.view.bounds.height * 0.72))
+        NSLayoutConstraint.activate([
+            host.view.trailingAnchor.constraint(equalTo: top.view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+            host.view.topAnchor.constraint(equalTo: top.view.safeAreaLayoutGuide.topAnchor, constant: 86),
+            host.view.widthAnchor.constraint(equalToConstant: width),
+            host.view.heightAnchor.constraint(equalToConstant: height)
+        ])
+        host.didMove(toParent: top)
+        measureHost = host
     }
 
     private func dismissMeasureSheet() {
-        topViewController()?.dismiss(animated: true)
+        guard let host = measureHost else { return }
+        host.willMove(toParent: nil)
+        host.view.removeFromSuperview()
+        host.removeFromParent()
+        measureHost = nil
     }
 
     private var measureSheet: some View {
         NavigationStack {
             Form {
                 Section("测量目标") {
-                    Picker("目标", selection: $measureTarget) {
+                    Picker("目标", selection: measureTargetBinding) {
                         ForEach(MeasureTarget.allCases) { t in
                             Label(t.rawValue, systemImage: t.icon).tag(t)
                         }
@@ -4150,7 +4362,7 @@ struct StudioScreen: View {
 
                 Section("拾取半径") {
                     HStack {
-                        Text("当前")
+                        Text("当前 · \(measureTarget.rawValue)")
                         Spacer()
                         Text(toleranceLabel).font(.system(size: 13, weight: .bold)).foregroundStyle(studioBlue)
                     }
@@ -4160,7 +4372,7 @@ struct StudioScreen: View {
                         Button("+2") { adjustTolerance(2) }
                             .buttonStyle(.bordered)
                         Spacer()
-                        Button("重置") { pickTolerance = 22 }
+                        Button("重置") { resetTolerance() }
                             .buttonStyle(.borderless)
                     }
                     Text("边/孔太难点就调大；点错相邻边就调小。")
@@ -4186,7 +4398,7 @@ struct StudioScreen: View {
                             }
                             if let first = sample.edgeDistances.first {
                                 Button("按当前命中设容差 \(Int(max(12, min(40, first + 4)))) pt") {
-                                    pickTolerance = max(12, min(40, first + 4))
+                                    setTolerance(max(12, min(40, first + 4)))
                                 }
                             }
                         } else {
@@ -4226,10 +4438,12 @@ struct StudioScreen: View {
                         LabeledContent("该面面积", value: "\(ncf(f.area)) mm²")
                     }
                     if let h = pickedHole {
-                        LabeledContent("拾取孔/腔", value: h.name)
-                        LabeledContent("中心 / 顶面", value: "X\(ncf(h.x)) Y\(ncf(h.y)) Z\(ncf(h.z))")
+                        LabeledContent(h.onBottom ? "拾取孔/腔底面" : "拾取孔/腔", value: h.name)
+                        LabeledContent(h.onBottom ? "底面中心" : "中心 / 顶面",
+                                       value: "X\(ncf(h.x)) Y\(ncf(h.y)) Z\(ncf(h.onBottom ? h.bottomZ : h.z))")
                         LabeledContent(h.isPocket ? "外形尺寸" : "直径", value: "\(ncf(h.dia)) mm")
                         LabeledContent("深度", value: h.through ? "通孔 / 通腔" : "\(ncf(h.depth)) mm")
+                        LabeledContent("底 Z", value: "Z\(ncf(h.bottomZ))")
                     }
                     LabeledContent("体积", value: "\(ncf(partVolume)) mm³")
                     LabeledContent("重量", value: "\(ncf(partWeight)) g（\(material.rawValue)）")
@@ -4245,9 +4459,9 @@ struct StudioScreen: View {
                 }
 
                 Section("说明") {
-                    Text("点=当前指针；边=外轮廓；面=顶面；体=整个实体；复合=体积+包容+面积。")
+                    Text("点=当前指针；边=外轮廓/台阶边/垂直侧边；面=顶面或侧面；体=整个实体；复合=体积+包容+面积。")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
-                    Text("体积按外形面积×厚度，再加上/减去台阶，并按孔/型腔所在台阶的真实 Z 扣减；重量按材料密度换算，价格为参考估价。")
+                    Text("体积按外形面积×厚度，再加上/减去台阶，并按孔/型腔所在台阶的真实 Z 扣减；孔/腔底面也可单独拾取。重量按材料密度换算，价格为参考估价。")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
             }
@@ -4259,7 +4473,6 @@ struct StudioScreen: View {
                 }
             }
         }
-        .presentationDetents([.large])
     }
 
     private func metricCard(_ title: String, _ value: String) -> some View {
@@ -5142,7 +5355,7 @@ struct StudioScreen: View {
 
         for e in pickedEdges {
             let a = cam.p(Double(e.a.x), Double(e.a.y), e.z)
-            let b = cam.p(Double(e.b.x), Double(e.b.y), e.z)
+            let b = cam.p(Double(e.b.x), Double(e.b.y), e.zEnd)
             ctx.stroke(Path { p in p.move(to: a); p.addLine(to: b) },
                        with: .color(.blue), lineWidth: 3)
             for q in [a, b] {
@@ -5160,12 +5373,14 @@ struct StudioScreen: View {
                      at: CGPoint(x: q.x, y: q.y - 20))
         }
         if let h = pickedHole {
-            let q = cam.p(h.x, h.y, h.z)
-            let edge = cam.p(h.x + h.dia / 2, h.y, h.z)
+            let hz = h.onBottom ? h.bottomZ : h.z
+            let q = cam.p(h.x, h.y, hz)
+            let edge = cam.p(h.x + h.dia / 2, h.y, hz)
             let r = max(5, abs(Double(edge.x - q.x)))
             ctx.stroke(Path(ellipseIn: CGRect(x: q.x - r, y: q.y - r, width: r * 2, height: r * 2)),
                        with: .color(.blue), lineWidth: 2)
-            ctx.draw(Text(h.name).font(.system(size: 9, weight: .semibold)).foregroundColor(.blue),
+            ctx.draw(Text(h.onBottom ? h.name + " 底面" : h.name)
+                        .font(.system(size: 9, weight: .semibold)).foregroundColor(.blue),
                      at: CGPoint(x: q.x, y: q.y - 18))
         }
         if let p = pickedPoint {
