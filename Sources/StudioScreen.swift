@@ -2298,7 +2298,7 @@ struct StudioScreen: View {
                                     let cam = modelCam(size: geo.size)
                                     var best = 40.0
                                     for f in spec.feats {
-                                        let q = cam.p(f.x, f.y, 0)
+                                        let q = cam.p(f.x, f.y, PartProg.hostZ(spec, f.x, f.y))
                                         let d = hypot(Double(g.startLocation.x) - Double(q.x),
                                                       Double(g.startLocation.y) - Double(q.y))
                                         if d < best { best = d; dragFeatID = f.id }
@@ -2932,7 +2932,7 @@ struct StudioScreen: View {
                 }
                 .buttonStyle(.borderedProminent)
 
-                Text("说明：增料台阶会先出周边多刀粗加工、再出轮廓精加工；除料台阶按多刀清腔出粗加工。整面飞面、复杂清角和台阶上的孔/腔仍需按实际毛坯补工步。")
+                Text("说明：增料台阶会先出周边多刀粗加工、再出轮廓精加工；除料台阶按多刀清腔出粗加工。台阶上的孔/腔会按所在台阶自动取顶面 Z；整面飞面和复杂清角仍需补工步。")
                     .font(.system(size: 9)).foregroundStyle(.orange)
             }
             .padding(.horizontal, 13)
@@ -3462,10 +3462,10 @@ struct StudioScreen: View {
                                           dash: dashed ? [4, 3] : []))
         }
 
-        func selectedMarker(_ f: PartFeat, radius: Double) {
+        func selectedMarker(_ f: PartFeat, radius: Double, z: Double = 0) {
             let r = max(radius, 1)
-            ctx.stroke(circle(f.x, f.y, 0, r), with: .color(studioBlue), lineWidth: 2)
-            let q = cam.p(f.x, f.y, 0)
+            ctx.stroke(circle(f.x, f.y, z, r), with: .color(studioBlue), lineWidth: 2)
+            let q = cam.p(f.x, f.y, z)
             ctx.stroke(Path { p in
                 p.move(to: CGPoint(x: q.x - 7, y: q.y)); p.addLine(to: CGPoint(x: q.x + 7, y: q.y))
                 p.move(to: CGPoint(x: q.x, y: q.y - 7)); p.addLine(to: CGPoint(x: q.x, y: q.y + 7))
@@ -3620,7 +3620,7 @@ struct StudioScreen: View {
                 bot.closeSubpath()
                 ctx.stroke(bot, with: .color(Color(red: 0.95, green: 0.55, blue: 0.20).opacity(0.75)), lineWidth: 1)
                 label(ctx, cam, f, "\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth))", z: host)
-                if isSelected { selectedMarker(f, radius: max(f.w, f.h) / 2 + 4) }
+                if isSelected { selectedMarker(f, radius: max(f.w, f.h) / 2 + 4, z: host) }
                 continue
             }
             let r = f.dia / 2
@@ -3630,7 +3630,7 @@ struct StudioScreen: View {
                 ctx.stroke(c, with: .color(Color(white: 0.35)), lineWidth: 1.4)
                 ctx.stroke(circle(f.x, f.y, -min(depth, visibleDepth), r), with: .color(Color(white: 0.45)), lineWidth: 0.9)
                 label(ctx, cam, f, "Ø\(ncf(f.dia))", z: host)
-                if isSelected { selectedMarker(f, radius: r + 4) }
+                if isSelected { selectedMarker(f, radius: r + 4, z: host) }
             } else {
                 let d = min(f.depth, spec.height + host)
                 let c = circle(f.x, f.y, host, r)
@@ -3638,7 +3638,7 @@ struct StudioScreen: View {
                 ctx.stroke(c, with: .color(Color(red: 0.95, green: 0.55, blue: 0.20)), lineWidth: 1.4)
                 ctx.stroke(circle(f.x, f.y, host - d, r), with: .color(Color(red: 0.95, green: 0.55, blue: 0.20).opacity(0.75)), lineWidth: 1)
                 label(ctx, cam, f, "Ø\(ncf(f.dia)) 深\(ncf(f.depth))", z: host)
-                if isSelected { selectedMarker(f, radius: r + 4) }
+                if isSelected { selectedMarker(f, radius: r + 4, z: host) }
             }
         }
 
