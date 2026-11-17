@@ -369,13 +369,28 @@ enum PartProg {
                 status: status("contour")))
         }
         for s in p.steps {
-            let id = "step-\(s.id.uuidString)"
-            out.append(PartOpInfo(
-                id: id, title: s.name, kind: s.mode == .add ? "台阶轮廓铣" : "除料台阶",
-                geometry: "\(s.mode.rawValue) \(s.shape.summary)",
-                tool: p.contourTool, dia: p.contourDia, spindle: p.spindle, feed: p.feed,
-                zRange: "Z\(ncf(s.drawTop)) → Z\(ncf(s.drawBottom))",
-                status: status(id, fallback: s.mode == .add ? .ready : .modelOnly)))
+            let zr = "Z\(ncf(s.drawTop)) → Z\(ncf(s.drawBottom))"
+            if s.mode == .add {
+                let roughID = "steprough-\(s.id.uuidString)"
+                out.append(PartOpInfo(
+                    id: roughID, title: "\(s.name) 周边粗加工", kind: "轮廓粗加工",
+                    geometry: "增料 \(s.shape.summary)",
+                    tool: p.contourTool, dia: p.contourDia, spindle: p.spindle, feed: p.feed,
+                    zRange: zr, status: status(roughID)))
+                let id = "step-\(s.id.uuidString)"
+                out.append(PartOpInfo(
+                    id: id, title: s.name, kind: "台阶轮廓铣",
+                    geometry: "增料 \(s.shape.summary)",
+                    tool: p.contourTool, dia: p.contourDia, spindle: p.spindle, feed: p.feed,
+                    zRange: zr, status: status(id)))
+            } else {
+                let id = "stepcut-\(s.id.uuidString)"
+                out.append(PartOpInfo(
+                    id: id, title: "\(s.name) 除料", kind: "除料清腔",
+                    geometry: "除料 \(s.shape.summary)",
+                    tool: p.pocketTool, dia: p.pocketDia, spindle: p.spindle, feed: p.feed,
+                    zRange: zr, status: status(id)))
+            }
         }
         for f in p.feats {
             let id = "feat-\(f.id.uuidString)"
@@ -538,10 +553,16 @@ enum PartProg {
             addSegs(ToolpathEngine.build(s), dx: Double(b.midX), dy: Double(b.midY))
         }
 
-        for s in p.steps.filter({ $0.mode == .add && enabled("step-\($0.id.uuidString)") }) {
-            let pts = shapePoints(s.shape, p, depth: max(s.height, 0.1))
-            let path = offsetClosed(pts, by: p.contourDia / 2)
-            line(path, z: s.z1, cut: true)
+        for s in p.steps {
+            let z = s.mode == .add ? s.z1 : s.z0
+            let roughID = s.mode == .add ? "steprough-\(s.id.uuidString)" : "stepcut-\(s.id.uuidString)"
+            if enabled(roughID) {
+                for q in stepRoughLoops(p, s) { line(q, z: z, cut: true) }
+            }
+            if s.mode == .add && enabled("step-\(s.id.uuidString)") {
+                let pts = shapePoints(s.shape, p, depth: max(s.height, 0.1))
+                line(offsetClosed(pts, by: p.contourDia / 2), z: s.z1, cut: true)
+            }
         }
 
         if p.doContour && enabled("contour") {
@@ -608,6 +629,84 @@ enum PartProg {
         return out
     }
 
+    /// 不含台阶的毛坯外形（用于判断台阶周边粗加工是否出界）
+    static func stockBBox(_ p: PartSpec) -> CGRect {
+        var q = p
+        q.steps = []
+        return bbox(q)
+    }
+
+    /// 台阶周边粗加工 / 除料台阶清腔的多刀轮廓（刀心轨迹，不含刀补）
+    static func stepRoughLoops(_ p: PartSpec, _ s: PartStep) -> [[CGPoint]] {
+        let base = pts(s, p)
+        guard base.count > 2 else { return [] }
+        let isAdd = s.mode == .add
+        let dia = max(isAdd ? p.contourDia : p.pocketDia, 0.1)
+        let r = dia / 2
+        let stepOver = max(p.stepOver, 0.5)
+        var out: [[CGPoint]] = []
+        if isAdd {
+            let sb = stockBBox(p)
+            var d = r
+            for _ in 0..<10 {
+                let q = offsetClosed(base, by: d)
+                guard q.count > 2 else { break }
+                if !q.allSatisfy({ sb.contains($0) }) { break }
+                out.append(q)
+                d += stepOver
+            }
+        } else {
+            var d = -r
+            for _ in 0..<12 {
+                let q = offsetClosed(base, by: d)
+                guard q.count > 2 else { break }
+                let area = abs(ContourGeo.signedArea(q))
+                if area < max(1.0, Double(dia * dia) * 0.25) { break }
+                out.append(q)
+                d -= stepOver
+            }
+        }
+        return out
+    }
+
+    /// 台阶周边粗加工 / 除料台阶清腔：按层下刀，输出可直接并入总程序的段
+    static func stepRoughBlock(_ p: PartSpec, _ s: PartStep) -> String {
+        let isAdd = s.mode == .add
+        let tool = isAdd ? p.contourTool : p.pocketTool
+        let loops = stepRoughLoops(p, s)
+        guard !loops.isEmpty else { return "( 台阶 \(s.name)：没有可用粗加工刀路 )" }
+        let zTop = isAdd ? s.z1 : s.z0
+        let zBottom = isAdd ? s.z0 : s.drawBottom
+        guard zTop > zBottom + 1e-6 else { return "( 台阶 \(s.name)：Z 范围无效 )" }
+        let safe = p.safeZ + maxZ(p)
+        let plungeF = max(50, Int(p.feed / 3))
+        let dz = max(0.2, p.stepDown)
+        var levels: [Double] = []
+        var z = zTop
+        while z > zBottom + 1e-6 {
+            z = max(zBottom, z - dz)
+            levels.append(z)
+        }
+        var L: [String] = []
+        L.append("G0 Z\(ncf(safe, 1))")
+        L.append("G43 H\(tool) Z\(ncf(safe, 1))")
+        L.append("M3 S\(p.spindle)")
+        L.append("M8")
+        for zz in levels {
+            for q in loops {
+                guard let first = q.first else { continue }
+                L.append("G0 X\(ncf(Double(first.x))) Y\(ncf(Double(first.y)))")
+                L.append("G1 Z\(ncf(zz)) F\(plungeF)")
+                for pt in q.dropFirst() {
+                    L.append("G1 X\(ncf(Double(pt.x))) Y\(ncf(Double(pt.y)))")
+                }
+                L.append("G1 X\(ncf(Double(first.x))) Y\(ncf(Double(first.y)))")
+            }
+        }
+        L.append("G0 Z\(ncf(safe, 1))")
+        return L.joined(separator: "\n")
+    }
+
     static func issues(_ p: PartSpec) -> [String] {
         var out: [String] = []
         let base = ContourProg.issues(asDraw(p, outward: true, dia: p.contourDia, depth: p.height, hNo: p.contourTool))
@@ -621,11 +720,11 @@ enum PartProg {
                           depth: max(s.height, 0.1), hNo: p.contourTool, zTop: s.z1)
             out.append(contentsOf: ContourProg.issues(d).map { "台阶 \(i + 1)：\($0)" })
             if s.mode == .cut {
-                out.append("台阶 \(i + 1)：除料层只参与建模显示，不生成轮廓刀路")
+                out.append("台阶 \(i + 1)：除料层按多刀清腔生成粗加工；边界、深度和清角请按实际刀具核对")
             }
         }
         if !p.steps.isEmpty {
-            out.append("多台阶轮廓按各层 Z 分别出程序；台阶周围的毛坯粗加工需要按实际毛坯补工步，不能直接当成品程序")
+            out.append("多台阶按各层 Z 分别出程序；增料台阶已加周边多刀粗加工，整面飞面和复杂清角仍需按实际毛坯补工步")
         }
         let b = bbox(p)
         for (i, f) in p.feats.enumerated() {
@@ -655,7 +754,8 @@ enum PartProg {
     }
 
     /// 把所有工序串成一个程序：共用一段抬头，每段自己带换刀后要用的 G43 H、S、F
-    static func build(_ spec: PartSpec, only: Set<String>? = nil) -> String {
+    static func build(_ spec: PartSpec, only: Set<String>? = nil,
+                      prebuilt: [String: String] = [:]) -> String {
         var p = spec
         let ox = spec.originX, oy = spec.originY
         if abs(ox) > 1e-9 || abs(oy) > 1e-9 {
@@ -670,14 +770,25 @@ enum PartProg {
             return !p.disabledOps.contains(id)
         }
 
-        func add(_ title: String, _ tool: Int, _ code: String) {
+        func add(_ title: String, _ tool: Int, _ code: String, id: String? = nil) {
             seq += 1
             var seg = "( ===== 工序\(seq)  \(title) ===== )\n"
             if tool != lastTool {
                 seg += "M00 (换刀：装 T\(tool) 后按循环启动)\n"
                 lastTool = tool
             }
-            seg += strip(code)
+            var body = code
+            if only == nil, let id, let cached = prebuilt[id] {
+                body = cached
+            }
+            var clean = strip(body)
+            if only == nil, let id, prebuilt[id] != nil {
+                // 单段缓存里已经带了自己的 M00；合并时由上面的换刀逻辑统一控制
+                clean = clean.components(separatedBy: "\n")
+                    .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("M00") }
+                    .joined(separator: "\n")
+            }
+            seg += clean
             blocks.append(seg)
         }
 
@@ -699,21 +810,32 @@ enum PartProg {
             s.coord = p.coord
             s.cx = Double(b.midX)
             s.cy = Double(b.midY)
-            add("顶面 平面铣 T\(p.faceTool) D\(ncf(p.faceDia))", p.faceTool, GCodeGenerator.generate(s))
+            add("顶面 平面铣 T\(p.faceTool) D\(ncf(p.faceDia))", p.faceTool, GCodeGenerator.generate(s), id: "face")
         }
 
-        // 先高后低：台阶层从各自顶面往下切，最后再切基础外形
+        // 先高后低：增料台阶先周边粗加工、再轮廓精加工；除料台阶单独清腔
         for s in p.steps.filter({ $0.mode == .add }).sorted(by: { $0.z1 > $1.z1 }) {
+            let roughID = "steprough-\(s.id.uuidString)"
+            if wanted(roughID) {
+                add("台阶 \(s.name) 周边粗加工  Z\(ncf(s.z0))~Z\(ncf(s.z1)) T\(p.contourTool) D\(ncf(p.contourDia))",
+                    p.contourTool, stepRoughBlock(p, s), id: roughID)
+            }
             let id = "step-\(s.id.uuidString)"
             guard wanted(id) else { continue }
             let d = asDraw(s.shape, p, outward: true, dia: p.contourDia,
                           depth: max(s.height, 0.1), hNo: p.contourTool, zTop: s.z1)
             add("台阶 \(s.name) \(s.shape.summary)  Z\(ncf(s.z0))~Z\(ncf(s.z1)) 轮廓铣 T\(p.contourTool) D\(ncf(p.contourDia))",
-                p.contourTool, ContourProg.generate(d))
+                p.contourTool, ContourProg.generate(d), id: id)
+        }
+        for s in p.steps.filter({ $0.mode == .cut }).sorted(by: { $0.z0 > $1.z0 }) {
+            let id = "stepcut-\(s.id.uuidString)"
+            guard wanted(id) else { continue }
+            add("台阶 \(s.name) 除料清腔  Z\(ncf(s.drawBottom))~Z\(ncf(s.z0)) T\(p.pocketTool) D\(ncf(p.pocketDia))",
+                p.pocketTool, stepRoughBlock(p, s), id: id)
         }
 
         if p.doContour && wanted("contour") {
-            add("外形轮廓铣 T\(p.contourTool) D\(ncf(p.contourDia))", p.contourTool, ContourProg.generate(outline(p)))
+            add("外形轮廓铣 T\(p.contourTool) D\(ncf(p.contourDia))", p.contourTool, ContourProg.generate(outline(p)), id: "contour")
         }
 
         for f in p.feats {
@@ -737,13 +859,13 @@ enum PartProg {
                     s.cx = f.x
                     s.cy = f.y
                     add("孔 Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) 螺旋铣 T\(p.holeTool) D\(ncf(p.holeDia))",
-                        p.holeTool, GCodeGenerator.generate(s))
+                        p.holeTool, GCodeGenerator.generate(s), id: id)
                 case .g81, .g83:
                     add("孔 Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) 钻孔 \(p.holeMode == .g81 ? "G81" : "G83")",
-                        p.holeTool, drillBlock(p, f))
+                        p.holeTool, drillBlock(p, f), id: id)
                 case .tap:
                     add("孔 Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) 攻丝 G84 P\(ncf(p.tapPitch))",
-                        p.tapTool, tapBlock(p, f))
+                        p.tapTool, tapBlock(p, f), id: id)
                 }
             } else if p.doPocket && f.kind == .rectPocket {
                 var d = asDraw(p, outward: false, template: .rect,
@@ -754,14 +876,14 @@ enum PartProg {
                 var code = ContourProg.generate(d)
                 code = shift(code, dx: f.x, dy: f.y)
                 add("方腔 \(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth)) @X\(ncf(f.x)) Y\(ncf(f.y)) 型腔铣 T\(p.pocketTool) D\(ncf(p.pocketDia))",
-                    p.pocketTool, code)
+                    p.pocketTool, code, id: id)
             } else if p.doPocket {
                 let d = asDraw(p, outward: false, template: .circle, circleD: f.dia,
                                dia: p.pocketDia, depth: f.depth, hNo: p.pocketTool)
                 var code = ContourProg.generate(d)
                 code = shift(code, dx: f.x, dy: f.y)
                 add("沉台 Ø\(ncf(f.dia)) 深\(ncf(f.depth)) @X\(ncf(f.x)) Y\(ncf(f.y)) 型腔铣 T\(p.pocketTool) D\(ncf(p.pocketDia))",
-                    p.pocketTool, code)
+                    p.pocketTool, code, id: id)
             }
         }
 
@@ -788,22 +910,22 @@ enum PartProg {
                     s.cx = l.cx
                     s.cy = l.cy
                     add("\(l.name) Ø\(ncf(l.circleD)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 螺旋铣 T\(p.holeTool) D\(ncf(p.holeDia))",
-                        p.holeTool, GCodeGenerator.generate(s))
+                        p.holeTool, GCodeGenerator.generate(s), id: id)
                 case .g81, .g83:
                     let f = PartFeat(kind: .hole, x: l.cx, y: l.cy, dia: l.circleD, depth: depth)
                     add("\(l.name) Ø\(ncf(l.circleD)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 钻孔 \(p.holeMode == .g81 ? "G81" : "G83")",
-                        p.holeTool, drillBlock(p, f))
+                        p.holeTool, drillBlock(p, f), id: id)
                 case .tap:
                     let f = PartFeat(kind: .hole, x: l.cx, y: l.cy, dia: l.circleD, depth: depth)
                     add("\(l.name) Ø\(ncf(l.circleD)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 攻丝 G84 P\(ncf(p.tapPitch))",
-                        p.tapTool, tapBlock(p, f))
+                        p.tapTool, tapBlock(p, f), id: id)
                 }
             } else {
                 let d = drawForLoop(l, p, depth: depth, dia: p.pocketDia, hNo: p.pocketTool)
                 var code = ContourProg.generate(d)
                 code = shift(code, dx: l.cx, dy: l.cy)
                 add("\(l.name) \(l.template.rawValue) 深\(ncf(depth)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 型腔铣 T\(p.pocketTool) D\(ncf(p.pocketDia))",
-                    p.pocketTool, code)
+                    p.pocketTool, code, id: id)
             }
         }
 

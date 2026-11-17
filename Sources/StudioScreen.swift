@@ -13,6 +13,7 @@ struct StudioScreen: View {
     @State private var showOpCode = false
     @State private var opCodeTitle = ""
     @State private var opCodeText = ""
+    @State private var opCodeCache: [String: String] = [:]
 
     // 2D 刀路检查图层
     @State private var cam2DStock = true
@@ -189,6 +190,7 @@ struct StudioScreen: View {
         }
         .onChange(of: spec) { _ in
             opGenerated = false
+            opCodeCache.removeAll()
         }
         .sheet(isPresented: $showOpCode) {
             NavigationStack {
@@ -2930,7 +2932,7 @@ struct StudioScreen: View {
                 }
                 .buttonStyle(.borderedProminent)
 
-                Text("说明：每层按自己的 Z 出轮廓程序；台阶周围的毛坯粗加工要按实际毛坯补工步。除料层目前只参与建模显示，不自动出刀路。")
+                Text("说明：增料台阶会先出周边多刀粗加工、再出轮廓精加工；除料台阶按多刀清腔出粗加工。整面飞面、复杂清角和台阶上的孔/腔仍需按实际毛坯补工步。")
                     .font(.system(size: 9)).foregroundStyle(.orange)
             }
             .padding(.horizontal, 13)
@@ -4373,8 +4375,10 @@ struct StudioScreen: View {
                                         showToastView("\(op.title) 仅参与建模，不生成刀路")
                                         return
                                     }
+                                    let single = PartProg.build(spec, only: [op.id])
                                     opCodeTitle = op.title
-                                    opCodeText = PartProg.build(spec, only: [op.id])
+                                    opCodeText = single
+                                    opCodeCache[op.id] = single
                                     showOpCode = true
                                 }
                                 .font(.system(size: 10, weight: .semibold))
@@ -4427,7 +4431,7 @@ struct StudioScreen: View {
 
             Section {
                 Button {
-                    code = PartProg.build(spec)
+                    code = PartProg.build(spec, prebuilt: opCodeCache)
                     opGenerated = true
                     showResult = true
                 } label: {
