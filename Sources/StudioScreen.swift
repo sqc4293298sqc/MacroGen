@@ -454,7 +454,7 @@ struct StudioScreen: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("建模编程")
                     .font(.system(size: 16, weight: .bold))
-                Text("示例 · 参数化 2.5D")
+                Text("UG 式 · 参数化 2.5D")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
@@ -7078,6 +7078,8 @@ struct StudioScreen: View {
         Group {
             Section {
                 camOverviewCard
+                    .listRowInsets(EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8))
+                    .listRowBackground(Color.clear)
             }
 
             Section("2D 刀路检查") {
