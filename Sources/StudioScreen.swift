@@ -127,7 +127,7 @@ struct StudioScreen: View {
 
     private enum DimTarget: Equatable {
         case none, rectL, rectW, rectR, circleD, slotL, slotW
-        case nodeLen(Int), nodeAngle(Int), nodeR(Int)
+        case nodeLen(Int), nodeAngle(Int), nodeR(Int), freeCircleD
     }
 
     private enum StudioModelPanel: Equatable {
@@ -959,11 +959,17 @@ struct StudioScreen: View {
                     dimRow("槽长 L", spec.slotL, .slotL)
                     dimRow("槽宽 W", spec.slotW, .slotW)
                 case .free:
-                    Text("手绘轮廓：外形尺寸按下面每段长度控制。")
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                    if let c = sketchFreeCircle {
+                        dimRow("直径 Ø", c.r * 2, .freeCircleD)
+                        Text("识别为整圆：只按直径标注，不再拆成多段。")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                    } else {
+                        Text("手绘轮廓：外形尺寸按下面每段长度控制。")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
                 }
 
-                if spec.nodes.count > 1 {
+                if spec.nodes.count > 1, sketchFreeCircle == nil {
                     Divider().padding(.vertical, 2)
                     Text("分段长度").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                     ForEach(0..<spec.nodes.count, id: \.self) { i in
@@ -994,10 +1000,13 @@ struct StudioScreen: View {
                     Text("槽：两端圆弧按槽宽自动保持 R=W/2。")
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                 case .free:
-                    EmptyView()
+                    if sketchFreeCircle != nil {
+                        Text("识别为整圆：角度由圆心和半径决定，不需要逐点夹角。")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
                 }
 
-                if spec.nodes.count > 2 {
+                if spec.nodes.count > 2, sketchFreeCircle == nil {
                     Text("顶点夹角").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                     ForEach(0..<spec.nodes.count, id: \.self) { i in
                         dimRow("点 \(i + 1) 夹角", vertexAngle(spec.nodes, i), .nodeAngle(i), unit: "°")
@@ -1752,21 +1761,29 @@ struct StudioScreen: View {
         // 直线/多段线刚落下第一个点时只是“落点”，不能把单节点当成整圆画出来
         let singleLinePoint = spec.nodes.count == 1 && ["直线", "多段线"].contains(sketchTool)
         if !singleLinePoint {
-            let segs = ContourGeo.segments(ContourGeo.buildNodes(sketchDrawSpec()))
-            var path = Path()
-            if let f = segs.first {
-                path.move(to: P(f.p0.x, f.p0.y))
-            }
-            for s in segs {
-                if s.isArc {
-                    // 用折线近似显示圆弧
-                    let flat = ContourGeo.flatten([s], arcStep: 24)
-                    for q in flat.dropFirst() { path.addLine(to: P(q.x, q.y)) }
-                } else {
-                    path.addLine(to: P(s.p1.x, s.p1.y))
+            if let c = sketchFreeCircle {
+                let center = P(c.cx, c.cy)
+                let rr = c.r * k
+                ctx.stroke(Path(ellipseIn: CGRect(x: center.x - rr, y: center.y - rr,
+                                                  width: rr * 2, height: rr * 2)),
+                           with: .color(.orange), lineWidth: 2)
+            } else {
+                let segs = ContourGeo.segments(ContourGeo.buildNodes(sketchDrawSpec()))
+                var path = Path()
+                if let f = segs.first {
+                    path.move(to: P(f.p0.x, f.p0.y))
                 }
+                for s in segs {
+                    if s.isArc {
+                        // 用折线近似显示圆弧
+                        let flat = ContourGeo.flatten([s], arcStep: 24)
+                        for q in flat.dropFirst() { path.addLine(to: P(q.x, q.y)) }
+                    } else {
+                        path.addLine(to: P(s.p1.x, s.p1.y))
+                    }
+                }
+                ctx.stroke(path, with: .color(.orange), lineWidth: 2)
             }
-            ctx.stroke(path, with: .color(.orange), lineWidth: 2)
         }
 
         // 选中的草图段：A 绿色，B 蓝色；编辑/约束优先作用于它们
@@ -1864,8 +1881,8 @@ struct StudioScreen: View {
                      at: CGPoint(x: q.x + 8, y: q.y - 8))
         }
 
-        // 自由轮廓节点
-        if spec.template == .free {
+        // 自由轮廓节点（识别为圆时不再画 32 个节点）
+        if spec.template == .free, sketchFreeCircle == nil {
             for (i, n) in spec.nodes.enumerated() {
                 let q = P(n.x, n.y)
                 let selected = (selectedNode == i)
@@ -1913,34 +1930,46 @@ struct StudioScreen: View {
             drawDim(ctx, from: P(-spec.slotL / 2, -spec.slotW / 2 - 12), to: P(spec.slotL / 2, -spec.slotW / 2 - 12),
                     text: "L " + ncf(spec.slotL))
         case .free:
-            let nodes = spec.nodes
-            if nodes.count > 1 {
-                let minX = nodes.map(\.x).min() ?? 0
-                let maxX = nodes.map(\.x).max() ?? 0
-                let minY = nodes.map(\.y).min() ?? 0
-                let maxY = nodes.map(\.y).max() ?? 0
-                drawDim(ctx, from: P(minX, minY - 16), to: P(maxX, minY - 16),
-                        text: "包络 " + ncf(maxX - minX))
-                drawDim(ctx, from: P(minX - 16, minY), to: P(minX - 16, maxY),
-                        text: "包络 " + ncf(maxY - minY))
-                for i in 0..<nodes.count {
-                    let a = nodes[i]
-                    let c = nodes[(i + 1) % nodes.count]
-                    let len = hypot(c.x - a.x, c.y - a.y)
-                    let mid = P((a.x + c.x) / 2, (a.y + c.y) / 2)
-                    ctx.draw(Text(String(format: "%.1f", len)).font(.system(size: 9)).foregroundColor(.blue),
-                 at: CGPoint(x: mid.x, y: mid.y - 10))
-                }
-                for i in nodes.indices {
-                    let deg = vertexAngle(nodes, i)
-                    let q = P(nodes[i].x, nodes[i].y)
-                    ctx.draw(Text(String(format: "%.0f°", deg)).font(.system(size: 8)).foregroundColor(.purple),
-                             at: CGPoint(x: q.x + 12, y: q.y + 10))
-                    if nodes[i].kind != .line {
-                        let a = nodes[i], c = nodes[(i + 1) % nodes.count]
+            if let c = sketchFreeCircle {
+                drawDim(ctx, from: P(c.cx - c.r, c.cy), to: P(c.cx + c.r, c.cy),
+                        text: "Ø" + ncf(c.r * 2))
+                let center = P(c.cx, c.cy)
+                ctx.stroke(Path { p in
+                    p.move(to: CGPoint(x: center.x - 6, y: center.y))
+                    p.addLine(to: CGPoint(x: center.x + 6, y: center.y))
+                    p.move(to: CGPoint(x: center.x, y: center.y - 6))
+                    p.addLine(to: CGPoint(x: center.x, y: center.y + 6))
+                }, with: .color(.blue.opacity(0.65)), lineWidth: 1)
+            } else {
+                let nodes = spec.nodes
+                if nodes.count > 1 {
+                    let minX = nodes.map(\.x).min() ?? 0
+                    let maxX = nodes.map(\.x).max() ?? 0
+                    let minY = nodes.map(\.y).min() ?? 0
+                    let maxY = nodes.map(\.y).max() ?? 0
+                    drawDim(ctx, from: P(minX, minY - 16), to: P(maxX, minY - 16),
+                            text: "包络 " + ncf(maxX - minX))
+                    drawDim(ctx, from: P(minX - 16, minY), to: P(minX - 16, maxY),
+                            text: "包络 " + ncf(maxY - minY))
+                    for i in 0..<nodes.count {
+                        let a = nodes[i]
+                        let c = nodes[(i + 1) % nodes.count]
+                        let len = hypot(c.x - a.x, c.y - a.y)
                         let mid = P((a.x + c.x) / 2, (a.y + c.y) / 2)
-                        ctx.draw(Text("R" + ncf(a.r)).font(.system(size: 8)).foregroundColor(.green),
-                                 at: CGPoint(x: mid.x, y: mid.y + 9))
+                        ctx.draw(Text(String(format: "%.1f", len)).font(.system(size: 9)).foregroundColor(.blue),
+                                 at: CGPoint(x: mid.x, y: mid.y - 10))
+                    }
+                    for i in nodes.indices {
+                        let deg = vertexAngle(nodes, i)
+                        let q = P(nodes[i].x, nodes[i].y)
+                        ctx.draw(Text(String(format: "%.0f°", deg)).font(.system(size: 8)).foregroundColor(.purple),
+                                 at: CGPoint(x: q.x + 12, y: q.y + 10))
+                        if nodes[i].kind != .line {
+                            let a = nodes[i], c = nodes[(i + 1) % nodes.count]
+                            let mid = P((a.x + c.x) / 2, (a.y + c.y) / 2)
+                            ctx.draw(Text("R" + ncf(a.r)).font(.system(size: 8)).foregroundColor(.green),
+                                     at: CGPoint(x: mid.x, y: mid.y + 9))
+                        }
                     }
                 }
             }
@@ -2039,21 +2068,25 @@ struct StudioScreen: View {
         case .slot:
             hits.append((.slotL, P(0, -spec.slotW / 2 - 12), "槽长 L", spec.slotL))
         case .free:
-            let nodes = spec.nodes
-            if nodes.count > 1 {
-                for i in nodes.indices {
-                    let a = nodes[i], c = nodes[(i + 1) % nodes.count]
-                    let mid = P((a.x + c.x) / 2, (a.y + c.y) / 2 - 10 / k)
-                    hits.append((.nodeLen(i), mid, "第 \(i + 1) 段长度", hypot(c.x - a.x, c.y - a.y)))
-                }
-                for i in nodes.indices {
-                    let q = P(nodes[i].x, nodes[i].y)
-                    hits.append((.nodeAngle(i), CGPoint(x: q.x + 12, y: q.y + 10), "点 \(i + 1) 角度", vertexAngle(nodes, i)))
-                }
-                for i in nodes.indices where nodes[i].kind != .line {
-                    let a = nodes[i], c = nodes[(i + 1) % nodes.count]
-                    let mid = P((a.x + c.x) / 2, (a.y + c.y) / 2)
-                    hits.append((.nodeR(i), CGPoint(x: mid.x, y: mid.y + 9), "点 \(i + 1) 圆弧 R", nodes[i].r))
+            if let c = sketchFreeCircle {
+                hits.append((.freeCircleD, P(c.cx, c.cy), "直径 Ø", c.r * 2))
+            } else {
+                let nodes = spec.nodes
+                if nodes.count > 1 {
+                    for i in nodes.indices {
+                        let a = nodes[i], c = nodes[(i + 1) % nodes.count]
+                        let mid = P((a.x + c.x) / 2, (a.y + c.y) / 2 - 10 / k)
+                        hits.append((.nodeLen(i), mid, "第 \(i + 1) 段长度", hypot(c.x - a.x, c.y - a.y)))
+                    }
+                    for i in nodes.indices {
+                        let q = P(nodes[i].x, nodes[i].y)
+                        hits.append((.nodeAngle(i), CGPoint(x: q.x + 12, y: q.y + 10), "点 \(i + 1) 角度", vertexAngle(nodes, i)))
+                    }
+                    for i in nodes.indices where nodes[i].kind != .line {
+                        let a = nodes[i], c = nodes[(i + 1) % nodes.count]
+                        let mid = P((a.x + c.x) / 2, (a.y + c.y) / 2)
+                        hits.append((.nodeR(i), CGPoint(x: mid.x, y: mid.y + 9), "点 \(i + 1) 圆弧 R", nodes[i].r))
+                    }
                 }
             }
         }
@@ -2081,6 +2114,14 @@ struct StudioScreen: View {
             if v >= 0 { spec.rectR = v }
         case .circleD:
             if v > 0.1 { spec.circleD = v }
+        case .freeCircleD:
+            guard let c = sketchFreeCircle, v > 0.1 else { return }
+            let scale = v / (c.r * 2)
+            for i in spec.nodes.indices {
+                spec.nodes[i].x = c.cx + (spec.nodes[i].x - c.cx) * scale
+                spec.nodes[i].y = c.cy + (spec.nodes[i].y - c.cy) * scale
+            }
+            spec.circleD = v
         case .slotL:
             if v > 0.1 { spec.slotL = v }
         case .slotW:
@@ -2132,6 +2173,21 @@ struct StudioScreen: View {
         d.slotW = s.slotW
         d.nodes = s.nodes
         return d
+    }
+
+    /// 用“圆”工具在画布上放置的圆，会以多段节点保存；这里识别出真正的圆，
+    /// 显示和标注都按圆处理，避免出现一串 9.8 / 169° 的分段标签。
+    private var sketchFreeCircle: (cx: Double, cy: Double, r: Double)? {
+        guard spec.template == .free, spec.nodes.count >= 12 else { return nil }
+        let n = Double(spec.nodes.count)
+        let cx = spec.nodes.reduce(0) { $0 + $1.x } / n
+        let cy = spec.nodes.reduce(0) { $0 + $1.y } / n
+        let radii = spec.nodes.map { hypot($0.x - cx, $0.y - cy) }
+        guard let minR = radii.min(), let maxR = radii.max(), minR > 0.1 else { return nil }
+        let avg = radii.reduce(0, +) / n
+        let tolerance = max(0.12, avg * 0.02)
+        guard maxR - minR <= tolerance else { return nil }
+        return (cx, cy, avg)
     }
 
     private func sketchBBox() -> CGRect {
@@ -4166,6 +4222,13 @@ struct StudioScreen: View {
         max(0, spec.steps.filter { $0.mode == .add }.map(\.z1).max() ?? 0)
     }
 
+    /// 新凸台/异形的默认落料面：点在台阶上就叠在台阶顶面，否则回 XY 基准面 Z0。
+    /// 避免连续点“方凸台 / 圆凸台”时第二个自动叠在第一个上面。
+    private var addPlacementZ: Double {
+        guard hasPtr else { return 0 }
+        return PartProg.hostZ(spec, ptrX, ptrY)
+    }
+
     /// 退出异形模式：恢复进入前的轮廓，避免点到一半退不出去
     private func cancelStepShapeEdit() {
         if let id = stepShapeEditID,
@@ -4184,7 +4247,7 @@ struct StudioScreen: View {
         var s = PartStep()
         s.mode = mode
         s.height = mode == .add ? 5 : 3
-        s.z0 = topAddZ
+        s.z0 = addPlacementZ
         s.shape.template = template
         switch template {
         case .circle:
@@ -4213,7 +4276,7 @@ struct StudioScreen: View {
         var s = PartStep()
         s.mode = .add
         s.height = 5
-        s.z0 = topAddZ
+        s.z0 = addPlacementZ
         s.name = "异形凸台"
         s.shape = PartShape()
         s.shape.template = .free
@@ -4536,7 +4599,7 @@ struct StudioScreen: View {
                         pushUndo()
                         var s = PartStep(from: spec)
                         s.name = "台阶 \(spec.steps.count + 1)"
-                        s.z0 = topAddZ
+                        s.z0 = addPlacementZ
                         s.height = 5
                         spec.steps.append(s)
                     } label: {
@@ -4663,6 +4726,21 @@ struct StudioScreen: View {
         return zTop - span * (sectionReverse ? (1 - sectionT) : sectionT)
     }
 
+    /// 孔/腔/内轮廓的边界环；边拾取不能只认外轮廓，否则圆孔/圆腔只有基础 4 条边可选。
+    private func featureRim(_ f: PartFeat) -> [CGPoint] {
+        if f.kind == .rectPocket {
+            let x0 = CGFloat(f.x - f.w / 2), x1 = CGFloat(f.x + f.w / 2)
+            let y0 = CGFloat(f.y - f.h / 2), y1 = CGFloat(f.y + f.h / 2)
+            return [CGPoint(x: x0, y: y0), CGPoint(x: x1, y: y0),
+                    CGPoint(x: x1, y: y1), CGPoint(x: x0, y: y1)]
+        }
+        let cx = CGFloat(f.x), cy = CGFloat(f.y), r = CGFloat(max(f.dia / 2, 0.1))
+        return (0..<32).map { i in
+            let a = Double(i) / 32 * 2 * Double.pi
+            return CGPoint(x: cx + r * CGFloat(cos(a)), y: cy + r * CGFloat(sin(a)))
+        }
+    }
+
     private func edgeCandidates(_ cam: Cam, at loc: CGPoint) -> [(ModelPickEdge, Double)] {
         var out: [(ModelPickEdge, Double)] = []
         let cutZ = activeSectionCutZ()
@@ -4700,6 +4778,30 @@ struct StudioScreen: View {
             if top > bottom + 0.0001 {
                 scanVertical(PartProg.pts(s, spec), top: top, bottom: bottom,
                              prefix: "step-\(s.id.uuidString)")
+            }
+        }
+        // 孔 / 圆腔 / 方腔的边也要进入拾取候选，不能只有外轮廓的 4 条边。
+        for f in spec.feats where !f.suppressed {
+            let host = PartProg.hostZ(spec, f.x, f.y)
+            let rim = featureRim(f)
+            scan(rim, z: host, prefix: "feat-\(f.id.uuidString)")
+            let bottom = f.kind == .hole ? PartProg.minZ(spec) : host - f.depth
+            if host > bottom + 0.0001 {
+                scan(rim, z: bottom, prefix: "feat-\(f.id.uuidString)-b")
+                scanVertical(rim, top: host, bottom: bottom, prefix: "feat-\(f.id.uuidString)")
+            }
+        }
+        // 草图内轮廓（内圆/内方/异形）同样可以作为边拾取。
+        for l in spec.innerLoops {
+            let host = PartProg.hostZ(spec, l.cx, l.cy)
+            let rim = PartProg.loopPoints(l).map {
+                CGPoint(x: $0.x + CGFloat(l.cx), y: $0.y + CGFloat(l.cy))
+            }
+            scan(rim, z: host, prefix: "loop-\(l.id.uuidString)")
+            let bottom = l.through ? PartProg.minZ(spec) : host - l.depth
+            if host > bottom + 0.0001 {
+                scan(rim, z: bottom, prefix: "loop-\(l.id.uuidString)-b")
+                scanVertical(rim, top: host, bottom: bottom, prefix: "loop-\(l.id.uuidString)")
             }
         }
         return out.sorted { $0.1 < $1.1 }
@@ -6053,6 +6155,7 @@ struct StudioScreen: View {
         }
 
         drawAxisTriad(&ctx, size: size)
+        drawCenterAxes(&ctx, cam: cam, size: size)
 
         if hasPtr {
             let o = cam.p(ptrX, ptrY, 0)
@@ -6145,6 +6248,60 @@ struct StudioScreen: View {
                  with: .color(.white))
         ctx.stroke(Path(ellipseIn: CGRect(x: origin.x - 3, y: origin.y - 3, width: 6, height: 6)),
                    with: .color(Color(white: 0.35)), lineWidth: 1)
+    }
+
+    /// 建模实体中心的 XYZ 方向箭头；告诉用户零件在 XY 基准面上、Z 朝上。
+    private func drawCenterAxes(_ ctx: inout GraphicsContext, cam: Cam, size: CGSize) {
+        let b = partBBox
+        let cx = Double(b.midX), cy = Double(b.midY), z = 0.0
+        let len = max(14.0, min(Double(b.width), Double(b.height)) * 0.30)
+        let origin = cam.p(cx, cy, z)
+        let ex = cam.p(cx + len, cy, z)
+        let ey = cam.p(cx, cy + len, z)
+        let ez = cam.p(cx, cy, z + len)
+
+        func arrow(_ end: CGPoint, _ color: Color, _ label: String) {
+            ctx.stroke(Path { p in
+                p.move(to: origin)
+                p.addLine(to: end)
+            }, with: .color(color), lineWidth: 1.8)
+
+            let dx = Double(end.x - origin.x), dy = Double(end.y - origin.y)
+            let l = hypot(dx, dy)
+            if l > 1 {
+                let ux = dx / l, uy = dy / l
+                let px = -uy, py = ux
+                let p1 = CGPoint(x: end.x - CGFloat(ux * 7 + px * 3),
+                                 y: end.y - CGFloat(uy * 7 + py * 3))
+                let p2 = CGPoint(x: end.x - CGFloat(ux * 7 - px * 3),
+                                 y: end.y - CGFloat(uy * 7 - py * 3))
+                ctx.fill(Path { p in
+                    p.move(to: end)
+                    p.addLine(to: p1)
+                    p.addLine(to: p2)
+                    p.closeSubpath()
+                }, with: .color(color))
+            }
+            let down = end.y > origin.y
+            ctx.draw(Text(label).font(.system(size: 10, weight: .bold)).foregroundColor(color),
+                     at: CGPoint(x: end.x + (end.x >= origin.x ? 9 : -9),
+                                 y: end.y + (down ? 7 : -8)))
+        }
+
+        arrow(ex, .red, "X")
+        arrow(ey, .green, "Y")
+        arrow(ez, .blue, "Z")
+
+        ctx.stroke(Path { p in
+            p.move(to: CGPoint(x: origin.x - 5, y: origin.y))
+            p.addLine(to: CGPoint(x: origin.x + 5, y: origin.y))
+            p.move(to: CGPoint(x: origin.x, y: origin.y - 5))
+            p.addLine(to: CGPoint(x: origin.x, y: origin.y + 5))
+        }, with: .color(Color.white.opacity(0.9)), lineWidth: 1.2)
+        ctx.draw(Text("XY 基准 Z0")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundColor(Color(white: 0.32)),
+                 at: CGPoint(x: origin.x + 26, y: origin.y + 14))
     }
 
     private func drawSectionPlane(_ ctx: inout GraphicsContext, _ cam: Cam, size: CGSize) {
