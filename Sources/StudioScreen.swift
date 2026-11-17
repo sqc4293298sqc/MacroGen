@@ -2211,6 +2211,7 @@ struct StudioScreen: View {
                             yaw += dx * 0.012
                             let np = pitch - dy * 0.010
                             pitch = atan2(sin(np), cos(np))
+                            modelViewName = "自由"
                         }
                         .onEnded { g in
                             let travel = hypot(Double(g.translation.width), Double(g.translation.height))
