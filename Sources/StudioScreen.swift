@@ -94,8 +94,8 @@ struct StudioScreen: View {
     @State private var pickedFace: ModelPickFace? = nil
     @State private var pickedHole: ModelPickHole? = nil
     @State private var measurePickHint = "点模型上的边、面或孔进行拾取"
-    @AppStorage("measurePickTolerance") private var pickTolerance = 22.0
-    @AppStorage("showSketchConstraintBadges") private var showConstraintBadges = true
+    @State private var pickTolerance = 22.0
+    @State private var showConstraintBadges = true
     @State private var calibratingPick = false
     @State private var calibrationSample: PickCalibration? = nil
     @State private var bodyHighlight = false
@@ -4101,6 +4101,16 @@ struct StudioScreen: View {
         return ds.count > 1 && ds[1] - ds[0] < 3
     }
 
+    private var toleranceLabel: String {
+        let v = pickTolerance.isFinite ? pickTolerance : 22
+        return String(format: "%.0f pt", min(max(v, 12), 40))
+    }
+
+    private func adjustTolerance(_ delta: Double) {
+        let v = pickTolerance.isFinite ? pickTolerance : 22
+        pickTolerance = min(max(v + delta, 12), 40)
+    }
+
     private var measurePanel: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
@@ -4125,13 +4135,21 @@ struct StudioScreen: View {
                         .buttonStyle(.plain)
                     }
                 }
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("拾取半径").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                         Spacer()
-                        Text("\(Int(pickTolerance)) pt").font(.system(size: 11, weight: .bold)).foregroundStyle(studioBlue)
+                        Text(toleranceLabel).font(.system(size: 11, weight: .bold)).foregroundStyle(studioBlue)
                     }
-                    Slider(value: $pickTolerance, in: 12...40, step: 1).tint(studioBlue)
+                    HStack(spacing: 8) {
+                        Button("−2") { adjustTolerance(-2) }
+                            .buttonStyle(.bordered)
+                        Button("+2") { adjustTolerance(2) }
+                            .buttonStyle(.bordered)
+                        Button("重置") { pickTolerance = 22 }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.secondary)
+                    }
                     Text("边/孔太难点就调大；点错相邻边就调小。")
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                 }
@@ -5208,7 +5226,7 @@ struct StudioScreen: View {
                 p.move(to: CGPoint(x: q.x - 8, y: q.y)); p.addLine(to: CGPoint(x: q.x + 8, y: q.y))
                 p.move(to: CGPoint(x: q.x, y: q.y - 8)); p.addLine(to: CGPoint(x: q.x, y: q.y + 8))
             }, with: .color(.green), lineWidth: 1.5)
-            ctx.draw(Text("\(Int(pickTolerance)) pt").font(.system(size: 9, weight: .bold)).foregroundColor(.green),
+            ctx.draw(Text(toleranceLabel).font(.system(size: 9, weight: .bold)).foregroundColor(.green),
                      at: CGPoint(x: q.x, y: q.y + r + 10))
             if let e = sample.nearestEdge {
                 let a = cam.p(Double(e.a.x), Double(e.a.y), e.z)
