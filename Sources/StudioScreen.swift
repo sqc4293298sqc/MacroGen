@@ -2361,10 +2361,12 @@ struct StudioScreen: View {
             .padding(.horizontal, 8)
             .padding(.top, 8)
 
-            viewCube
-                .padding(.trailing, 74)
-                .padding(.top, 8)
-                .frame(maxWidth: .infinity, alignment: .trailing)
+            if modelPanel == .none {
+                viewCube
+                    .padding(.trailing, 74)
+                    .padding(.top, 8)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
 
             VStack {
                 Spacer()
@@ -2463,26 +2465,26 @@ struct StudioScreen: View {
         VStack(spacing: 2) {
             Button { applyView("俯视", 0, 1.5) } label: {
                 Text("顶").font(.system(size: 9, weight: .bold))
-                    .frame(width: 38, height: 20)
+                    .frame(width: 44, height: 26)
                     .background(Color.white.opacity(0.85))
             }
             .buttonStyle(.plain)
             HStack(spacing: 2) {
                 Button { applyView("正视", 0, 0) } label: {
                     Text("前").font(.system(size: 9, weight: .bold))
-                        .frame(width: 18, height: 28)
+                        .frame(width: 22, height: 32)
                         .background(Color.white.opacity(0.85))
                 }
                 .buttonStyle(.plain)
                 Button { applyView("右视", 1.5708, 0) } label: {
                     Text("右").font(.system(size: 9, weight: .bold))
-                        .frame(width: 18, height: 28)
+                        .frame(width: 22, height: 32)
                         .background(Color(red: 0.78, green: 0.80, blue: 0.84))
                 }
                 .buttonStyle(.plain)
             }
             Text("视图").font(.system(size: 8)).foregroundStyle(.white)
-                .frame(width: 38, height: 15)
+                .frame(width: 44, height: 16)
                 .background(studioBlue.opacity(0.85))
         }
         .clipShape(RoundedRectangle(cornerRadius: 5))
@@ -3138,7 +3140,6 @@ struct StudioScreen: View {
                         get: { gridStep },
                         set: { v in
                             gridStep = v
-                            modelPanel = .none
                             showToastView("参考网格已改为 \(Int(v)) mm")
                         })) {
                         Text("5").tag(5.0); Text("10").tag(10.0); Text("20").tag(20.0); Text("50").tag(50.0)
@@ -3149,9 +3150,10 @@ struct StudioScreen: View {
                     get: { showModelGrid },
                     set: { v in
                         showModelGrid = v
-                        modelPanel = .none
                         showToastView(v ? "参考网格已打开" : "参考网格已关闭")
                     }))
+                Toggle("网格吸附", isOn: $snapGrid)
+                Toggle("节点吸附", isOn: $snapVertex)
                 Toggle("点顶面取 XY", isOn: Binding(
                     get: { tapOnModel },
                     set: { v in
@@ -3165,7 +3167,7 @@ struct StudioScreen: View {
                     Text(hasPtr ? "指针 X\(ncf(ptrX)) Y\(ncf(ptrY))" : "已开启：在模型顶面点一下即可取点")
                         .font(.system(size: 10)).foregroundStyle(studioBlue)
                 }
-                Text("网格吸附、节点吸附在草图页“参数”里设置，只影响草图落点。")
+                Text("网格吸附、节点吸附与草图页“参数”里同一组设置，只影响草图落点。")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                 Divider()
                 Text("单指自由旋转（俯仰不锁 ±90°），双指缩放；切换视角后面板自动收起。")
