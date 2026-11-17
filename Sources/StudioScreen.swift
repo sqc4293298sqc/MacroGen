@@ -7639,30 +7639,13 @@ struct StudioScreen: View {
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                     ForEach(groups) { group in
-                        let key = group.id
                         let list = group.ops
                         DisclosureGroup {
                             ForEach(list, id: \.id) { op in
-                                HStack(spacing: 8) {
-                                    Text("└").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(op.title).font(.system(size: 12, weight: .semibold))
-                                        Text("\(op.kind) · \(op.zRange)")
-                                            .font(.system(size: 9)).foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Text(op.status == .disabled ? "停" : "开")
-                                        .font(.system(size: 9, weight: .bold))
-                                        .foregroundStyle(op.status == .disabled ? .secondary : .green)
-                                }
+                                toolOpTreeRow(op)
                             }
                         } label: {
-                            HStack {
-                                Text("T\(key) · Ø\(ncf(list.first?.dia ?? 0))")
-                                    .font(.system(size: 12, weight: .semibold))
-                                Spacer()
-                                Text("\(list.count) 道").font(.system(size: 10)).foregroundStyle(.secondary)
-                            }
+                            toolGroupLabel(group)
                         }
                     }
                 }
@@ -7851,6 +7834,36 @@ struct StudioScreen: View {
             Spacer()
         }
         .font(.system(size: 14))
+    }
+
+    private func toolGroupLabel(_ group: ToolOpGroup) -> some View {
+        HStack {
+            Text("T\(group.id) · Ø\(ncf(group.ops.first?.dia ?? 0))")
+                .font(.system(size: 12, weight: .semibold))
+            Spacer()
+            Text("\(group.ops.count) 道")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func toolOpTreeRow(_ op: PartOpInfo) -> some View {
+        HStack(spacing: 8) {
+            Text("└")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(op.title)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(op.kind + " · " + op.zRange)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(op.status == .disabled ? "停" : "开")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(op.status == .disabled ? Color.secondary : Color.green)
+        }
     }
 
     private func applyTool(_ tool: ToolRecord, to role: String) {
