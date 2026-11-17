@@ -461,11 +461,12 @@ struct PartScreen: View {
 struct PartResultView: View {
     let code: String
     @State private var copied = false
+    @State private var fileURL: URL?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                HStack {
+                HStack(spacing: 12) {
                     Text("\(code.components(separatedBy: "\n").count) 行")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -476,6 +477,18 @@ struct PartResultView: View {
                     } label: {
                         Label(copied ? "已复制" : "复制", systemImage: copied ? "checkmark" : "doc.on.doc")
                             .font(.system(size: 13, weight: .semibold))
+                    }
+                    Button {
+                        exportNC()
+                    } label: {
+                        Label("导出 .nc", systemImage: "square.and.arrow.down")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    if let url = fileURL {
+                        ShareLink(item: url) {
+                            Label("分享", systemImage: "square.and.arrow.up")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
                     }
                     NavigationLink {
                         SimScreen(code: code)
@@ -497,5 +510,15 @@ struct PartResultView: View {
         }
         .navigationTitle("多工序程序")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func exportNC() {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("MacroGen-多工序.nc")
+        do {
+            try code.write(to: url, atomically: true, encoding: .utf8)
+            fileURL = url
+        } catch {
+            fileURL = nil
+        }
     }
 }

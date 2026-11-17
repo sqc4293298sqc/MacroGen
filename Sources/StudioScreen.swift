@@ -50,6 +50,7 @@ struct StudioScreen: View {
     @State private var bodyVisible = true
     @State private var selectedTreeID: String? = nil
     @State private var hiddenTreeIDs: Set<String> = []
+    @State private var treeFeatOnly = false
     @State private var selectedNode: Int? = nil
     @State private var continuousDraw = true
     @State private var gridAuto = true
@@ -62,6 +63,8 @@ struct StudioScreen: View {
     @State private var sectionLines = true
     @State private var measureOn = false
     @State private var measureTarget: MeasureTarget = .body
+    @State private var bodyHighlight = false
+    @State private var drawingExportURL: URL?
     @State private var material: StudioMaterial = .abs
     @State private var toastText: String = ""
     @State private var showToast = false
@@ -174,10 +177,10 @@ struct StudioScreen: View {
             PartResultView(code: code)
         }
         .sheet(isPresented: $showRotate) {
-            TransformSheet(spec: $spec, rotate: true)
+            TransformSheet(spec: $spec, rotate: true, onUndo: { pushUndo() })
         }
         .sheet(isPresented: $showScale) {
-            TransformSheet(spec: $spec, rotate: false)
+            TransformSheet(spec: $spec, rotate: false, onUndo: { pushUndo() })
         }
         .sheet(isPresented: $showOpSheet) {
             OpParamsSheet(spec: $spec, op: opSheetName)
@@ -495,15 +498,15 @@ struct StudioScreen: View {
                 railButton("竖直", "line.3.horizontal.decrease", active: false) { pushUndo(); constrain(horizontal: false) }
                 railButton("固定", "pin", active: sketchFixed) { sketchFixed.toggle() }
                 railButton("重合", "circle.circle", active: false) { pushUndo(); snapLastToFirst() }
-                railButton("中点", "smallcircle.filled.circle", active: false) { pushUndo(); centerSketch() }
+                railButton("中点", "smallcircle.filled.circle", active: false) { pushUndo(); midpointConstraint() }
                 railButton("平行", "equal", active: false) { pushUndo(); makeParallel() }
                 railButton("垂直", "plus", active: false) { pushUndo(); makePerpendicular() }
-                railButton("相切", "circle.dashed", active: false) { showToastView("相切：圆/圆弧工具已按三点定圆处理") }
+                railButton("相切", "circle.dashed", active: false) { pushUndo(); tangentLastSegment() }
                 railButton("同心", "circle.and.line.horizontal", active: false) { pushUndo(); makeConcentric() }
                 railButton("等长", "equal.circle", active: false) { pushUndo(); equalizeSegments() }
-                railButton("清除", "xmark.circle", active: false) {
+                railButton("取消固定", "xmark.circle", active: false) {
                     sketchFixed = false
-                    showToastView("已清除固定状态")
+                    showToastView("已取消固定状态")
                 }
             }
             .padding(.vertical, 6)
@@ -665,13 +668,10 @@ struct StudioScreen: View {
                     Button { addInner(.circle) } label: { Label("内圆", systemImage: "circle") }
                     Button { addInner(.rect) } label: { Label("内方", systemImage: "rectangle") }
                     Button {
-                        pushUndo()
-                        drawInner.toggle()
-                        innerDraft.removeAll()
-                        sketchTool = drawInner ? "多段线" : ""
+                        toggleInnerDraw()
                         sketchSidePanel = .none
                     } label: {
-                        Label(drawInner ? "结束手画" : "手画", systemImage: "pencil.tip")
+                        Label(drawInner ? "完成手画" : "手画", systemImage: "pencil.tip")
                     }
                 }
                 .font(.system(size: 12, weight: .semibold))
@@ -914,12 +914,9 @@ struct StudioScreen: View {
                 Button { addInner(.rect) } label: { Label("内方", systemImage: "rectangle") }
                 Spacer()
                 Button {
-                    pushUndo()
-                    drawInner.toggle()
-                    innerDraft.removeAll()
-                    sketchTool = drawInner ? "多段线" : ""
+                    toggleInnerDraw()
                 } label: {
-                    Label(drawInner ? "正在画内轮廓" : "手画内轮廓", systemImage: "pencil.tip")
+                    Label(drawInner ? "完成手画" : "手画内轮廓", systemImage: "pencil.tip")
                 }
             }
             .font(.system(size: 12, weight: .semibold))
@@ -996,7 +993,7 @@ struct StudioScreen: View {
                     miniNum("阵列 dx", $arrayDX)
                     miniNum("阵列 dy", $arrayDY)
                 }
-                Button("阵列内轮廓") { pushUndo(); arrayInner() }
+                Button("阵列内轮廓") { arrayInner() }
                     .font(.system(size: 13, weight: .semibold))
                 HStack(spacing: 6) {
                     Stepper("圆阵 \(arrayCount) 个", value: $arrayCount, in: 2...12)
@@ -1157,6 +1154,8 @@ struct StudioScreen: View {
             showRotate = true; return
         case "缩放":
             showScale = true; return
+        case "阵列":
+            arrayInner(); return
         default:
             break
         }
@@ -1197,8 +1196,6 @@ struct StudioScreen: View {
             offsetOuter(offsetD)
         case "镜像":
             mirrorOuter()
-        case "阵列":
-            arrayInner()
         case "几何约束":
             constrain(horizontal: true)
         case "移动":
@@ -1674,6 +1671,25 @@ struct StudioScreen: View {
         refPoints.removeAll()
     }
 
+    private func toggleInnerDraw() {
+        if drawInner {
+            if innerDraft.count >= 3 {
+                finishInner()
+                showToastView("手画内轮廓已加入")
+            } else {
+                drawInner = false
+                innerDraft.removeAll()
+                sketchTool = ""
+                showToastView("已结束手画：点数不足 3 个，未生成内轮廓")
+            }
+        } else {
+            drawInner = true
+            innerDraft.removeAll()
+            sketchTool = "多段线"
+            showToastView("在画布上连续点，画完再点一次“完成手画”")
+        }
+    }
+
     private func finishInner() {
         guard innerDraft.count >= 3 else { return }
         pushUndo()
@@ -1830,7 +1846,11 @@ struct StudioScreen: View {
 
     private func arrayInner() {
         let base = spec.innerLoops
-        guard !base.isEmpty else { return }
+        guard !base.isEmpty else {
+            showToastView("先加一个内圆/内方，再做线阵")
+            return
+        }
+        pushUndo()
         for l in base {
             for r in 0..<max(arrayRows, 1) {
                 for c in 0..<max(arrayCols, 1) {
@@ -1957,6 +1977,54 @@ struct StudioScreen: View {
             spec.feats[i].y -= cy
         }
         showToastView("轮廓已移到坐标中心")
+    }
+
+    /// 中点约束：把当前选中节点移到相邻两点的中点
+    private func midpointConstraint() {
+        if spec.template != .free { fillRectNodes() }
+        let n = spec.nodes.count
+        guard n >= 3 else {
+            showToastView("至少要有 3 个节点才能做中点约束")
+            return
+        }
+        guard let i = selectedNode, i >= 0, i < n else {
+            showToastView("先在画布上选择一个节点，再点“中点”")
+            return
+        }
+        let prev = spec.nodes[(i + n - 1) % n]
+        let next = spec.nodes[(i + 1) % n]
+        spec.nodes[i].x = (prev.x + next.x) / 2
+        spec.nodes[i].y = (prev.y + next.y) / 2
+        showToastView("节点 \(i + 1) 已移到相邻两点的中点")
+    }
+
+    /// 相切约束：调整相邻前一点，使进入圆弧前的那一段与圆弧相切
+    private func tangentLastSegment() {
+        if spec.template != .free { fillRectNodes() }
+        let n = spec.nodes.count
+        guard n >= 3 else {
+            showToastView("至少要有 3 个点：前一点、圆弧起点、圆弧终点")
+            return
+        }
+        let i = n - 1
+        guard spec.nodes[i].kind != .line else {
+            showToastView("末段不是圆弧：先把末点类型改成“圆弧 顺/逆”")
+            return
+        }
+        let p0 = spec.nodes[i - 1], p1 = spec.nodes[i]
+        let seg = ContourSeg(p0: CGPoint(x: p0.x, y: p0.y),
+                             p1: CGPoint(x: p1.x, y: p1.y),
+                             kind: spec.nodes[i].kind,
+                             r: spec.nodes[i].r)
+        let t = ContourGeo.tangent(seg)
+        let d = hypot(Double(spec.nodes[i - 2].x - p0.x), Double(spec.nodes[i - 2].y - p0.y))
+        guard d > 1e-6 else {
+            showToastView("前一段太短，无法做相切")
+            return
+        }
+        spec.nodes[i - 2].x = p0.x - Double(t.x) * d
+        spec.nodes[i - 2].y = p0.y - Double(t.y) * d
+        showToastView("已调整前一段，使其与末段圆弧相切")
     }
 
     private func makeParallel() {
@@ -2195,6 +2263,7 @@ struct StudioScreen: View {
                                                       Double(g.startLocation.y) - Double(q.y))
                                         if d < best { best = d; dragFeatID = f.id }
                                     }
+                                    if dragFeatID != nil { pushUndo() }
                                 }
                                 if let id = dragFeatID,
                                    let idx = spec.feats.firstIndex(where: { $0.id == id }) {
@@ -2276,19 +2345,19 @@ struct StudioScreen: View {
                     modelPanel = modelPanel == .extrude ? .none : .extrude
                 }
                 railButton("孔", "circle.circle", active: false) {
-                    pushUndo(); let f = addFeat(.hole)
+                    let f = addFeat(.hole)
                     selectedTreeID = "feat-\(f.id.uuidString)"
                     modelPanel = .none
                     showToastView("孔已加到 X\(ncf(f.x)) Y\(ncf(f.y))")
                 }
                 railButton("圆腔", "circle.dashed", active: false) {
-                    pushUndo(); let f = addFeat(.pocket)
+                    let f = addFeat(.pocket)
                     selectedTreeID = "feat-\(f.id.uuidString)"
                     modelPanel = .none
                     showToastView("圆腔已加到 X\(ncf(f.x)) Y\(ncf(f.y))")
                 }
                 railButton("方腔", "rectangle.dashed", active: false) {
-                    pushUndo(); let f = addFeat(.rectPocket)
+                    let f = addFeat(.rectPocket)
                     selectedTreeID = "feat-\(f.id.uuidString)"
                     modelPanel = .none
                     showToastView("方腔已加到 X\(ncf(f.x)) Y\(ncf(f.y))")
@@ -2501,6 +2570,10 @@ struct StudioScreen: View {
             icon: "arrow.up.right.square",
             detail: "H \(ncf(spec.height)) mm",
             canMove: false, canDelete: false))
+        if treeFeatOnly {
+            out = out.filter { $0.id.hasPrefix("feat-") }
+            for i in out.indices { out[i].index = i + 1 }
+        }
         return out
     }
 
@@ -2511,12 +2584,18 @@ struct StudioScreen: View {
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Image(systemName: "line.3.horizontal.decrease.circle")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                Image(systemName: "arrow.down.to.line")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                Button { treeFeatOnly.toggle() } label: {
+                    Image(systemName: treeFeatOnly ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                        .font(.system(size: 12))
+                        .foregroundStyle(treeFeatOnly ? studioBlue : .secondary)
+                }
+                .buttonStyle(.plain)
+                Button { hiddenTreeIDs.removeAll() } label: {
+                    Image(systemName: "eye")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
             }
             .padding(.horizontal, 13)
             .padding(.bottom, 4)
@@ -2696,7 +2775,11 @@ struct StudioScreen: View {
                 .pickerStyle(.menu)
 
                 HStack {
-                    Button("高亮实体") { modelPanel = .none; showToastView("实体已在画布中高亮") }
+                    Button(bodyHighlight ? "取消高亮实体" : "高亮实体") {
+                        bodyHighlight.toggle()
+                        modelPanel = .none
+                        showToastView(bodyHighlight ? "实体高亮已打开" : "实体高亮已关闭")
+                    }
                     Spacer()
                     Button("适合窗口") { setView(0.78, 0.62); modelPanel = .none }
                 }
@@ -2784,12 +2867,36 @@ struct StudioScreen: View {
                     .frame(width: 105)
                 }
                 Toggle("显示测量框", isOn: $measureOn).tint(studioBlue)
-                metricCard("体积", "\(ncf(partVolume)) mm³")
-                metricCard("重量", "\(ncf(partWeight)) g（\(material.rawValue)）")
-                metricCard("价格", "¥\(ncf(partPrice))")
-                metricCard("包容体积", "\(ncf(partBBoxVolume)) mm³")
-                metricCard("尺寸", "\(ncf(Double(partBBox.width))) × \(ncf(Double(partBBox.height))) × \(ncf(spec.height)) mm")
-                metricCard("投影面积", "\(ncf(partProjectedArea)) mm²")
+                let pts = PartProg.pts(spec)
+                let longestEdge = zip(pts, Array(pts.dropFirst()) + [pts.first ?? .zero])
+                    .map { hypot(Double($0.x - $1.x), Double($0.y - $1.y)) }
+                    .max() ?? 0
+                switch measureTarget {
+                case .point:
+                    metricCard("取点", hasPtr ? "X\(ncf(ptrX))  Y\(ncf(ptrY))" : "未取点")
+                    metricCard("所在面", "工件顶面 Z0")
+                case .edge:
+                    metricCard("外轮廓边数", "\(pts.count) 段")
+                    metricCard("最长边", "\(ncf(longestEdge)) mm")
+                case .face:
+                    metricCard("顶面面积", "\(ncf(partProjectedArea)) mm²")
+                    metricCard("外形面积", "\(ncf(outerSurfaceArea)) mm²")
+                case .body:
+                    metricCard("体积", "\(ncf(partVolume)) mm³")
+                    metricCard("重量", "\(ncf(partWeight)) g（\(material.rawValue)）")
+                    metricCard("价格", "¥\(ncf(partPrice))")
+                    metricCard("包容体积", "\(ncf(partBBoxVolume)) mm³")
+                case .compound:
+                    metricCard("体积", "\(ncf(partVolume)) mm³")
+                    metricCard("重量", "\(ncf(partWeight)) g")
+                    metricCard("价格", "¥\(ncf(partPrice))")
+                    metricCard("包容体积", "\(ncf(partBBoxVolume)) mm³")
+                    metricCard("顶面面积", "\(ncf(partProjectedArea)) mm²")
+                    metricCard("尺寸", "\(ncf(Double(partBBox.width))) × \(ncf(Double(partBBox.height))) × \(ncf(spec.height)) mm")
+                }
+                Text("点=当前指针；边=外轮廓；面=顶面；体=整个实体；复合=体积+包容+面积。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
                 Text("体积按外形面积×厚度，再减去孔/型腔/内轮廓；重量按材料密度换算，价格为参考估价。")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
@@ -2931,12 +3038,12 @@ struct StudioScreen: View {
         Section("视角") {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    viewChip("等轴") { setView(0.78, 0.62) }
-                    viewChip("俯视") { setView(0, 1.5) }
-                    viewChip("正视") { setView(0, 0) }
-                    viewChip("右视") { setView(1.5708, 0) }
-                    viewChip("仰视") { setView(0, -1.5) }
-                    viewChip("适合窗口") { setView(0.78, 0.62) }
+                    viewChip("等轴") { applyView("等轴", 0.78, 0.62) }
+                    viewChip("俯视") { applyView("俯视", 0, 1.5) }
+                    viewChip("正视") { applyView("正视", 0, 0) }
+                    viewChip("右视") { applyView("右视", 1.5708, 0) }
+                    viewChip("仰视") { applyView("仰视", 0, -1.5) }
+                    viewChip("适合窗口") { applyView("等轴", 0.78, 0.62) }
                 }
                 .padding(.vertical, 2)
             }
@@ -2945,7 +3052,15 @@ struct StudioScreen: View {
         }
 
         Section("指针 / 加特征") {
-            Toggle("点图上顶面取 XY", isOn: $tapOnModel)
+            Toggle("点图上顶面取 XY", isOn: Binding(
+                get: { tapOnModel },
+                set: { v in
+                    tapOnModel = v
+                    if v {
+                        modelPanel = .none
+                        showToastView("点顶面取XY已开：在模型顶面点一下")
+                    }
+                }))
             HStack {
                 miniNum("X", $ptrX)
                 miniNum("Y", $ptrY)
@@ -2982,7 +3097,9 @@ struct StudioScreen: View {
                         .labelsHidden()
                         Spacer()
                         Button {
-                            spec.feats.removeAll { $0.id == f.id }
+                            pushUndo()
+                            let id = f.id
+                            spec.feats.removeAll { $0.id == id }
                         } label: {
                             Image(systemName: "trash").foregroundStyle(.red)
                         }
@@ -3049,6 +3166,7 @@ struct StudioScreen: View {
 
     @discardableResult
     private func addFeat(_ kind: PartFeatKind) -> PartFeat {
+        pushUndo()
         let b = PartProg.bbox(spec)
         var f = PartFeat(kind: kind)
         f.x = hasPtr ? ptrX : Double(b.midX)
@@ -3168,6 +3286,11 @@ struct StudioScreen: View {
 
         ctx.fill(ringPath(0), with: .color(bodyTint.opacity(0.30)))
         ctx.stroke(ringPath(0), with: .color(bodyTint), lineWidth: 2)
+
+        if bodyHighlight {
+            ctx.fill(ringPath(0), with: .color(Color.yellow.opacity(0.14)))
+            ctx.stroke(ringPath(0), with: .color(Color.yellow.opacity(0.95)), lineWidth: 4)
+        }
 
         if showZCut {
             ctx.fill(ringPath(-visibleDepth), with: .color(Color.orange.opacity(0.42)))
@@ -3304,8 +3427,8 @@ struct StudioScreen: View {
         let b = partBBox
         let depth = max(spec.height, 0.1)
         let z = -depth * (sectionReverse ? (1 - sectionT) : sectionT)
-        let x = Double(b.minX) + Double(b.width) * sectionT
-        let y = Double(b.minY) + Double(b.height) * sectionT
+        let x = Double(b.minX) + Double(b.width) * (sectionReverse ? (1 - sectionT) : sectionT)
+        let y = Double(b.minY) + Double(b.height) * (sectionReverse ? (1 - sectionT) : sectionT)
         var corners: [(Double, Double, Double)] = []
         switch sectionAxis {
         case .z:
@@ -3345,6 +3468,7 @@ struct StudioScreen: View {
     private func drawMeasureBox(_ ctx: inout GraphicsContext, _ cam: Cam) {
         let b = partBBox
         let depth = max(spec.height, 0.1)
+        let pts = PartProg.pts(spec)
         let bottom: [(Double, Double)] = [(Double(b.minX), Double(b.minY)), (Double(b.maxX), Double(b.minY)),
                                           (Double(b.maxX), Double(b.maxY)), (Double(b.minX), Double(b.maxY))]
         func boxPath(_ z: Double) -> Path {
@@ -3355,20 +3479,83 @@ struct StudioScreen: View {
             p.closeSubpath()
             return p
         }
-        ctx.stroke(boxPath(0), with: .color(.orange), lineWidth: 1.6)
-        ctx.stroke(boxPath(-depth), with: .color(.orange.opacity(0.55)), lineWidth: 1)
-        for q in bottom {
-            ctx.stroke(Path { p in
-                p.move(to: cam.p(q.0, q.1, 0))
-                p.addLine(to: cam.p(q.0, q.1, -depth))
-            }, with: .color(.orange.opacity(0.45)), lineWidth: 1)
+        func topPath() -> Path {
+            var p = Path()
+            guard let f = pts.first else { return boxPath(0) }
+            p.move(to: cam.p(Double(f.x), Double(f.y), 0))
+            for q in pts.dropFirst() { p.addLine(to: cam.p(Double(q.x), Double(q.y), 0)) }
+            p.closeSubpath()
+            return p
         }
-        let q = cam.p(Double(b.midX), Double(b.midY), 0)
-        ctx.draw(Text("体积 \(ncf(partVolume)) mm³").font(.system(size: 10, weight: .semibold)).foregroundColor(.orange),
-                 at: CGPoint(x: q.x, y: q.y - 26))
-        ctx.draw(Text("\(ncf(Double(b.width))) × \(ncf(Double(b.height))) × \(ncf(spec.height))")
-                    .font(.system(size: 9)).foregroundColor(.orange),
-                 at: CGPoint(x: q.x, y: q.y - 13))
+
+        switch measureTarget {
+        case .point:
+            if hasPtr {
+                let q = cam.p(ptrX, ptrY, 0)
+                ctx.stroke(Path(ellipseIn: CGRect(x: q.x - 9, y: q.y - 9, width: 18, height: 18)),
+                           with: .color(.orange), lineWidth: 2)
+                ctx.stroke(Path { p in
+                    p.move(to: CGPoint(x: q.x - 15, y: q.y)); p.addLine(to: CGPoint(x: q.x + 15, y: q.y))
+                    p.move(to: CGPoint(x: q.x, y: q.y - 15)); p.addLine(to: CGPoint(x: q.x, y: q.y + 15))
+                }, with: .color(.orange), lineWidth: 1.2)
+                ctx.draw(Text("点 X\(ncf(ptrX)) Y\(ncf(ptrY)) Z0")
+                            .font(.system(size: 10, weight: .semibold)).foregroundColor(.orange),
+                         at: CGPoint(x: q.x, y: q.y - 22))
+            } else {
+                let q = cam.p(Double(b.midX), Double(b.midY), 0)
+                ctx.draw(Text("点：先打开“点顶面取 XY”，再点零件顶面")
+                            .font(.system(size: 9, weight: .semibold)).foregroundColor(.orange),
+                         at: CGPoint(x: q.x, y: q.y - 26))
+            }
+
+        case .edge:
+            ctx.stroke(topPath(), with: .color(.orange), lineWidth: 2)
+            if pts.count >= 2 {
+                var best = 0.0
+                var bestA = pts[0], bestB = pts[1]
+                for i in 0..<pts.count {
+                    let a = pts[i], c = pts[(i + 1) % pts.count]
+                    let d = hypot(Double(c.x - a.x), Double(c.y - a.y))
+                    if d > best { best = d; bestA = a; bestB = c }
+                }
+                ctx.stroke(Path { p in
+                    p.move(to: cam.p(Double(bestA.x), Double(bestA.y), 0))
+                    p.addLine(to: cam.p(Double(bestB.x), Double(bestB.y), 0))
+                }, with: .color(.blue), lineWidth: 2.6)
+                let mid = cam.p(Double((bestA.x + bestB.x) / 2), Double((bestA.y + bestB.y) / 2), 0)
+                ctx.draw(Text("最长边 \(ncf(best)) mm / \(pts.count) 段")
+                            .font(.system(size: 10, weight: .semibold)).foregroundColor(.blue),
+                         at: CGPoint(x: mid.x, y: mid.y - 18))
+            }
+
+        case .face:
+            let top = topPath()
+            ctx.fill(top, with: .color(Color.orange.opacity(0.16)))
+            ctx.stroke(top, with: .color(.orange), lineWidth: 2)
+            let q = cam.p(Double(b.midX), Double(b.midY), 0)
+            ctx.draw(Text("顶面面积 \(ncf(partProjectedArea)) mm²")
+                        .font(.system(size: 10, weight: .semibold)).foregroundColor(.orange),
+                     at: CGPoint(x: q.x, y: q.y - 26))
+
+        case .body, .compound:
+            if measureTarget == .compound {
+                ctx.fill(topPath(), with: .color(Color.yellow.opacity(0.10)))
+            }
+            ctx.stroke(boxPath(0), with: .color(.orange), lineWidth: 1.6)
+            ctx.stroke(boxPath(-depth), with: .color(.orange.opacity(0.55)), lineWidth: 1)
+            for q in bottom {
+                ctx.stroke(Path { p in
+                    p.move(to: cam.p(q.0, q.1, 0))
+                    p.addLine(to: cam.p(q.0, q.1, -depth))
+                }, with: .color(.orange.opacity(0.45)), lineWidth: 1)
+            }
+            let q = cam.p(Double(b.midX), Double(b.midY), 0)
+            ctx.draw(Text("体积 \(ncf(partVolume)) mm³").font(.system(size: 10, weight: .semibold)).foregroundColor(.orange),
+                     at: CGPoint(x: q.x, y: q.y - 26))
+            ctx.draw(Text("\(ncf(Double(b.width))) × \(ncf(Double(b.height))) × \(ncf(spec.height))")
+                        .font(.system(size: 9)).foregroundColor(.orange),
+                     at: CGPoint(x: q.x, y: q.y - 13))
+        }
     }
 
     private func label(_ ctx: GraphicsContext, _ cam: Cam, _ f: PartFeat, _ text: String) {
@@ -3382,10 +3569,8 @@ struct StudioScreen: View {
     private var drawingPage: some View {
         Group {
             Section("出图 · 尺寸图") {
-                GeometryReader { geo in
-                    Canvas { context, size in
-                        drawDrawing(context: context, size: size)
-                    }
+                GeometryReader { _ in
+                    drawingCanvas
                 }
                 .frame(height: 390)
                 .background(Color.white)
@@ -3394,12 +3579,86 @@ struct StudioScreen: View {
             Section("图纸信息") {
                 let b = PartProg.bbox(spec)
                 Text("外形 \(ncf(Double(b.width))) × \(ncf(Double(b.height))) × 厚 \(ncf(spec.height))")
-                Text("孔 \(spec.feats.filter { $0.kind == .hole }.count) 个 · 型腔 \(spec.feats.filter { $0.kind == .pocket }.count) 个")
+                Text("孔 \(spec.feats.filter { $0.kind == .hole }.count) 个 · 型腔 \(spec.feats.filter { $0.kind != .hole }.count) 个")
                     .font(.caption).foregroundStyle(.secondary)
                 Text("尺寸按草图与特征自动标注，改建模参数这里会同步。")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("导出 / 分享") {
+                HStack(spacing: 10) {
+                    Button {
+                        exportDrawing()
+                    } label: {
+                        Label("导出尺寸图 PNG", systemImage: "square.and.arrow.down")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    Spacer()
+                    if let url = drawingExportURL {
+                        ShareLink(item: url) {
+                            Label("分享", systemImage: "square.and.arrow.up")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+                Button {
+                    copyDrawingSummary()
+                } label: {
+                    Label("复制尺寸清单", systemImage: "doc.on.doc")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+                Text("导出的是 1200×900 PNG，可直接发给现场；尺寸清单是文字，方便贴到程序单。")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
         }
+    }
+
+    private var drawingCanvas: some View {
+        Canvas { context, size in
+            drawDrawing(context: context, size: size)
+        }
+        .background(Color.white)
+    }
+
+    private func exportDrawing() {
+        let renderer = ImageRenderer(content: drawingCanvas.frame(width: 1200, height: 900))
+        renderer.scale = 1.0
+        guard let image = renderer.uiImage, let data = image.pngData() else {
+            drawingExportURL = nil
+            showToastView("导出失败：尺寸图渲染为空")
+            return
+        }
+        let b = PartProg.bbox(spec)
+        let name = "MacroGen-尺寸图-\(Int(Double(b.width)))x\(Int(Double(b.height)))x\(Int(spec.height)).png"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        do {
+            try data.write(to: url, options: .atomic)
+            drawingExportURL = url
+            showToastView("已导出：\(name)")
+        } catch {
+            showToastView("导出失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func copyDrawingSummary() {
+        let b = PartProg.bbox(spec)
+        let holes = spec.feats.filter { $0.kind == .hole }.count
+        let pockets = spec.feats.filter { $0.kind != .hole }.count
+        var lines: [String] = []
+        lines.append("MacroGen 尺寸清单")
+        lines.append("外形 L×W×H = \(ncf(Double(b.width))) × \(ncf(Double(b.height))) × \(ncf(spec.height)) mm")
+        lines.append("孔 \(holes) 个，型腔 \(pockets) 个，草图内轮廓 \(spec.innerLoops.count) 个")
+        for (i, f) in spec.feats.enumerated() {
+            if f.kind == .rectPocket {
+                lines.append("方腔\(i + 1)：\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth)) @X\(ncf(f.x)) Y\(ncf(f.y))")
+            } else {
+                lines.append("\(f.kind == .hole ? "孔" : "圆腔")\(i + 1)：Ø\(ncf(f.dia)) 深\(ncf(f.depth)) @X\(ncf(f.x)) Y\(ncf(f.y))")
+            }
+        }
+        UIPasteboard.general.string = lines.joined(separator: "\n")
+        showToastView("尺寸清单已复制")
     }
 
     private func drawDrawing(context: GraphicsContext, size: CGSize) {
@@ -3515,7 +3774,15 @@ struct StudioScreen: View {
                         spec.originX = Double(bb.midX)
                         spec.originY = Double(bb.midY)
                     }
-                    Button("自定义") { }
+                    Button("取指针") {
+                        if hasPtr {
+                            spec.originX = ptrX
+                            spec.originY = ptrY
+                            showToastView("X0/Y0 已取指针点 X\(ncf(ptrX)) Y\(ncf(ptrY))")
+                        } else {
+                            showToastView("先到建模页点一下顶面取 XY，或直接改下方 X0/Y0")
+                        }
+                    }
                 }
                 .buttonStyle(.bordered)
                 .font(.system(size: 12, weight: .semibold))
@@ -3568,6 +3835,7 @@ struct StudioScreen: View {
                     Picker("", selection: $spec.holeMode) {
                         Text("G81").tag(HoleMode.g81)
                         Text("G83").tag(HoleMode.g83)
+                        Text("G84").tag(HoleMode.tap)
                     }
                     .labelsHidden()
                     .frame(width: 86)
@@ -3801,6 +4069,7 @@ private struct Cam {
 private struct TransformSheet: View {
     @Binding var spec: PartSpec
     let rotate: Bool
+    let onUndo: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var value: Double = 90
 
@@ -3838,6 +4107,7 @@ private struct TransformSheet: View {
     }
 
     private func rotatePart(_ deg: Double) {
+        onUndo()
         let a = deg.truncatingRemainder(dividingBy: 360)
         if spec.template == .rect && abs(a.truncatingRemainder(dividingBy: 90)) < 0.01 {
             if Int(round(a / 90)) % 2 != 0 {
@@ -3877,6 +4147,7 @@ private struct TransformSheet: View {
 
     private func scalePart(_ s: Double) {
         guard s > 0.01 else { return }
+        onUndo()
         spec.rectL *= s; spec.rectW *= s; spec.rectR *= s
         spec.circleD *= s; spec.slotL *= s; spec.slotW *= s
         for i in spec.nodes.indices {

@@ -271,8 +271,10 @@ final class MacroInterp {
     private func execGCode(_ s: String, _ lineNo: Int) {
         var nx = px, ny = py, nz = pz
         var ci = 0.0, cj = 0.0, cr = Double.nan
-        var hasIJ = false, hasR = false, hasX = false, hasY = false
+        var hasIJ = false, hasR = false, hasX = false, hasY = false, hasZ = false, hasQ = false
+        var q = 0.0
         var gm = -1
+        var canned = -1
         var anyG = false
 
         for w in words(s) {
@@ -281,14 +283,37 @@ final class MacroInterp {
                 let g = Int(eval(w.expr))
                 anyG = true
                 if g == 0 || g == 1 || g == 2 || g == 3 { gm = g }
+                else if g == 81 || g == 82 || g == 83 || g == 84 { canned = g }
             case "X": nx = eval(w.expr); hasX = true
             case "Y": ny = eval(w.expr); hasY = true
-            case "Z": nz = eval(w.expr)
+            case "Z": nz = eval(w.expr); hasZ = true
             case "I": ci = eval(w.expr); hasIJ = true
             case "J": cj = eval(w.expr); hasIJ = true
             case "R": cr = eval(w.expr); hasR = true
+            case "Q": q = eval(w.expr); hasQ = true
             default: break
             }
+        }
+
+        // G81 / G82 / G83 / G84 固定循环：画成“快移到 R 面 → 钻/攻到底 → 抬回 R 面”
+        if canned >= 0 {
+            let rPlane = hasR && !cr.isNaN ? cr : max(pz, 2)
+            let bottom = hasZ ? nz : pz
+            add(SimPoint(x: nx, y: ny, z: rPlane, rapid: true, line: lineNo))
+            if canned == 83 {
+                let peck = hasQ ? max(q, 0.5) : 2.0
+                var z = rPlane
+                while z > bottom + 1e-6 {
+                    z = max(bottom, z - peck)
+                    add(SimPoint(x: nx, y: ny, z: z, rapid: false, line: lineNo))
+                    add(SimPoint(x: nx, y: ny, z: rPlane, rapid: true, line: lineNo))
+                }
+            } else {
+                add(SimPoint(x: nx, y: ny, z: bottom, rapid: false, line: lineNo))
+                add(SimPoint(x: nx, y: ny, z: rPlane, rapid: true, line: lineNo))
+            }
+            px = nx; py = ny; pz = rPlane
+            return
         }
 
         // G52 / G28 / G43 / G40 / G80 / G17 这类设定语句不画线
