@@ -632,7 +632,10 @@ enum PartProg {
     static func shapePoints(_ shape: PartShape, _ p: PartSpec, depth: Double = 1) -> [CGPoint] {
         let d = asDraw(shape, p, outward: true, dia: max(p.contourDia, 0.1),
                        depth: max(depth, 0.1), hNo: p.contourTool)
+        // 台阶轮廓的 cx/cy 必须在这里统一补上；
+        // 精加工、图纸、DXF、面积计算都走这里，漏一次就会回到原点。
         return ContourGeo.flatten(ContourGeo.segments(ContourGeo.buildNodes(d)))
+            .map { CGPoint(x: Double($0.x) + shape.cx, y: Double($0.y) + shape.cy) }
     }
 
     static func shiftedSegs(_ segs: [TPSeg], dx: Double, dy: Double) -> [TPSeg] {

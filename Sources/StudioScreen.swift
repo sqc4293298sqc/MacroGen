@@ -45,6 +45,7 @@ struct StudioScreen: View {
     @State private var hasPtr = false
     @State private var tapOnModel = false
     @State private var stepShapeEditID: UUID? = nil
+    @State private var stepShapeEditBackup: PartShape? = nil
 
     @State private var showRotate = false
     @State private var showScale = false
@@ -284,6 +285,9 @@ struct StudioScreen: View {
             opGenerated = false
             cam2DPaths = PartProg.toolpaths2D(spec)
             ProjectStore.save(spec)
+        }
+        .onChange(of: step) { v in
+            if v != 1 && stepShapeEditID != nil { cancelStepShapeEdit() }
         }
         .onAppear {
             cam2DPaths = PartProg.toolpaths2D(spec)
@@ -3434,7 +3438,12 @@ struct StudioScreen: View {
                             }
                             if let id = stepShapeEditID,
                                let idx = spec.steps.firstIndex(where: { $0.id == id }) {
-                                let xy = modelXY(at: g.location, size: geo.size)
+                                var xy = modelXY(at: g.location, size: geo.size)
+                                if snapGrid {
+                                    xy.0 = (xy.0 / gridStep).rounded() * gridStep
+                                    xy.1 = (xy.1 / gridStep).rounded() * gridStep
+                                }
+                                pushUndo()
                                 spec.steps[idx].shape.template = .free
                                 spec.steps[idx].shape.nodes.append(ContourNode(x: xy.0, y: xy.1))
                                 spec.steps[idx].shape.cx = 0
@@ -3497,6 +3506,9 @@ struct StudioScreen: View {
                     }
                     .font(.system(size: 10, weight: .semibold))
                     .buttonStyle(.bordered)
+                    Button("取消") { cancelStepShapeEdit() }
+                        .font(.system(size: 10, weight: .semibold))
+                        .buttonStyle(.bordered)
                     Button("完成") { finishStepShapeEdit() }
                         .font(.system(size: 10, weight: .bold))
                         .buttonStyle(.borderedProminent)
@@ -3513,7 +3525,10 @@ struct StudioScreen: View {
     private var modelLeftRail: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 3) {
-                railButton("草图", "pencil", active: false) { step = 0 }
+                railButton("草图", "pencil", active: false) {
+                    if stepShapeEditID != nil { cancelStepShapeEdit() }
+                    step = 0
+                }
                 railButton("拉伸", "arrow.up.right.square", active: modelPanel == .extrude) {
                     modelPanel = modelPanel == .extrude ? .none : .extrude
                 }
@@ -4043,6 +4058,7 @@ struct StudioScreen: View {
     private func beginStepShapeEdit(_ id: UUID, clear: Bool) {
         guard let idx = spec.steps.firstIndex(where: { $0.id == id }) else { return }
         pushUndo()
+        stepShapeEditBackup = spec.steps[idx].shape
         if clear {
             spec.steps[idx].shape = PartShape()
             spec.steps[idx].shape.template = .free
@@ -4069,8 +4085,26 @@ struct StudioScreen: View {
             return
         }
         stepShapeEditID = nil
+        stepShapeEditBackup = nil
         modelPanel = .steps
         showToastView("异形凸台已完成：\(n) 点")
+    }
+
+    /// 当前真正有材料的最高顶面；除料层的 z1 不能算进去
+    private var topAddZ: Double {
+        max(0, spec.steps.filter { $0.mode == .add }.map(\.z1).max() ?? 0)
+    }
+
+    /// 退出异形模式：恢复进入前的轮廓，避免点到一半退不出去
+    private func cancelStepShapeEdit() {
+        if let id = stepShapeEditID,
+           let idx = spec.steps.firstIndex(where: { $0.id == id }),
+           let backup = stepShapeEditBackup {
+            spec.steps[idx].shape = backup
+        }
+        stepShapeEditID = nil
+        stepShapeEditBackup = nil
+        showToastView("已退出异形模式")
     }
 
     /// 直接从基本形状加一层凸台/型腔，不必先回草图重画
@@ -4079,7 +4113,7 @@ struct StudioScreen: View {
         var s = PartStep()
         s.mode = mode
         s.height = mode == .add ? 5 : 3
-        s.z0 = max(0, spec.steps.map(\.z1).max() ?? 0)
+        s.z0 = topAddZ
         s.shape.template = template
         switch template {
         case .circle:
@@ -4102,6 +4136,39 @@ struct StudioScreen: View {
         showToastView("已加\(s.name)：Z\(ncf(s.drawBottom))~\(ncf(s.drawTop))，可在这一行改尺寸/中心")
     }
 
+    /// 凸台阵列：以当前层为种子复制，不改变原层
+    private func patternStep(_ id: UUID, circular: Bool) {
+        guard let base = spec.steps.first(where: { $0.id == id }) else { return }
+        pushUndo()
+        var copies: [PartStep] = []
+        if circular {
+            let n = max(2, arrayCount)
+            for i in 1..<n {
+                var c = base
+                c.id = UUID()
+                let a = Double(i) / Double(n) * 2 * Double.pi
+                c.shape.cx = base.shape.cx + arrayRadius * cos(a)
+                c.shape.cy = base.shape.cy + arrayRadius * sin(a)
+                c.name = "\(base.name)-\(i + 1)"
+                copies.append(c)
+            }
+        } else {
+            let rows = max(1, arrayRows), cols = max(1, arrayCols)
+            for r in 0..<rows {
+                for c0 in 0..<cols where !(r == 0 && c0 == 0) {
+                    var c = base
+                    c.id = UUID()
+                    c.shape.cx = base.shape.cx + arrayDX * Double(c0)
+                    c.shape.cy = base.shape.cy + arrayDY * Double(r)
+                    c.name = "\(base.name)-\(r * cols + c0 + 1)"
+                    copies.append(c)
+                }
+            }
+        }
+        spec.steps.append(contentsOf: copies)
+        showToastView("已阵列 \(copies.count) 个\(base.mode == .add ? "凸台" : "型腔")")
+    }
+
     private var stepsPanel: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
@@ -4112,6 +4179,23 @@ struct StudioScreen: View {
                     Text("基础层 + \(spec.steps.count) 个台阶")
                         .font(.system(size: 13, weight: .semibold))
                 }
+
+                DisclosureGroup("阵列参数（凸台用）") {
+                    HStack(spacing: 6) {
+                        Stepper("行 \(arrayRows)", value: $arrayRows, in: 1...8)
+                        Stepper("列 \(arrayCols)", value: $arrayCols, in: 1...8)
+                    }
+                    HStack(spacing: 6) {
+                        miniNum("DX", $arrayDX)
+                        miniNum("DY", $arrayDY)
+                    }
+                    HStack(spacing: 6) {
+                        Stepper("圆阵 \(arrayCount) 个", value: $arrayCount, in: 2...12)
+                        miniNum("R", $arrayRadius)
+                    }
+                    .font(.system(size: 10))
+                }
+                .font(.system(size: 11, weight: .semibold))
 
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -4188,6 +4272,28 @@ struct StudioScreen: View {
                         case .free:
                             Text("手画轮廓：\(s.shape.nodes.count) 段")
                                 .font(.system(size: 9)).foregroundStyle(.secondary)
+                            if !s.shape.nodes.isEmpty {
+                                DisclosureGroup("异形节点微调") {
+                                    ForEach($s.shape.nodes) { $n in
+                                        HStack(spacing: 5) {
+                                            Text("X").font(.system(size: 9)).foregroundStyle(.secondary)
+                                            TextField("0", value: $n.x, format: .number)
+                                                .font(.system(size: 11)).frame(width: 48)
+                                            Text("Y").font(.system(size: 9)).foregroundStyle(.secondary)
+                                            TextField("0", value: $n.y, format: .number)
+                                                .font(.system(size: 11)).frame(width: 48)
+                                            Button {
+                                                let id = n.id
+                                                $s.shape.nodes.wrappedValue.removeAll { $0.id == id }
+                                            } label: {
+                                                Image(systemName: "minus.circle").foregroundStyle(.red)
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                    }
+                                }
+                                .font(.system(size: 9))
+                            }
                         }
                         HStack(spacing: 8) {
                             Button("模型点轮廓") {
@@ -4212,7 +4318,11 @@ struct StudioScreen: View {
                             Button("用当前草图更新") {
                                 pushUndo()
                                 if let idx = spec.steps.firstIndex(where: { $0.id == s.id }) {
+                                    let cx = spec.steps[idx].shape.cx
+                                    let cy = spec.steps[idx].shape.cy
                                     spec.steps[idx].shape = PartShape(spec)
+                                    spec.steps[idx].shape.cx = cx
+                                    spec.steps[idx].shape.cy = cy
                                 }
                             }
                             .font(.system(size: 10, weight: .semibold))
@@ -4230,6 +4340,19 @@ struct StudioScreen: View {
                                 showToastView("台阶轮廓已复制到草图，可继续编辑")
                             }
                             .font(.system(size: 10, weight: .semibold))
+                        }
+                        .buttonStyle(.bordered)
+
+                        Menu {
+                            Button("矩形阵列 \(arrayRows)×\(arrayCols)") {
+                                patternStep(s.id, circular: false)
+                            }
+                            Button("圆形阵列 \(arrayCount) 个 R\(ncf(arrayRadius))") {
+                                patternStep(s.id, circular: true)
+                            }
+                        } label: {
+                            Label("阵列这个凸台", systemImage: "square.grid.3x3")
+                                .font(.system(size: 10, weight: .semibold))
                         }
                         .buttonStyle(.bordered)
                     }
@@ -4277,7 +4400,7 @@ struct StudioScreen: View {
                         pushUndo()
                         var s = PartStep(from: spec)
                         s.name = "台阶 \(spec.steps.count + 1)"
-                        s.z0 = max(0, spec.steps.map(\.z1).max() ?? 0)
+                        s.z0 = topAddZ
                         s.height = 5
                         spec.steps.append(s)
                     } label: {
@@ -6221,9 +6344,9 @@ struct StudioScreen: View {
             pair(20, String(format: "%.4f", y))
             pair(30, String(format: "%.4f", z))
         }
-        func line(_ a: CGPoint, _ c: CGPoint) {
+        func line(_ a: CGPoint, _ c: CGPoint, layer: String = "0") {
             pair(0, "LINE")
-            pair(8, "0")
+            pair(8, layer)
             point(Double(a.x), Double(a.y))
             point(Double(c.x), Double(c.y))
         }
@@ -6240,6 +6363,13 @@ struct StudioScreen: View {
         let outer = PartProg.pts(spec)
         if outer.count > 1 {
             for i in 0..<outer.count { line(outer[i], outer[(i + 1) % outer.count]) }
+        }
+        // 凸台/型腔台阶也必须进 DXF，否则出图和模型不一致
+        for s in spec.steps {
+            let pts = PartProg.pts(s, spec)
+            guard pts.count > 1 else { continue }
+            let layer = s.mode == .add ? "BOSS_ADD" : "BOSS_CUT"
+            for i in 0..<pts.count { line(pts[i], pts[(i + 1) % pts.count], layer: layer) }
         }
         for l in spec.innerLoops {
             let p = PartProg.drawForLoop(l, spec,
@@ -7254,6 +7384,8 @@ private struct TransformSheet: View {
                 return ContourNode(x: x * cos(rad) - y * sin(rad),
                                    y: x * sin(rad) + y * cos(rad))
             }
+            m.shape.cx = 0
+            m.shape.cy = 0
             spec.steps[i] = m
         }
     }
@@ -7286,6 +7418,8 @@ private struct TransformSheet: View {
         for i in spec.steps.indices {
             spec.steps[i].z0 *= s
             spec.steps[i].height *= s
+            spec.steps[i].shape.cx *= s
+            spec.steps[i].shape.cy *= s
             spec.steps[i].shape.rectL *= s
             spec.steps[i].shape.rectW *= s
             spec.steps[i].shape.rectR *= s
