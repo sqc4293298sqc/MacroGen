@@ -14,6 +14,7 @@ struct StudioScreen: View {
     @State private var opCodeTitle = ""
     @State private var opCodeText = ""
     @State private var opCodeCache: [String: String] = [:]
+    @State private var opCacheSpecs: [String: PartSpec] = [:]
 
     // 2D 刀路检查图层
     @State private var cam2DStock = true
@@ -208,7 +209,6 @@ struct StudioScreen: View {
         }
         .onChange(of: spec) { _ in
             opGenerated = false
-            opCodeCache.removeAll()
             cam2DPaths = PartProg.toolpaths2D(spec)
         }
         .onAppear {
@@ -1596,6 +1596,41 @@ struct StudioScreen: View {
         }
 
         if let preview = editPreviewSpec {
+            for l in preview.innerLoops
+                where spec.innerLoops.first(where: { $0.id == l.id }) != l {
+                let d = PartProg.drawForLoop(l, preview,
+                                             depth: l.through ? preview.height + 1 : l.depth,
+                                             dia: max(preview.pocketDia, 1), hNo: preview.pocketTool)
+                let segs = ContourGeo.segments(ContourGeo.buildNodes(d))
+                var lp = Path()
+                if let f = segs.first { lp.move(to: P(f.p0.x + l.cx, f.p0.y + l.cy)) }
+                for sg in segs {
+                    if sg.isArc {
+                        let flat = ContourGeo.flatten([sg], arcStep: 24)
+                        for q in flat.dropFirst() { lp.addLine(to: P(q.x + l.cx, q.y + l.cy)) }
+                    } else {
+                        lp.addLine(to: P(sg.p1.x + l.cx, sg.p1.y + l.cy))
+                    }
+                }
+                ctx.stroke(lp, with: .color(Color.blue.opacity(0.85)),
+                           style: StrokeStyle(lineWidth: 1.6, dash: [5, 3]))
+            }
+            for f in preview.feats
+                where spec.feats.first(where: { $0.id == f.id }) != f {
+                let c = P(f.x, f.y)
+                if f.kind == .rectPocket {
+                    let w = max(3, f.w * k), h = max(3, f.h * k)
+                    let rect = CGRect(x: c.x - w / 2, y: c.y - h / 2, width: w, height: h)
+                    ctx.stroke(Path(roundedRect: rect, cornerRadius: 1),
+                               with: .color(Color.blue.opacity(0.85)),
+                               style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                } else {
+                    let rr = max(2, f.dia / 2 * k)
+                    ctx.stroke(Path(ellipseIn: CGRect(x: c.x - rr, y: c.y - rr, width: rr * 2, height: rr * 2)),
+                               with: .color(Color.blue.opacity(0.85)),
+                               style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                }
+            }
             let segs = ContourGeo.segments(ContourGeo.buildNodes(sketchDrawSpec(preview)))
             var pp = Path()
             if let f = segs.first { pp.move(to: P(f.p0.x, f.p0.y)) }
@@ -4687,7 +4722,15 @@ struct StudioScreen: View {
                      at: CGPoint(x: cx, y: cy + 12))
     }
 
+    private func cacheIsStale(_ id: String) -> Bool {
+        guard opCodeCache[id] != nil else { return false }
+        return opCacheSpecs[id] != spec
+    }
+
     private func opStatusText(_ op: PartOpInfo) -> String {
+        if cacheIsStale(op.id), op.status != .disabled, op.status != .modelOnly {
+            return "需重算"
+        }
         switch op.status {
         case .disabled: return "已禁用"
         case .modelOnly: return "仅建模"
@@ -4697,6 +4740,9 @@ struct StudioScreen: View {
     }
 
     private func opStatusColor(_ op: PartOpInfo) -> Color {
+        if cacheIsStale(op.id), op.status != .disabled, op.status != .modelOnly {
+            return .red
+        }
         switch op.status {
         case .disabled: return .gray
         case .modelOnly: return .orange
@@ -4843,11 +4889,11 @@ struct StudioScreen: View {
                                 }
                                 Spacer()
                                 if opCodeCache[op.id] != nil {
-                                    Text("已缓存")
+                                    Text(cacheIsStale(op.id) ? "缓存待重算" : "已缓存")
                                         .font(.system(size: 8, weight: .semibold))
                                         .padding(.horizontal, 5).padding(.vertical, 2)
-                                        .background(Capsule().fill(Color.green.opacity(0.12)))
-                                        .foregroundStyle(.green)
+                                        .background(Capsule().fill((cacheIsStale(op.id) ? Color.orange : Color.green).opacity(0.12)))
+                                        .foregroundStyle(cacheIsStale(op.id) ? .orange : .green)
                                 }
                                 Text(opStatusText(op))
                                     .font(.system(size: 9, weight: .bold))
@@ -4887,6 +4933,7 @@ struct StudioScreen: View {
                                     opCodeTitle = op.title
                                     opCodeText = single
                                     opCodeCache[op.id] = single
+                                    opCacheSpecs[op.id] = spec
                                     showOpCode = true
                                 }
                                 .font(.system(size: 10, weight: .semibold))
@@ -4907,8 +4954,11 @@ struct StudioScreen: View {
                         .font(.system(size: 9)).foregroundStyle(.secondary)
                 }
                 if !opCodeCache.isEmpty {
-                    Text("已缓存 \(opCodeCache.count) 段单工序程序；改参数会自动清空缓存。")
-                        .font(.system(size: 9)).foregroundStyle(.green)
+                    let stale = opCodeCache.keys.filter { cacheIsStale($0) }.count
+                    Text(stale > 0
+                         ? "已缓存 \(opCodeCache.count) 段；\(stale) 段因参数改动待重算，生成程序时只用未过期缓存。"
+                         : "已缓存 \(opCodeCache.count) 段单工序程序；改参数会标记需重算，不会直接清掉。")
+                        .font(.system(size: 9)).foregroundStyle(stale > 0 ? .orange : .green)
                 }
             }
 
@@ -4943,8 +4993,18 @@ struct StudioScreen: View {
 
             Section {
                 Button {
-                    code = PartProg.build(spec, prebuilt: opCodeCache)
+                    var validCache: [String: String] = [:]
+                    var expiredIDs: [String] = []
+                    for (id, text) in opCodeCache {
+                        if opCacheSpecs[id] == spec { validCache[id] = text }
+                        else { expiredIDs.append(id) }
+                    }
+                    code = PartProg.build(spec, prebuilt: validCache)
                     opGenerated = true
+                    for id in expiredIDs {
+                        opCodeCache.removeValue(forKey: id)
+                        opCacheSpecs.removeValue(forKey: id)
+                    }
                     showResult = true
                 } label: {
                     HStack {
