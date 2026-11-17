@@ -1365,21 +1365,25 @@ struct StudioScreen: View {
             gy += stepMM
         }
 
-        let segs = ContourGeo.segments(ContourGeo.buildNodes(sketchDrawSpec()))
-        var path = Path()
-        if let f = segs.first {
-            path.move(to: P(f.p0.x, f.p0.y))
-        }
-        for s in segs {
-            if s.isArc {
-                // 用折线近似显示圆弧
-                let flat = ContourGeo.flatten([s], arcStep: 24)
-                for q in flat.dropFirst() { path.addLine(to: P(q.x, q.y)) }
-            } else {
-                path.addLine(to: P(s.p1.x, s.p1.y))
+        // 直线/多段线刚落下第一个点时只是“落点”，不能把单节点当成整圆画出来
+        let singleLinePoint = spec.nodes.count == 1 && ["直线", "多段线"].contains(sketchTool)
+        if !singleLinePoint {
+            let segs = ContourGeo.segments(ContourGeo.buildNodes(sketchDrawSpec()))
+            var path = Path()
+            if let f = segs.first {
+                path.move(to: P(f.p0.x, f.p0.y))
             }
+            for s in segs {
+                if s.isArc {
+                    // 用折线近似显示圆弧
+                    let flat = ContourGeo.flatten([s], arcStep: 24)
+                    for q in flat.dropFirst() { path.addLine(to: P(q.x, q.y)) }
+                } else {
+                    path.addLine(to: P(s.p1.x, s.p1.y))
+                }
+            }
+            ctx.stroke(path, with: .color(.orange), lineWidth: 2)
         }
-        ctx.stroke(path, with: .color(.orange), lineWidth: 2)
 
         // 同一张草图上的内轮廓（挖孔 / 型腔）
         for l in spec.innerLoops {
@@ -4521,7 +4525,8 @@ private struct Cam {
         self.size = size
 
         let b = PartProg.bbox(spec)
-        let depth = max(spec.height, 0.1)
+        let zTop = PartProg.maxZ(spec)
+        let zBottom = PartProg.minZ(spec)
         let c = cos(yaw), s = sin(yaw)
         let sp0 = sin(pitch), cp0 = cos(pitch)
         self.cy = c
@@ -4531,7 +4536,7 @@ private struct Cam {
 
         var mnx = Double.infinity, mxx = -Double.infinity
         var mny = Double.infinity, mxy = -Double.infinity
-        for zz in [0.0, -depth] {
+        for zz in [zTop, zBottom] {
             for (xx, yy) in [(b.minX, b.minY), (b.maxX, b.minY), (b.maxX, b.maxY), (b.minX, b.maxY)] {
                 let rx = Double(xx) * c - Double(yy) * s
                 let ry = Double(xx) * s + Double(yy) * c
