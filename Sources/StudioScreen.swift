@@ -1005,8 +1005,73 @@ struct StudioScreen: View {
         }
     }
 
+    private var activeTemplateTool: String? {
+        if isTemplateTool(sketchTool) { return sketchTool }
+        if sketchTool.isEmpty, isTemplateTool(lastShapeTool),
+           spec.template == .free, !spec.nodes.isEmpty {
+            return lastShapeTool
+        }
+        return nil
+    }
+
+    private func rebuildLastTemplate() {
+        guard let name = activeTemplateTool ?? (isTemplateTool(lastShapeTool) ? lastShapeTool : nil),
+              spec.nodes.count >= 3 else {
+            showToastView("当前没有可更新的模板轮廓")
+            return
+        }
+        let xs = spec.nodes.map(\.x), ys = spec.nodes.map(\.y)
+        guard let mnx = xs.min(), let mxx = xs.max(),
+              let mny = ys.min(), let mxy = ys.max() else { return }
+        let cx = (mnx + mxx) / 2, cy = (mny + mxy) / 2
+        let local = templateLocalNodes(name,
+                                       L: max(spec.rectL, 20),
+                                       W: max(spec.rectW, 12),
+                                       D: max(spec.circleD, 20),
+                                       R: spec.rectR)
+        guard local.count >= 3 else { return }
+        pushUndo()
+        spec.nodes = local.map { ContourNode(x: $0.x + cx, y: $0.y + cy) }
+        spec.template = .free
+        showToastView("\(name) 已按参数更新")
+    }
+
     @ViewBuilder
     private var sketchControls: some View {
+        Section("当前工具参数") {
+            if let t = activeTemplateTool {
+                Text("\(t) · 改尺寸后点“更新轮廓”；再点画布放置也按这组尺寸")
+                    .font(.caption).foregroundStyle(.secondary)
+                switch t {
+                case "矩形", "中心矩形":
+                    numRow("长 L (mm)", $spec.rectL)
+                    numRow("宽 W (mm)", $spec.rectW)
+                case "圆角矩形":
+                    numRow("长 L (mm)", $spec.rectL)
+                    numRow("宽 W (mm)", $spec.rectW)
+                    numRow("圆角 R (mm)", $spec.rectR)
+                case "圆", "多边形", "五角星", "样条曲线":
+                    numRow("直径 D (mm)", $spec.circleD)
+                case "椭圆", "槽", "平行四边形":
+                    numRow("长 L (mm)", $spec.rectL)
+                    numRow("宽 W (mm)", $spec.rectW)
+                default:
+                    EmptyView()
+                }
+                Button("按这组尺寸更新轮廓") { rebuildLastTemplate() }
+                    .font(.system(size: 13, weight: .semibold))
+            } else if ["直线", "多段线", "三点圆", "圆弧", "点"].contains(sketchTool) {
+                Text("\(sketchTool)：自由绘制，在画布上点起点/下一点；单段长度和角度在“尺寸/角度”面板里改。")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if isEditTool(sketchTool) {
+                Text("编辑工具：选中后先在画布蓝虚线预览，再点底部“应用”。参数在下方“编辑参数”。")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("选一个模板工具（矩形/圆/槽…）后，这里显示该工具的实际尺寸参数。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+
         Section("加内轮廓") {
             HStack {
                 Button { addInner(.circle) } label: { Label("内圆", systemImage: "circle") }
@@ -1200,6 +1265,7 @@ struct StudioScreen: View {
 
     @State private var dragNode: Int? = nil
     @State private var sketchTool: String = ""
+    @State private var lastShapeTool: String = "矩形"
     @State private var refPoints: [CGPoint] = []
     @State private var pendingEditTool: String? = nil
     @State private var editPreviewSpec: PartSpec? = nil
@@ -1352,6 +1418,7 @@ struct StudioScreen: View {
 
     private func clearSketch() {
         pushUndo()
+        lastShapeTool = ""
         spec.template = .free
         spec.nodes = []
         spec.innerLoops = []
@@ -1830,6 +1897,7 @@ struct StudioScreen: View {
 
     private func makeLine() {
         sketchTool = "直线"
+        lastShapeTool = ""
         spec.nodes = []
         spec.template = .free
         refPoints.removeAll()
@@ -1837,6 +1905,7 @@ struct StudioScreen: View {
 
     private func makePolyline() {
         sketchTool = "多段线"
+        lastShapeTool = ""
         spec.nodes = []
         spec.template = .free
         refPoints.removeAll()
@@ -1990,24 +2059,13 @@ struct StudioScreen: View {
 
     private func selectTemplateTool(_ name: String) {
         sketchTool = name
+        lastShapeTool = name
         refPoints.removeAll()
         drawInner = false
         showToastView("\(name) 已选：点画布放置，连续点可继续移放")
     }
 
-    private func placeTemplate(_ name: String, at loc: CGPoint, size: CGSize) {
-        let b = sketchBBox()
-        let k = sketchScale(b: b, size: size)
-        var px = b.midX + (Double(loc.x) - Double(size.width) / 2) / k
-        var py = b.midY - (Double(loc.y) - Double(size.height) / 2) / k
-        if snapGrid, gridStep > 0.01 {
-            px = round(px / gridStep) * gridStep
-            py = round(py / gridStep) * gridStep
-        }
-
-        let L = max(spec.rectL, 20)
-        let W = max(spec.rectW, 12)
-        let D = max(spec.circleD, 20)
+    private func templateLocalNodes(_ name: String, L: Double, W: Double, D: Double, R: Double) -> [ContourNode] {
         var local: [ContourNode] = []
         switch name {
         case "矩形", "中心矩形":
@@ -2018,8 +2076,8 @@ struct StudioScreen: View {
                 ContourNode(x: -L / 2, y: W / 2)
             ]
         case "圆角矩形":
-            let r = min(max(spec.rectR, 0), min(L, W) / 2)
-            if r <= 0.1 {
+            let rr = min(max(R, 0), min(L, W) / 2)
+            if rr <= 0.1 {
                 local = [
                     ContourNode(x: -L / 2, y: -W / 2),
                     ContourNode(x: L / 2, y: -W / 2),
@@ -2030,13 +2088,13 @@ struct StudioScreen: View {
                 func arc(_ cx: Double, _ cy: Double, _ a0: Double, _ a1: Double) {
                     for i in 0...5 {
                         let a = a0 + (a1 - a0) * Double(i) / 5
-                        local.append(ContourNode(x: cx + r * cos(a), y: cy + r * sin(a)))
+                        local.append(ContourNode(x: cx + rr * cos(a), y: cy + rr * sin(a)))
                     }
                 }
-                arc(L / 2 - r, -W / 2 + r, 0, -Double.pi / 2)
-                arc(-L / 2 + r, -W / 2 + r, -Double.pi / 2, -Double.pi)
-                arc(-L / 2 + r, W / 2 - r, Double.pi, Double.pi / 2)
-                arc(L / 2 - r, W / 2 - r, Double.pi / 2, 0)
+                arc(L / 2 - rr, -W / 2 + rr, 0, -Double.pi / 2)
+                arc(-L / 2 + rr, -W / 2 + rr, -Double.pi / 2, -Double.pi)
+                arc(-L / 2 + rr, W / 2 - rr, Double.pi, Double.pi / 2)
+                arc(L / 2 - rr, W / 2 - rr, Double.pi / 2, 0)
             }
         case "圆":
             let r = D / 2
@@ -2091,7 +2149,26 @@ struct StudioScreen: View {
         default:
             break
         }
+        return local
+    }
+
+    private func placeTemplate(_ name: String, at loc: CGPoint, size: CGSize) {
+        let b = sketchBBox()
+        let k = sketchScale(b: b, size: size)
+        var px = b.midX + (Double(loc.x) - Double(size.width) / 2) / k
+        var py = b.midY - (Double(loc.y) - Double(size.height) / 2) / k
+        if snapGrid, gridStep > 0.01 {
+            px = round(px / gridStep) * gridStep
+            py = round(py / gridStep) * gridStep
+        }
+
+        let local = templateLocalNodes(name,
+                                       L: max(spec.rectL, 20),
+                                       W: max(spec.rectW, 12),
+                                       D: max(spec.circleD, 20),
+                                       R: spec.rectR)
         guard local.count >= 3 else { return }
+        lastShapeTool = name
         pushUndo()
         spec.nodes = local.map { ContourNode(x: $0.x + px, y: $0.y + py) }
         spec.template = .free
