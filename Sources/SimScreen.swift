@@ -268,8 +268,9 @@ struct SimCanvas: View {
                                        y: CGFloat(-path.maxY * sx) + oy - pad,
                                        width: CGFloat((path.maxX - path.minX) * sx) + pad * 2,
                                        height: CGFloat((path.maxY - path.minY) * sx) + pad * 2)
-                ctx.fill(Path(stockRect), with: .color(Color(white: 0.86)))
-                ctx.stroke(Path(stockRect), with: .color(Color(white: 0.58)), lineWidth: 1)
+                let stockPath = Path { pth in pth.addRect(stockRect) }
+                ctx.fill(stockPath, with: .color(Color(white: 0.86)))
+                ctx.stroke(stockPath, with: .color(Color(white: 0.58)), lineWidth: 1)
                 let r = CGFloat(toolDia / 2) * s
                 for k in 1..<path.pts.count {
                     let b = path.pts[k]
