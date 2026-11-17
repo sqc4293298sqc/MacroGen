@@ -11,11 +11,32 @@ enum HoleMode: String, CaseIterable, Identifiable, Codable {
     var id: String { rawValue }
 }
 
+/// 2.5D 能表达的孔几何类型。沉头/沉孔按圆柱/倒角近似，不冒充真 3D 特征。
+enum PartHoleKind: String, CaseIterable, Identifiable, Codable {
+    case through = "通孔"
+    case blind = "盲孔"
+    case counterbore = "沉头孔"
+    case countersink = "沉孔"
+    case thread = "螺纹底孔"
+    var id: String { rawValue }
+}
+
 enum PartFeatKind: String, CaseIterable, Identifiable, Codable {
-    case hole = "孔（贯通）"
+    case hole = "孔"
     case pocket = "圆型腔（盲腔）"
     case rectPocket = "方型腔（盲腔）"
     var id: String { rawValue }
+
+    // 旧工程里孔的 rawValue 是“孔（贯通）”，升级后仍能读
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        switch raw {
+        case "孔（贯通）", "孔": self = .hole
+        case "圆型腔（盲腔）": self = .pocket
+        case "方型腔（盲腔）": self = .rectPocket
+        default: self = .hole
+        }
+    }
 }
 
 struct PartFeat: Identifiable, Equatable, Codable {
@@ -29,6 +50,13 @@ struct PartFeat: Identifiable, Equatable, Codable {
     var w: Double = 30
     var h: Double = 20
     var depth: Double = 5      // 型腔深度（孔不用）
+    // 孔类型（可选，旧工程缺省按通孔处理）
+    var holeKind: PartHoleKind? = nil
+    var holeDepth: Double? = nil
+    var cbDia: Double? = nil
+    var cbDepth: Double? = nil
+    var csDia: Double? = nil
+    var csAngle: Double? = nil
 
     init(kind: PartFeatKind = .hole, x: Double = 0, y: Double = 0,
          dia: Double = 10, w: Double = 30, h: Double = 20, depth: Double = 5,
@@ -41,6 +69,23 @@ struct PartFeat: Identifiable, Equatable, Codable {
         self.w = w
         self.h = h
         self.depth = depth
+    }
+
+    var resolvedHoleKind: PartHoleKind { holeKind ?? .through }
+    var resolvedHoleDepth: Double { holeDepth ?? max(depth, 1) }
+    var resolvedCbDia: Double { cbDia ?? max(dia * 1.8, dia + 1) }
+    var resolvedCbDepth: Double { cbDepth ?? 2 }
+    var resolvedCsDia: Double { csDia ?? max(dia * 1.6, dia + 1) }
+    var resolvedCsAngle: Double { csAngle ?? 90 }
+
+    var holeSummary: String {
+        switch resolvedHoleKind {
+        case .through: return "通孔"
+        case .blind: return "盲孔 深\(ncf(resolvedHoleDepth))"
+        case .counterbore: return "沉头 Ø\(ncf(resolvedCbDia)) 深\(ncf(resolvedCbDepth)) / 通孔 Ø\(ncf(dia))"
+        case .countersink: return "沉孔 Ø\(ncf(resolvedCsDia)) \(ncf(resolvedCsAngle))° / 通孔 Ø\(ncf(dia))"
+        case .thread: return "螺纹底孔 Ø\(ncf(dia)) 深\(ncf(resolvedHoleDepth))"
+        }
     }
 }
 
@@ -390,6 +435,32 @@ enum PartProg {
         min(-p.height, p.steps.map(\.drawBottom).min() ?? -p.height)
     }
 
+    /// 孔底 Z：通孔/沉头/沉孔贯通到底；盲孔/螺纹底孔按给定深度。
+    static func holeBottomZ(_ p: PartSpec, _ f: PartFeat, host: Double) -> Double {
+        switch f.resolvedHoleKind {
+        case .through, .counterbore, .countersink:
+            return minZ(p)
+        case .blind, .thread:
+            return max(host - f.resolvedHoleDepth, minZ(p))
+        }
+    }
+
+    /// 沉头孔大径圆柱的深度
+    static func counterboreDepth(_ f: PartFeat) -> Double {
+        max(f.resolvedCbDepth, 0.1)
+    }
+
+    /// 90°/120° 沉孔按锥面换算出的深度；2.5D 只做倒角近似
+    static func countersinkDepth(_ f: PartFeat) -> Double {
+        let halfAngle = max(15, min(f.resolvedCsAngle, 170)) / 2 * Double.pi / 180
+        return max((f.resolvedCsDia - f.dia) / 2 / tan(halfAngle), 0.1)
+    }
+
+    /// 单孔实际使用的加工方式；螺纹底孔强制攻丝
+    static func holeMode(_ p: PartSpec, _ f: PartFeat) -> HoleMode {
+        f.resolvedHoleKind == .thread ? .tap : p.holeMode
+    }
+
     /// 点是否在闭合轮廓内（射线法，支持凹多边形）
     static func pointIn(_ pts: [CGPoint], _ x: Double, _ y: Double) -> Bool {
         guard pts.count > 2 else { return false }
@@ -512,28 +583,61 @@ enum PartProg {
             let host = hostZ(p, f.x, f.y)
             if f.kind == .hole {
                 guard p.doHole else { continue }
-                switch p.holeMode {
+                let hk = f.resolvedHoleKind
+                let bottom = holeBottomZ(p, f, host: host)
+                let mode = holeMode(p, f)
+                // 沉头：先做顶部大径圆柱，再做下面的小孔
+                if hk == .counterbore {
+                    let cbID = "\(id)-cb"
+                    out.append(PartOpInfo(
+                        id: cbID, title: f.name.isEmpty ? "沉头" : "\(f.name) 沉头",
+                        kind: "沉头（圆柱近似）",
+                        geometry: "Ø\(ncf(f.resolvedCbDia)) 深\(ncf(counterboreDepth(f))) @X\(ncf(f.x)) Y\(ncf(f.y))",
+                        tool: p.pocketTool, dia: p.pocketDia, spindle: p.spindle, feed: p.feed,
+                        zRange: "Z\(ncf(host)) → Z\(ncf(host - counterboreDepth(f)))",
+                        status: status(cbID)))
+                }
+                // 沉孔：顶部锥面倒角近似
+                if hk == .countersink {
+                    let csID = "\(id)-cs"
+                    out.append(PartOpInfo(
+                        id: csID, title: f.name.isEmpty ? "沉孔" : "\(f.name) 沉孔",
+                        kind: "沉孔（锥面近似）",
+                        geometry: "Ø\(ncf(f.resolvedCsDia)) \(ncf(f.resolvedCsAngle))° 深\(ncf(countersinkDepth(f)))",
+                        tool: p.pocketTool, dia: p.pocketDia, spindle: p.spindle, feed: p.feed,
+                        zRange: "Z\(ncf(host)) → Z\(ncf(host - countersinkDepth(f)))",
+                        status: status(csID)))
+                }
+                let title: String
+                switch hk {
+                case .through: title = f.name.isEmpty ? "通孔" : f.name
+                case .blind: title = f.name.isEmpty ? "盲孔" : f.name
+                case .counterbore: title = f.name.isEmpty ? "沉头小孔" : "\(f.name) 小孔"
+                case .countersink: title = f.name.isEmpty ? "沉孔小孔" : "\(f.name) 小孔"
+                case .thread: title = f.name.isEmpty ? "螺纹底孔" : f.name
+                }
+                switch mode {
                 case .spiral:
                     out.append(PartOpInfo(
-                        id: id, title: f.name.isEmpty ? "孔" : f.name, kind: "螺旋铣",
-                        geometry: "Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y))",
+                        id: id, title: title, kind: "螺旋铣",
+                        geometry: "Ø\(ncf(f.dia)) \(f.holeSummary) @X\(ncf(f.x)) Y\(ncf(f.y))",
                         tool: p.holeTool, dia: p.holeDia, spindle: p.spindle, feed: p.feed,
-                        zRange: "Z\(ncf(host)) → Z\(ncf(minZv - 1))",
+                        zRange: "Z\(ncf(host)) → Z\(ncf(bottom))",
                         status: status(id)))
                 case .g81, .g83:
                     out.append(PartOpInfo(
-                        id: id, title: f.name.isEmpty ? "孔" : f.name,
-                        kind: p.holeMode == .g81 ? "钻孔 G81" : "钻孔 G83",
-                        geometry: "Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y))",
+                        id: id, title: title,
+                        kind: mode == .g81 ? "钻孔 G81" : "钻孔 G83",
+                        geometry: "Ø\(ncf(f.dia)) \(f.holeSummary) @X\(ncf(f.x)) Y\(ncf(f.y))",
                         tool: p.holeTool, dia: f.dia, spindle: p.spindle, feed: p.feed,
-                        zRange: "Z\(ncf(host)) → Z\(ncf(minZv - 1))",
+                        zRange: "Z\(ncf(host)) → Z\(ncf(bottom))",
                         status: status(id)))
                 case .tap:
                     out.append(PartOpInfo(
-                        id: id, title: f.name.isEmpty ? "孔" : f.name, kind: "攻丝 G84",
-                        geometry: "Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) P\(ncf(p.tapPitch))",
+                        id: id, title: title, kind: "攻丝 G84",
+                        geometry: "Ø\(ncf(f.dia)) \(f.holeSummary) P\(ncf(p.tapPitch)) @X\(ncf(f.x)) Y\(ncf(f.y))",
                         tool: p.tapTool, dia: p.tapDia, spindle: p.tapRpm, feed: p.feed,
-                        zRange: "Z\(ncf(host)) → Z\(ncf(minZv - 1))",
+                        zRange: "Z\(ncf(host)) → Z\(ncf(bottom))",
                         status: status(id)))
                 }
             } else if p.doPocket && f.kind == .rectPocket {
@@ -695,11 +799,28 @@ enum PartProg {
             let host = hostZ(p, f.x, f.y)
             guard enabled(id) else { continue }
             if f.kind == .hole && p.doHole {
+                let hk = f.resolvedHoleKind
+                let bottom = holeBottomZ(p, f, host: host)
+                // 沉头/沉孔的顶部近似层，先在 2D 里单独画一圈
+                if hk == .counterbore || hk == .countersink {
+                    let bigD = hk == .counterbore ? f.resolvedCbDia : f.resolvedCsDia
+                    let bigDepth = hk == .counterbore ? counterboreDepth(f) : countersinkDepth(f)
+                    var s = PocketSpec()
+                    s.mode = .spiral
+                    s.spiralDia = bigD
+                    s.toolDia = p.pocketDia
+                    s.depth = bigDepth
+                    s.stepDown = p.stepDown
+                    s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = host
+                    s.hNo = p.pocketTool
+                    s.coord = p.coord
+                    addSegs(ToolpathEngine.build(s), dx: f.x, dy: f.y)
+                }
                 var s = PocketSpec()
                 s.mode = .spiral
                 s.spiralDia = f.dia
                 s.toolDia = p.holeDia
-                s.depth = host - minZ(p) + 1
+                s.depth = max(host - bottom, 0.1)
                 s.stepDown = p.stepDown
                 s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = host
                 s.hNo = p.holeTool
@@ -1028,29 +1149,60 @@ enum PartProg {
             guard wanted(id) else { continue }
             if f.kind == .hole {
                 guard p.doHole else { continue }
-                switch p.holeMode {
+                let hk = f.resolvedHoleKind
+                let bottom = holeBottomZ(p, f, host: host)
+                let mode = holeMode(p, f)
+                // 沉头顶部大径：2.5D 用浅圆柱近似
+                if hk == .counterbore {
+                    let cbID = "\(id)-cb"
+                    if wanted(cbID) {
+                        var d = asDraw(p, outward: false, template: .circle,
+                                       circleD: f.resolvedCbDia,
+                                       dia: p.pocketDia, depth: counterboreDepth(f), hNo: p.pocketTool)
+                        d.zTop = host
+                        var code = ContourProg.generate(d)
+                        code = shift(code, dx: f.x, dy: f.y)
+                        add("沉头 Ø\(ncf(f.resolvedCbDia)) 深\(ncf(counterboreDepth(f))) @X\(ncf(f.x)) Y\(ncf(f.y)) 圆柱近似 T\(p.pocketTool) D\(ncf(p.pocketDia))",
+                            p.pocketTool, code, id: cbID)
+                    }
+                }
+                // 沉孔顶部锥面：2.5D 用倒角圆近似
+                if hk == .countersink {
+                    let csID = "\(id)-cs"
+                    if wanted(csID) {
+                        var d = asDraw(p, outward: false, template: .circle,
+                                       circleD: f.resolvedCsDia,
+                                       dia: p.pocketDia, depth: countersinkDepth(f), hNo: p.pocketTool)
+                        d.zTop = host
+                        var code = ContourProg.generate(d)
+                        code = shift(code, dx: f.x, dy: f.y)
+                        add("沉孔 Ø\(ncf(f.resolvedCsDia)) \(ncf(f.resolvedCsAngle))° 深\(ncf(countersinkDepth(f))) @X\(ncf(f.x)) Y\(ncf(f.y)) 锥面近似 T\(p.pocketTool) D\(ncf(p.pocketDia))",
+                            p.pocketTool, code, id: csID)
+                    }
+                }
+                switch mode {
                 case .spiral:
                     var s = PocketSpec()
                     s.mode = .spiral
                     s.spiralDia = f.dia
                     s.toolDia = p.holeDia
-                    s.depth = host - minZ(p) + 1          // 从所在台阶顶面贯通到底
+                    s.depth = max(host - bottom, 0.1)
                     s.stepDown = p.stepDown
                     s.spindle = p.spindle
                     s.feed = p.feed
                     s.safeZ = p.safeZ; s.zTop = host
                     s.hNo = p.holeTool
-                s.coord = p.coord
+                    s.coord = p.coord
                     s.cx = f.x
                     s.cy = f.y
-                    add("孔 Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) 螺旋铣 T\(p.holeTool) D\(ncf(p.holeDia))",
+                    add("孔 Ø\(ncf(f.dia)) \(f.holeSummary) @X\(ncf(f.x)) Y\(ncf(f.y)) 螺旋铣 T\(p.holeTool) D\(ncf(p.holeDia))",
                         p.holeTool, GCodeGenerator.generate(s), id: id)
                 case .g81, .g83:
-                    add("孔 Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) 钻孔 \(p.holeMode == .g81 ? "G81" : "G83")",
-                        p.holeTool, drillBlock(p, f, zTop: host), id: id)
+                    add("孔 Ø\(ncf(f.dia)) \(f.holeSummary) @X\(ncf(f.x)) Y\(ncf(f.y)) 钻孔 \(mode == .g81 ? "G81" : "G83")",
+                        p.holeTool, drillBlock(p, f, zTop: host, zBottom: bottom), id: id)
                 case .tap:
-                    add("孔 Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) 攻丝 G84 P\(ncf(p.tapPitch))",
-                        p.tapTool, tapBlock(p, f, zTop: host), id: id)
+                    add("孔 Ø\(ncf(f.dia)) \(f.holeSummary) @X\(ncf(f.x)) Y\(ncf(f.y)) 攻丝 G84 P\(ncf(p.tapPitch))",
+                        p.tapTool, tapBlock(p, f, zTop: host, zBottom: bottom), id: id)
                 }
             } else if p.doPocket && f.kind == .rectPocket {
                 var d = asDraw(p, outward: false, template: .rect,
@@ -1161,25 +1313,26 @@ enum PartProg {
     }
 
     /// G81 / G83 钻孔
-    static func drillBlock(_ p: PartSpec, _ f: PartFeat, zTop: Double) -> String {
-        let z = minZ(p) - 1
+    static func drillBlock(_ p: PartSpec, _ f: PartFeat, zTop: Double, zBottom: Double? = nil) -> String {
+        let z = zBottom ?? (minZ(p) - 1)
         var L: [String] = []
         L.append("G0 Z\(ncf(p.safeZ + maxZ(p), 1))")
-        L.append("( 孔 Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) )")
-        var line = "G98 G\(p.holeMode == .g81 ? "81" : "83") X\(ncf(f.x)) Y\(ncf(f.y)) Z\(ncf(z, 1)) R\(ncf(zTop + 2, 1)) F\(p.feed)"
-        if p.holeMode == .g83 { line += " Q\(ncf(p.peck))" }
+        L.append("( 孔 Ø\(ncf(f.dia)) \(f.holeSummary) @X\(ncf(f.x)) Y\(ncf(f.y)) )")
+        var line = "G98 G\(holeMode(p, f) == .g81 ? "81" : "83") X\(ncf(f.x)) Y\(ncf(f.y)) Z\(ncf(z, 1)) R\(ncf(zTop + 2, 1)) F\(p.feed)"
+        if holeMode(p, f) == .g83 { line += " Q\(ncf(p.peck))" }
         L.append(line)
         L.append("G80")
         return L.joined(separator: "\n")
     }
 
     /// G84 攻丝：M29 刚性攻丝，F = 螺距 × 转速
-    static func tapBlock(_ p: PartSpec, _ f: PartFeat, zTop: Double) -> String {
+    static func tapBlock(_ p: PartSpec, _ f: PartFeat, zTop: Double, zBottom: Double? = nil) -> String {
+        let z = zBottom ?? (minZ(p) - 1)
         var L: [String] = []
         L.append("G0 Z\(ncf(p.safeZ + maxZ(p), 1))")
         L.append("( 攻丝 Ø\(ncf(f.dia)) P\(ncf(p.tapPitch)) @X\(ncf(f.x)) Y\(ncf(f.y)) )")
         L.append("M29 S\(p.tapRpm)")
-        L.append("G98 G84 X\(ncf(f.x)) Y\(ncf(f.y)) Z\(ncf(minZ(p) - 1, 1)) R\(ncf(zTop + 2, 1)) F\(ncf(Double(p.tapRpm) * p.tapPitch))")
+        L.append("G98 G84 X\(ncf(f.x)) Y\(ncf(f.y)) Z\(ncf(z, 1)) R\(ncf(zTop + 2, 1)) F\(ncf(Double(p.tapRpm) * p.tapPitch))")
         L.append("G80")
         return L.joined(separator: "\n")
     }

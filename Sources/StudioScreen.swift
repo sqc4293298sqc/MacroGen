@@ -1230,6 +1230,16 @@ struct StudioScreen: View {
                 Text("右侧约束按钮添加后，拖动节点会按约束自动求解；改模板尺寸会清空约束。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            Toggle("自动约束（水平 / 竖直 / 共点）", isOn: $autoConstrain)
+                .font(.system(size: 12))
+            if spec.template == .free {
+                Button {
+                    autoConstrainSketch()
+                } label: {
+                    Label("扫描当前轮廓，自动加约束", systemImage: "wand.and.stars")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+            }
             Toggle("显示约束图标", isOn: $showConstraintBadges)
                 .font(.system(size: 12))
             ForEach(issues, id: \.self) { issue in
@@ -2306,10 +2316,16 @@ struct StudioScreen: View {
             px = round(px / gridStep) * gridStep
             py = round(py / gridStep) * gridStep
         }
-        if snapVertex, let near = spec.nodes.min(by: {
-            hypot($0.x - px, $0.y - py) < hypot($1.x - px, $1.y - py)
-        }), hypot(near.x - px, near.y - py) < 8 {
-            px = near.x; py = near.y
+        var snappedNodeIndex: Int? = nil
+        if (snapVertex || autoConstrain), !spec.nodes.isEmpty,
+           let nearIdx = spec.nodes.indices.min(by: {
+               hypot(spec.nodes[$0].x - px, spec.nodes[$0].y - py)
+                   < hypot(spec.nodes[$1].x - px, spec.nodes[$1].y - py)
+           }),
+           hypot(spec.nodes[nearIdx].x - px, spec.nodes[nearIdx].y - py) < (snapVertex ? 8 : 3) {
+            px = spec.nodes[nearIdx].x
+            py = spec.nodes[nearIdx].y
+            snappedNodeIndex = nearIdx
         }
         if drawInner {
             if innerDraft.isEmpty || hypot(px - innerDraft.last!.x, py - innerDraft.last!.y) > 0.2 {
@@ -2332,12 +2348,37 @@ struct StudioScreen: View {
             }
             return
         }
+        let previousIndex = spec.nodes.count - 1
         if spec.nodes.isEmpty {
             pushUndo()
             spec.nodes.append(ContourNode(x: px, y: py))
         } else if let last = spec.nodes.last, hypot(px - last.x, py - last.y) > 0.2 {
+            // 自动吸附近水平/竖直，先把坐标拉正，再加约束
+            if autoConstrain {
+                let tol = autoConstraintTolerance
+                if abs(py - last.y) <= tol && abs(px - last.x) > tol {
+                    py = last.y
+                } else if abs(px - last.x) <= tol && abs(py - last.y) > tol {
+                    px = last.x
+                }
+            }
             pushUndo()
             spec.nodes.append(ContourNode(x: px, y: py))
+            let newIndex = spec.nodes.count - 1
+            if autoConstrain {
+                if previousIndex >= 0 {
+                    let a = spec.nodes[previousIndex], b = spec.nodes[newIndex]
+                    if abs(a.y - b.y) <= autoConstraintTolerance && abs(a.x - b.x) > autoConstraintTolerance {
+                        addAutoConstraint(.horizontal, a: previousIndex, b: newIndex)
+                    } else if abs(a.x - b.x) <= autoConstraintTolerance && abs(a.y - b.y) > autoConstraintTolerance {
+                        addAutoConstraint(.vertical, a: previousIndex, b: newIndex)
+                    }
+                }
+                if let snappedNodeIndex, snappedNodeIndex != newIndex {
+                    addAutoConstraint(.coincident, a: snappedNodeIndex, b: newIndex)
+                }
+                solveSketchConstraints()
+            }
         }
         selectedNode = spec.nodes.isEmpty ? nil : spec.nodes.count - 1
         if !continuousDraw { sketchTool = "" }
@@ -2886,6 +2927,59 @@ struct StudioScreen: View {
         }
     }
 
+    private var autoConstraintTolerance: Double {
+        max(0.2, min(1.5, gridStep * 0.15))
+    }
+
+    private func addAutoConstraint(_ kind: SketchConstraintKind, a: Int, b: Int,
+                                   c: Int = 0, d: Int = 0) {
+        let exists = spec.constraints.contains {
+            $0.kind == kind && $0.a == a && $0.b == b && $0.c == c && $0.d == d
+        }
+        guard !exists else { return }
+        spec.constraints.append(SketchConstraint(kind: kind, a: a, b: b, c: c, d: d))
+    }
+
+    /// 扫描当前自由轮廓：近水平/竖直的段自动拉正，闭合点自动加重合。
+    private func autoConstrainSketch() {
+        guard spec.template == .free, spec.nodes.count >= 3 else {
+            showToastView("先画一个自由轮廓，再自动约束")
+            return
+        }
+        pushUndo()
+        let n = spec.nodes.count
+        let tol = autoConstraintTolerance
+        var added = 0
+        for i in 0..<n {
+            let j = (i + 1) % n
+            let a = spec.nodes[i], b = spec.nodes[j]
+            let dx = abs(b.x - a.x), dy = abs(b.y - a.y)
+            if dy <= tol && dx > tol {
+                spec.nodes[j].y = a.y
+                addAutoConstraint(.horizontal, a: i, b: j)
+                added += 1
+            } else if dx <= tol && dy > tol {
+                spec.nodes[j].x = a.x
+                addAutoConstraint(.vertical, a: i, b: j)
+                added += 1
+            }
+        }
+        if n >= 4 {
+            let f = spec.nodes[0], l = spec.nodes[n - 1]
+            if hypot(f.x - l.x, f.y - l.y) <= tol * 2 {
+                spec.nodes[n - 1].x = f.x
+                spec.nodes[n - 1].y = f.y
+                addAutoConstraint(.coincident, a: 0, b: n - 1)
+                added += 1
+            }
+        }
+        solveSketchConstraints()
+        let issues = constraintIssues
+        showToastView(added == 0
+                      ? "没有发现可自动约束的水平/竖直/重合关系"
+                      : "自动约束完成：新增 \(added) 条\(issues.isEmpty ? "" : "；有冲突请检查")")
+    }
+
     private func applySketchConstraint(_ c: SketchConstraint) {
         let n = spec.nodes.count
         guard n >= 3 else { return }
@@ -3017,11 +3111,18 @@ struct StudioScreen: View {
     private var constraintIssues: [String] {
         var out: [String] = []
         guard !spec.constraints.isEmpty else { return out }
-        let kinds = Set(spec.constraints.map(\.kind))
-        if kinds.contains(.horizontal) && kinds.contains(.vertical) {
-            out.append("过约束：水平 + 竖直同时存在，轮廓会被压成一条线")
+        let hPairs = Set(spec.constraints.filter { $0.kind == .horizontal }
+            .map { "\($0.a)-\($0.b)" })
+        let vPairs = Set(spec.constraints.filter { $0.kind == .vertical }
+            .map { "\($0.a)-\($0.b)" })
+        if !hPairs.intersection(vPairs).isEmpty {
+            out.append("过约束：同一段同时要求水平和竖直，轮廓会被压成一条线")
         }
-        if kinds.contains(.parallel) && kinds.contains(.perpendicular) {
+        let pPairs = Set(spec.constraints.filter { $0.kind == .parallel }
+            .map { "\($0.a)-\($0.b)-\($0.c)-\($0.d)" })
+        let tPairs = Set(spec.constraints.filter { $0.kind == .perpendicular }
+            .map { "\($0.a)-\($0.b)-\($0.c)-\($0.d)" })
+        if !pPairs.intersection(tPairs).isEmpty {
             out.append("约束冲突：同两段同时要求平行和垂直")
         }
         var seen = Set<String>()
@@ -3898,7 +3999,7 @@ struct StudioScreen: View {
                 id: "feat-\(f.id.uuidString)", index: out.count + 1,
                 title: f.name.isEmpty ? "\(f.kind.rawValue) \(i + 1)" : f.name,
                 icon: f.kind == .hole ? "circle" : "square.dashed",
-                detail: f.kind == .hole ? "Ø\(ncf(f.dia)) 通孔" : "\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth))",
+                detail: f.kind == .hole ? "Ø\(ncf(f.dia)) \(f.holeSummary)" : "\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth))",
                 canMove: true, canDelete: true, suppressed: f.suppressed))
         }
         out.append(StudioTreeItem(
@@ -4734,7 +4835,14 @@ struct StudioScreen: View {
             return [CGPoint(x: x0, y: y0), CGPoint(x: x1, y: y0),
                     CGPoint(x: x1, y: y1), CGPoint(x: x0, y: y1)]
         }
-        let cx = CGFloat(f.x), cy = CGFloat(f.y), r = CGFloat(max(f.dia / 2, 0.1))
+        let topDia: Double = {
+            switch f.resolvedHoleKind {
+            case .counterbore: return f.resolvedCbDia
+            case .countersink: return f.resolvedCsDia
+            default: return f.dia
+            }
+        }()
+        let cx = CGFloat(f.x), cy = CGFloat(f.y), r = CGFloat(max(topDia / 2, 0.1))
         return (0..<32).map { i in
             let a = Double(i) / 32 * 2 * Double.pi
             return CGPoint(x: cx + r * CGFloat(cos(a)), y: cy + r * CGFloat(sin(a)))
@@ -5734,7 +5842,7 @@ struct StudioScreen: View {
                         }
                         miniNum("深", $f.depth)
                     }
-                    Text(f.kind == .hole ? "Ø\(ncf(f.dia)) 通孔"
+                    Text(f.kind == .hole ? "Ø\(ncf(f.dia)) \(f.holeSummary)"
                          : (f.kind == .rectPocket ? "\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth))"
                             : "Ø\(ncf(f.dia)) 深\(ncf(f.depth))"))
                         .font(.caption2).foregroundStyle(.secondary)
@@ -6123,13 +6231,48 @@ struct StudioScreen: View {
             }
             let r = f.dia / 2
             if f.kind == .hole {
-                let c = circle(f.x, f.y, host, r)
-                ctx.fill(c, with: .color(Color(white: 0.28).opacity(0.55)))
-                ctx.stroke(c, with: .color(Color(white: 0.35)), lineWidth: 1.4)
-                let botZ = max(PartProg.minZ(spec), cutZ ?? -Double.greatestFiniteMagnitude)
-                ctx.stroke(circle(f.x, f.y, botZ, r), with: .color(Color(white: 0.45)), lineWidth: 0.9)
-                label(ctx, cam, f, "Ø\(ncf(f.dia))", z: host)
-                if isSelected { selectedMarker(f, radius: r + 4, z: host) }
+                let hk = f.resolvedHoleKind
+                let rawBottom = PartProg.holeBottomZ(spec, f, host: host)
+                let botZ = max(rawBottom, cutZ ?? -Double.greatestFiniteMagnitude)
+                let color = Color(white: 0.35)
+                if hk == .counterbore {
+                    let bigR = f.resolvedCbDia / 2
+                    let shoulder = max(host - PartProg.counterboreDepth(f),
+                                       cutZ ?? -Double.greatestFiniteMagnitude)
+                    ctx.fill(circle(f.x, f.y, host, bigR), with: .color(Color(white: 0.28).opacity(0.55)))
+                    ctx.stroke(circle(f.x, f.y, host, bigR), with: .color(color), lineWidth: 1.5)
+                    ctx.stroke(circle(f.x, f.y, shoulder, r), with: .color(color), lineWidth: 1.1)
+                    ctx.stroke(circle(f.x, f.y, shoulder, bigR), with: .color(color.opacity(0.6)), lineWidth: 0.9)
+                    ctx.stroke(circle(f.x, f.y, botZ, r), with: .color(color.opacity(0.65)), lineWidth: 0.9)
+                    label(ctx, cam, f, "沉头 Ø\(ncf(f.resolvedCbDia)) 深\(ncf(f.resolvedCbDepth)) / 孔 Ø\(ncf(f.dia))", z: host)
+                    if isSelected { selectedMarker(f, radius: bigR + 4, z: host) }
+                } else if hk == .countersink {
+                    let bigR = f.resolvedCsDia / 2
+                    let coneZ = max(host - PartProg.countersinkDepth(f),
+                                    cutZ ?? -Double.greatestFiniteMagnitude)
+                    ctx.fill(circle(f.x, f.y, host, bigR), with: .color(Color(white: 0.28).opacity(0.55)))
+                    ctx.stroke(circle(f.x, f.y, host, bigR), with: .color(color), lineWidth: 1.5)
+                    ctx.stroke(circle(f.x, f.y, coneZ, r), with: .color(color), lineWidth: 1.1)
+                    for i in 0..<16 {
+                        let a = Double(i) / 16 * 2 * Double.pi
+                        ctx.stroke(Path { p in
+                            p.move(to: cam.p(f.x + bigR * cos(a), f.y + bigR * sin(a), host))
+                            p.addLine(to: cam.p(f.x + r * cos(a), f.y + r * sin(a), coneZ))
+                        }, with: .color(color.opacity(0.65)), lineWidth: 0.8)
+                    }
+                    ctx.stroke(circle(f.x, f.y, botZ, r), with: .color(color.opacity(0.65)), lineWidth: 0.9)
+                    label(ctx, cam, f, "沉孔 Ø\(ncf(f.resolvedCsDia)) \(ncf(f.resolvedCsAngle))° / 孔 Ø\(ncf(f.dia))", z: host)
+                    if isSelected { selectedMarker(f, radius: bigR + 4, z: host) }
+                } else {
+                    let c = circle(f.x, f.y, host, r)
+                    ctx.fill(c, with: .color(Color(white: 0.28).opacity(0.55)))
+                    ctx.stroke(c, with: .color(color), lineWidth: 1.4)
+                    ctx.stroke(circle(f.x, f.y, botZ, r), with: .color(color.opacity(0.65)), lineWidth: 0.9)
+                    let text = hk == .blind ? "盲孔 Ø\(ncf(f.dia)) 深\(ncf(f.resolvedHoleDepth))"
+                        : (hk == .thread ? "螺纹底孔 Ø\(ncf(f.dia)) 深\(ncf(f.resolvedHoleDepth))" : "Ø\(ncf(f.dia))")
+                    label(ctx, cam, f, text, z: host)
+                    if isSelected { selectedMarker(f, radius: r + 4, z: host) }
+                }
             } else {
                 let d = min(f.depth, max(spec.height + host, 0))
                 let botZ = max(host - d, cutZ ?? -Double.greatestFiniteMagnitude)
@@ -6216,7 +6359,7 @@ struct StudioScreen: View {
         ctx.stroke(top, with: .color(color), style: StrokeStyle(lineWidth: 1.8, dash: [4, 3]))
         ctx.stroke(bottom, with: .color(color.opacity(0.65)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
         let c = cam.p(f.x, f.y, host)
-        let label = f.kind == .hole ? "Ø\(ncf(f.dia)) 通孔" : (f.kind == .rectPocket ? "\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth))" : "Ø\(ncf(f.dia)) 深\(ncf(f.depth))")
+        let label = f.kind == .hole ? "Ø\(ncf(f.dia)) \(f.holeSummary)" : (f.kind == .rectPocket ? "\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth))" : "Ø\(ncf(f.dia)) 深\(ncf(f.depth))")
         ctx.draw(Text("预览 " + label).font(.system(size: 9, weight: .semibold)).foregroundColor(color),
                  at: CGPoint(x: c.x, y: c.y - 12))
     }
@@ -7484,14 +7627,116 @@ struct StudioScreen: View {
                 }
             }
 
+            Section("工序树（按刀具）") {
+                let ops = PartProg.ops(spec)
+                let groups = Dictionary(grouping: ops, by: { $0.tool }).sorted { $0.key < $1.key }
+                if ops.isEmpty {
+                    Text("没有工序：先在上面打开加工方式，或在建模页加孔/型腔。")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(groups.indices, id: \.self) { i in
+                        let key = groups[i].key
+                        let list = groups[i].value
+                        DisclosureGroup {
+                            ForEach(list) { op in
+                                HStack(spacing: 8) {
+                                    Text("└").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(op.title).font(.system(size: 12, weight: .semibold))
+                                        Text("\(op.kind) · \(op.zRange)")
+                                            .font(.system(size: 9)).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Text(op.status == .disabled ? "停" : "开")
+                                        .font(.system(size: 9, weight: .bold))
+                                        .foregroundStyle(op.status == .disabled ? .secondary : .green)
+                                }
+                            }
+                        } label: {
+                            HStack {
+                                Text("T\(key) · Ø\(ncf(list.first?.dia ?? 0))")
+                                    .font(.system(size: 12, weight: .semibold))
+                                Spacer()
+                                Text("\(list.count) 道").font(.system(size: 10)).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                Text("这是按刀具分组的工序树；同一把刀下的粗加工、精加工和孔工序会排在一起。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
             Section("刀具库（T / D）") {
                 toolRow("顶面", $spec.faceTool, $spec.faceDia)
                 toolRow("轮廓", $spec.contourTool, $spec.contourDia)
                 toolRow("孔", $spec.holeTool, $spec.holeDia)
                 toolRow("型腔", $spec.pocketTool, $spec.pocketDia)
                 toolRow("攻丝", $spec.tapTool, $spec.tapDia)
-                Text("同一 T 号必须对应同一直径；改了 D 会同步影响对应工序。")
+                Text("上面是当前工序用的 T/D；下面的刀具库是常用刀具表，换工程也保留。")
                     .font(.caption).foregroundStyle(.secondary)
+                ForEach($toolLibrary) { $tool in
+                    DisclosureGroup {
+                        HStack(spacing: 6) {
+                            Text("T").font(.system(size: 11)).foregroundStyle(.secondary)
+                            TextField("1", value: $tool.no, format: .number)
+                                .keyboardType(.numberPad).frame(width: 36)
+                            Text("D").font(.system(size: 11)).foregroundStyle(.secondary)
+                            TextField("6", value: $tool.dia, format: .number)
+                                .keyboardType(.decimalPad).frame(width: 56)
+                            Picker("", selection: $tool.kind) {
+                                ForEach(ToolKind.allCases) { k in Text(k.rawValue).tag(k) }
+                            }
+                            .labelsHidden()
+                            .font(.system(size: 11))
+                        }
+                        HStack(spacing: 6) {
+                            Text("S").font(.system(size: 11)).foregroundStyle(.secondary)
+                            TextField("2000", value: $tool.rpm, format: .number)
+                                .keyboardType(.numberPad).frame(width: 50)
+                            Text("F").font(.system(size: 11)).foregroundStyle(.secondary)
+                            TextField("400", value: $tool.feed, format: .number)
+                                .keyboardType(.numberPad).frame(width: 50)
+                        }
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(["顶面", "轮廓", "孔", "型腔", "攻丝"], id: \.self) { role in
+                                    Button(role) { applyTool(tool, to: role) }
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .buttonStyle(.bordered)
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Text(tool.summary).font(.system(size: 12, weight: .semibold))
+                            Spacer()
+                            Button {
+                                pushUndo()
+                                toolLibrary.removeAll { $0.id == tool.id }
+                                ToolLibraryStore.save(toolLibrary)
+                            } label: {
+                                Image(systemName: "trash").foregroundStyle(.red)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+                HStack {
+                    Button {
+                        toolLibrary.append(ToolRecord(name: "新刀具", no: (toolLibrary.map(\.no).max() ?? 0) + 1))
+                        ToolLibraryStore.save(toolLibrary)
+                    } label: { Label("添加刀具", systemImage: "plus.circle") }
+                    Spacer()
+                    Button {
+                        syncToolLibraryFromSpec()
+                    } label: { Label("同步当前工序", systemImage: "arrow.down.circle") }
+                }
+                .font(.system(size: 12, weight: .semibold))
+                Text("同一 T 号必须对应同一直径；点上面的角色按钮会把该刀具套到对应工序。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .onChange(of: toolLibrary) { newValue in
+                ToolLibraryStore.save(newValue)
             }
 
             Section("切削") {
@@ -7931,7 +8176,13 @@ private struct FeatCommandSheet: View {
 
     private var valid: Bool {
         switch feat.kind {
-        case .hole: return feat.dia > 0
+        case .hole:
+            switch feat.resolvedHoleKind {
+            case .blind, .thread: return feat.dia > 0 && feat.resolvedHoleDepth > 0
+            case .counterbore: return feat.dia > 0 && feat.resolvedCbDia > feat.dia && feat.resolvedCbDepth > 0
+            case .countersink: return feat.dia > 0 && feat.resolvedCsDia > feat.dia
+            case .through: return feat.dia > 0
+            }
         case .pocket: return feat.dia > 0 && feat.depth > 0
         case .rectPocket: return feat.w > 0 && feat.h > 0 && feat.depth > 0
         }
@@ -7958,8 +8209,46 @@ private struct FeatCommandSheet: View {
                     switch feat.kind {
                     case .hole:
                         dRow("Ø 孔径", $feat.dia)
-                        Text("贯通孔，深度按所在台阶顶面到底面自动计算")
-                            .font(.footnote).foregroundStyle(.secondary)
+                        Picker("孔型", selection: Binding(
+                            get: { feat.resolvedHoleKind },
+                            set: { feat.holeKind = $0 }
+                        )) {
+                            ForEach(PartHoleKind.allCases) { k in
+                                Text(k.rawValue).tag(k)
+                            }
+                        }
+                        switch feat.resolvedHoleKind {
+                        case .through:
+                            Text("贯通孔：深度按所在台阶顶面到底面自动计算")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        case .blind, .thread:
+                            dRow("孔深", Binding(
+                                get: { feat.resolvedHoleDepth },
+                                set: { feat.holeDepth = $0 }
+                            ))
+                        case .counterbore:
+                            dRow("沉头 Ø", Binding(
+                                get: { feat.resolvedCbDia },
+                                set: { feat.cbDia = $0 }
+                            ))
+                            dRow("沉头深", Binding(
+                                get: { feat.resolvedCbDepth },
+                                set: { feat.cbDepth = $0 }
+                            ))
+                            Text("2.5D 按“顶部大径圆柱 + 下方小孔”近似，不做真 3D 沉头。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        case .countersink:
+                            dRow("沉孔 Ø", Binding(
+                                get: { feat.resolvedCsDia },
+                                set: { feat.csDia = $0 }
+                            ))
+                            dRow("锥角 °", Binding(
+                                get: { feat.resolvedCsAngle },
+                                set: { feat.csAngle = $0 }
+                            ))
+                            Text("2.5D 按锥面倒角近似，深度由 Ø 和锥角换算。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
                     case .pocket:
                         dRow("Ø 型腔直径", $feat.dia)
                         dRow("深度", $feat.depth)
@@ -7999,7 +8288,7 @@ private struct FeatCommandSheet: View {
     private var previewText: String {
         switch feat.kind {
         case .hole:
-            return "Ø\(ncf(feat.dia)) 通孔 @ X\(ncf(feat.x)) Y\(ncf(feat.y))"
+            return "Ø\(ncf(feat.dia)) \(feat.holeSummary) @ X\(ncf(feat.x)) Y\(ncf(feat.y))"
         case .pocket:
             return "Ø\(ncf(feat.dia)) 深\(ncf(feat.depth)) @ X\(ncf(feat.x)) Y\(ncf(feat.y))"
         case .rectPocket:
