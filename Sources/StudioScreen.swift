@@ -30,6 +30,8 @@ struct StudioScreen: View {
     @State private var gridStep = 10.0
     @State private var snapGrid = false
     @State private var snapVertex = false
+    @State private var showModelGrid = true
+    @State private var modelViewName = "等轴"
     @State private var dragFeatID: UUID? = nil
     @State private var showDimEdit = false
     @State private var dimEditTitle = ""
@@ -2329,20 +2331,20 @@ struct StudioScreen: View {
 
     private var viewCube: some View {
         VStack(spacing: 2) {
-            Button { setView(0, 1.5) } label: {
+            Button { applyView("俯视", 0, 1.5) } label: {
                 Text("顶").font(.system(size: 9, weight: .bold))
                     .frame(width: 38, height: 20)
                     .background(Color.white.opacity(0.85))
             }
             .buttonStyle(.plain)
             HStack(spacing: 2) {
-                Button { setView(0, 0) } label: {
+                Button { applyView("正视", 0, 0) } label: {
                     Text("前").font(.system(size: 9, weight: .bold))
                         .frame(width: 18, height: 28)
                         .background(Color.white.opacity(0.85))
                 }
                 .buttonStyle(.plain)
-                Button { setView(1.5708, 0) } label: {
+                Button { applyView("右视", 1.5708, 0) } label: {
                     Text("右").font(.system(size: 9, weight: .bold))
                         .frame(width: 18, height: 28)
                         .background(Color(red: 0.78, green: 0.80, blue: 0.84))
@@ -2799,13 +2801,14 @@ struct StudioScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 Text("视角").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                Text("当前：\(modelViewName)").font(.system(size: 11)).foregroundStyle(studioBlue)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
-                        viewChip("等轴") { setView(0.78, 0.62) }
-                        viewChip("俯视") { setView(0, 1.5) }
-                        viewChip("正视") { setView(0, 0) }
-                        viewChip("右视") { setView(1.5708, 0) }
-                        viewChip("仰视") { setView(0, -1.5) }
+                        viewChip("等轴", active: modelViewName == "等轴") { applyView("等轴", 0.78, 0.62) }
+                        viewChip("俯视", active: modelViewName == "俯视") { applyView("俯视", 0, 1.5) }
+                        viewChip("正视", active: modelViewName == "正视") { applyView("正视", 0, 0) }
+                        viewChip("右视", active: modelViewName == "右视") { applyView("右视", 1.5708, 0) }
+                        viewChip("仰视", active: modelViewName == "仰视") { applyView("仰视", 0, -1.5) }
                     }
                 }
                 Divider()
@@ -2817,16 +2820,28 @@ struct StudioScreen: View {
                     }
                     .labelsHidden().frame(width: 80)
                 }
-                Toggle("网格吸附", isOn: $snapGrid)
-                Toggle("节点吸附", isOn: $snapVertex)
+                Toggle("显示网格", isOn: $showModelGrid)
                 Toggle("点顶面取 XY", isOn: $tapOnModel)
+                if tapOnModel {
+                    Text(hasPtr ? "指针 X\(ncf(ptrX)) Y\(ncf(ptrY))" : "已开启：在模型顶面点一下即可取点")
+                        .font(.system(size: 10)).foregroundStyle(studioBlue)
+                }
+                Text("网格吸附、节点吸附在草图页“参数”里设置，只影响草图落点。")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
                 Divider()
-                Text("单指自由旋转（俯仰不锁 ±90°），双指缩放；旋转不带动外层页面。")
+                Text("单指自由旋转（俯仰不锁 ±90°），双指缩放；切换视角后面板自动收起。")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
             .padding(.horizontal, 13)
             .padding(.bottom, 14)
         }
+    }
+
+    private func applyView(_ name: String, _ y: Double, _ p: Double) {
+        setView(y, p)
+        modelViewName = name
+        modelPanel = .none
+        showToastView("已切换到\(name)")
     }
 
     // MARK: - 测量数据（2.5D 真实几何近似）
@@ -2986,6 +3001,17 @@ struct StudioScreen: View {
 
     private func setView(_ y: Double, _ p: Double) {
         yaw = y; pitch = p; zoom = 0.95; zoomBase = 0.95
+        if abs(y - 0.78) < 0.1 && abs(p - 0.62) < 0.1 {
+            modelViewName = "等轴"
+        } else if abs(y) < 0.1 && abs(p - 1.5) < 0.1 {
+            modelViewName = "俯视"
+        } else if abs(y) < 0.1 && abs(p) < 0.1 {
+            modelViewName = "正视"
+        } else if abs(y - 1.5708) < 0.1 && abs(p) < 0.1 {
+            modelViewName = "右视"
+        } else if abs(y) < 0.1 && abs(p + 1.5) < 0.1 {
+            modelViewName = "仰视"
+        }
     }
 
     @discardableResult
@@ -3047,6 +3073,34 @@ struct StudioScreen: View {
                 p.move(to: CGPoint(x: q.x - 7, y: q.y)); p.addLine(to: CGPoint(x: q.x + 7, y: q.y))
                 p.move(to: CGPoint(x: q.x, y: q.y - 7)); p.addLine(to: CGPoint(x: q.x, y: q.y + 7))
             }, with: .color(studioBlue), lineWidth: 1.2)
+        }
+
+        // 建模页参考网格：让“显示”里的网格步距有真实反馈
+        if showModelGrid, gridStep > 0.01 {
+            let b = PartProg.bbox(spec)
+            let step = gridStep
+            let x0 = floor(Double(b.minX) / step) * step
+            let x1 = ceil(Double(b.maxX) / step) * step
+            let y0 = floor(Double(b.minY) / step) * step
+            let y1 = ceil(Double(b.maxY) / step) * step
+            var topClip = ringPath(0)
+            topClip.closeSubpath()
+            var gridCtx = ctx
+            gridCtx.clip(to: topClip)
+            var x = x0
+            while x <= x1 + 0.001 {
+                gridCtx.stroke(Path { p in
+                    p.move(to: cam.p(x, y0, 0)); p.addLine(to: cam.p(x, y1, 0))
+                }, with: .color(Color.black.opacity(0.10)), lineWidth: 0.6)
+                x += step
+            }
+            var y = y0
+            while y <= y1 + 0.001 {
+                gridCtx.stroke(Path { p in
+                    p.move(to: cam.p(x0, y, 0)); p.addLine(to: cam.p(x1, y, 0))
+                }, with: .color(Color.black.opacity(0.10)), lineWidth: 0.6)
+                y += step
+            }
         }
 
         let bottom = ringPath(-visibleDepth)
@@ -3586,11 +3640,13 @@ struct StudioScreen: View {
         .buttonStyle(.plain)
     }
 
-    private func viewChip(_ text: String, _ action: @escaping () -> Void) -> some View {
+    private func viewChip(_ text: String, active: Bool = false, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(text).font(.system(size: 11, weight: .medium))
                 .padding(.horizontal, 8).padding(.vertical, 5)
-                .background(RoundedRectangle(cornerRadius: 7).fill(Color(.secondarySystemBackground)))
+                .background(RoundedRectangle(cornerRadius: 7)
+                    .fill(active ? studioBlue.opacity(0.15) : Color(.secondarySystemBackground)))
+                .foregroundStyle(active ? studioBlue : Color.primary)
         }
         .buttonStyle(.plain)
     }
