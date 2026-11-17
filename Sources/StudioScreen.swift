@@ -1178,7 +1178,7 @@ struct StudioScreen: View {
 
     private var editToolNames: [String] {
         ["修剪", "围栏修剪", "区域修剪", "圆角", "倒角", "偏置", "镜像",
-         "阵列", "几何约束", "移动", "旋转", "缩放", "延伸", "打断"]
+         "阵列", "水平约束", "移动", "旋转", "缩放", "延伸", "打断"]
     }
 
     private var sketchToolCount: Int { drawToolNames.count + editToolNames.count }
@@ -1258,7 +1258,7 @@ struct StudioScreen: View {
             offsetOuter(offsetD)
         case "镜像":
             mirrorOuter()
-        case "几何约束":
+        case "水平约束":
             constrain(horizontal: true)
         case "移动":
             moveOuter()
