@@ -4242,6 +4242,17 @@ struct StudioScreen: View {
         .presentationDetents([.large])
     }
 
+    private func metricCard(_ title: String, _ value: String) -> some View {
+        HStack {
+            Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+            Spacer()
+            Text(value).font(.system(size: 11, weight: .bold)).multilineTextAlignment(.trailing)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 9).fill(Color(.secondarySystemBackground).opacity(0.75)))
+    }
+
     private var displayPanel: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
