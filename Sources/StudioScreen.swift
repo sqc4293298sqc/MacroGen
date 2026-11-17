@@ -22,6 +22,11 @@ struct StudioScreen: View {
     @State private var cam2DToolpath = true
     @State private var cam2DRapid = true
     @State private var cam2DPaths: [TPSeg] = []
+    @State private var cam2DZoom = 1.0
+    @State private var cam2DZoomBase = 1.0
+    @State private var cam2DPanX = 0.0
+    @State private var cam2DPanY = 0.0
+    @State private var cam2DPanStart: CGSize = .zero
 
     // 3D 视角
     @State private var yaw = 0.78
@@ -471,7 +476,9 @@ struct StudioScreen: View {
                 )
                 .simultaneousGesture(SpatialTapGesture().onEnded { v in
                     sketchSidePanel = .none
-                    if isDrawTool(sketchTool) || drawInner {
+                    if isTemplateTool(sketchTool) {
+                        placeTemplate(sketchTool, at: v.location, size: geo.size)
+                    } else if isDrawTool(sketchTool) || drawInner {
                         addPointAt(v.location, size: geo.size)
                     } else {
                         selectSketchNode(at: v.location, size: geo.size)
@@ -517,8 +524,8 @@ struct StudioScreen: View {
                     drawInner = false
                 }
                 railButton("直线", "line.diagonal", active: sketchTool == "直线") { selectSketchTool("直线") }
-                railButton("矩形", "rectangle", active: spec.template == .rect && !drawInner) { selectSketchTool("矩形") }
-                railButton("圆", "circle", active: spec.template == .circle && !drawInner) { selectSketchTool("圆") }
+                railButton("矩形", "rectangle", active: sketchTool == "矩形") { selectSketchTool("矩形") }
+                railButton("圆", "circle", active: sketchTool == "圆") { selectSketchTool("圆") }
                 railButton("圆弧", "arrow.turn.up.left", active: sketchTool == "圆弧") { selectSketchTool("圆弧") }
                 railButton("样条", "scribble", active: false) { selectSketchTool("样条曲线") }
                 railButton("多边形", "hexagon", active: false) { selectSketchTool("多边形") }
@@ -611,7 +618,8 @@ struct StudioScreen: View {
 
             Spacer()
 
-            Text(isDrawTool(sketchTool) || drawInner ? "连续落点 · 点画布添加" : "点线选点 · 双击改尺寸")
+            Text(isTemplateTool(sketchTool) ? "点画布放置 · 连续点继续放"
+                 : (isDrawTool(sketchTool) || drawInner ? "连续落点 · 点画布添加" : "点线选点 · 双击改尺寸"))
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
 
@@ -1208,6 +1216,10 @@ struct StudioScreen: View {
             arrayInner(); return
         default:
             break
+        }
+        if isTemplateTool(name) {
+            selectTemplateTool(name)
+            return
         }
         pushUndo()
         sketchTool = ""
@@ -1811,6 +1823,123 @@ struct StudioScreen: View {
             spec.nodes.append(ContourNode(x: px, y: py))
         }
         selectedNode = spec.nodes.isEmpty ? nil : spec.nodes.count - 1
+        if !continuousDraw { sketchTool = "" }
+    }
+
+    private func isTemplateTool(_ tool: String) -> Bool {
+        ["矩形", "中心矩形", "圆角矩形", "圆", "椭圆", "多边形", "五角星",
+         "样条曲线", "槽", "平行四边形"].contains(tool)
+    }
+
+    private func selectTemplateTool(_ name: String) {
+        sketchTool = name
+        refPoints.removeAll()
+        drawInner = false
+        showToastView("\(name) 已选：点画布放置，连续点可继续移放")
+    }
+
+    private func placeTemplate(_ name: String, at loc: CGPoint, size: CGSize) {
+        let b = sketchBBox()
+        let k = sketchScale(b: b, size: size)
+        var px = b.midX + (Double(loc.x) - Double(size.width) / 2) / k
+        var py = b.midY - (Double(loc.y) - Double(size.height) / 2) / k
+        if snapGrid, gridStep > 0.01 {
+            px = round(px / gridStep) * gridStep
+            py = round(py / gridStep) * gridStep
+        }
+
+        let L = max(spec.rectL, 20)
+        let W = max(spec.rectW, 12)
+        let D = max(spec.circleD, 20)
+        var local: [ContourNode] = []
+        switch name {
+        case "矩形", "中心矩形":
+            local = [
+                ContourNode(x: -L / 2, y: -W / 2),
+                ContourNode(x: L / 2, y: -W / 2),
+                ContourNode(x: L / 2, y: W / 2),
+                ContourNode(x: -L / 2, y: W / 2)
+            ]
+        case "圆角矩形":
+            let r = min(max(spec.rectR, 0), min(L, W) / 2)
+            if r <= 0.1 {
+                local = [
+                    ContourNode(x: -L / 2, y: -W / 2),
+                    ContourNode(x: L / 2, y: -W / 2),
+                    ContourNode(x: L / 2, y: W / 2),
+                    ContourNode(x: -L / 2, y: W / 2)
+                ]
+            } else {
+                func arc(_ cx: Double, _ cy: Double, _ a0: Double, _ a1: Double) {
+                    for i in 0...5 {
+                        let a = a0 + (a1 - a0) * Double(i) / 5
+                        local.append(ContourNode(x: cx + r * cos(a), y: cy + r * sin(a)))
+                    }
+                }
+                arc(L / 2 - r, -W / 2 + r, 0, -Double.pi / 2)
+                arc(-L / 2 + r, -W / 2 + r, -Double.pi / 2, -Double.pi)
+                arc(-L / 2 + r, W / 2 - r, Double.pi, Double.pi / 2)
+                arc(L / 2 - r, W / 2 - r, Double.pi / 2, 0)
+            }
+        case "圆":
+            let r = D / 2
+            local = (0..<32).map { i in
+                let a = Double(i) / 32 * 2 * Double.pi
+                return ContourNode(x: r * cos(a), y: r * sin(a))
+            }
+        case "椭圆":
+            let rx = L / 2, ry = W / 2
+            local = (0..<32).map { i in
+                let a = Double(i) / 32 * 2 * Double.pi
+                return ContourNode(x: rx * cos(a), y: ry * sin(a))
+            }
+        case "多边形":
+            let r = D / 2
+            local = (0..<6).map { i in
+                let a = Double(i) / 6 * 2 * Double.pi + Double.pi / 2
+                return ContourNode(x: r * cos(a), y: r * sin(a))
+            }
+        case "五角星":
+            let R = D / 2, rr = R * 0.42
+            local = (0..<10).map { i in
+                let a = Double(i) / 10 * 2 * Double.pi + Double.pi / 2
+                return ContourNode(x: (i % 2 == 0 ? R : rr) * cos(a),
+                                   y: (i % 2 == 0 ? R : rr) * sin(a))
+            }
+        case "样条曲线":
+            let R = D / 2
+            local = (0..<20).map { i in
+                let a = Double(i) / 20 * 2 * Double.pi
+                let r = R * (1 + 0.16 * sin(3 * a))
+                return ContourNode(x: r * cos(a), y: r * sin(a))
+            }
+        case "槽":
+            let r = W / 2, half = max(L / 2 - r, 0)
+            for i in 0...6 {
+                let a = -Double.pi / 2 + Double(i) / 6 * Double.pi
+                local.append(ContourNode(x: half + r * cos(a), y: r * sin(a)))
+            }
+            for i in 0...6 {
+                let a = Double.pi / 2 + Double(i) / 6 * Double.pi
+                local.append(ContourNode(x: -half + r * cos(a), y: r * sin(a)))
+            }
+        case "平行四边形":
+            let skew = W / 3
+            local = [
+                ContourNode(x: -L / 2 + skew, y: -W / 2),
+                ContourNode(x: L / 2 + skew, y: -W / 2),
+                ContourNode(x: L / 2 - skew, y: W / 2),
+                ContourNode(x: -L / 2 - skew, y: W / 2)
+            ]
+        default:
+            break
+        }
+        guard local.count >= 3 else { return }
+        pushUndo()
+        spec.nodes = local.map { ContourNode(x: $0.x + px, y: $0.y + py) }
+        spec.template = .free
+        selectedNode = nil
+        showToastView("\(name) 已放在 X\(ncf(px)) Y\(ncf(py))")
         if !continuousDraw { sketchTool = "" }
     }
 
@@ -4235,6 +4364,25 @@ struct StudioScreen: View {
 
     private var cam2DPanel: some View {
         VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Label("2D 刀路检查", systemImage: "square.on.square")
+                    .font(.system(size: 11, weight: .semibold))
+                Spacer()
+                Button { cam2DZoom = max(0.5, cam2DZoom - 0.25) } label: {
+                    Image(systemName: "minus.magnifyingglass")
+                }
+                .buttonStyle(.bordered)
+                Text("\(Int(cam2DZoom * 100))%")
+                    .font(.system(size: 10, design: .monospaced))
+                    .frame(width: 38)
+                Button { cam2DZoom = min(4.0, cam2DZoom + 0.25) } label: {
+                    Image(systemName: "plus.magnifyingglass")
+                }
+                .buttonStyle(.bordered)
+                Button("复位") { resetCam2DView() }
+                    .font(.system(size: 10, weight: .semibold))
+                    .buttonStyle(.bordered)
+            }
             Canvas { context, size in
                 drawCam2D(context: context, size: size)
             }
@@ -4242,6 +4390,21 @@ struct StudioScreen: View {
             .background(Color.white)
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(.separator).opacity(0.5), lineWidth: 0.6))
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 2)
+                    .onChanged { g in
+                        cam2DPanX = Double(cam2DPanStart.width) + Double(g.translation.width)
+                        cam2DPanY = Double(cam2DPanStart.height) + Double(g.translation.height)
+                    }
+                    .onEnded { _ in
+                        cam2DPanStart = CGSize(width: cam2DPanX, height: cam2DPanY)
+                    }
+            )
+            .simultaneousGesture(MagnificationGesture()
+                .onChanged { v in cam2DZoom = min(4.0, max(0.5, cam2DZoomBase * Double(v))) }
+                .onEnded { _ in cam2DZoomBase = cam2DZoom }
+            )
+            .onTapGesture(count: 2) { resetCam2DView() }
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
@@ -4252,9 +4415,17 @@ struct StudioScreen: View {
                     chip("快移", cam2DRapid) { cam2DRapid.toggle() }
                 }
             }
-            Text("俯视示意：青色是切削中心线，灰色虚线是快移。用于快速检查过切/漏切；最终以 3D 仿真和程序为准。")
+            Text("俯视示意：青色是切削中心线，灰色虚线是快移。单指拖动平移、双指缩放、双击复位。")
                 .font(.system(size: 9)).foregroundStyle(.secondary)
         }
+    }
+
+    private func resetCam2DView() {
+        cam2DZoom = 1.0
+        cam2DZoomBase = 1.0
+        cam2DPanX = 0
+        cam2DPanY = 0
+        cam2DPanStart = .zero
     }
 
     private func drawCam2D(context: GraphicsContext, size: CGSize) {
@@ -4268,9 +4439,10 @@ struct StudioScreen: View {
             return
         }
         let margin = max(12.0, max(bw, bh) * 0.08)
-        let scale = min((w - 2 * margin) / bw, (h - 2 * margin) / bh)
-        let ox = (w - bw * scale) / 2 - Double(b.minX) * scale
-        let oy = (h - bh * scale) / 2 + Double(b.maxY) * scale
+        let baseScale = min((w - 2 * margin) / bw, (h - 2 * margin) / bh)
+        let scale = baseScale * cam2DZoom
+        let ox = (w - bw * scale) / 2 + cam2DPanX - Double(b.minX) * scale
+        let oy = (h - bh * scale) / 2 + cam2DPanY + Double(b.maxY) * scale
         let cx = ox + Double(b.midX) * scale
         let cy = oy - Double(b.midY) * scale
 
