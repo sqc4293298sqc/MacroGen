@@ -3915,6 +3915,9 @@ struct StudioScreen: View {
         lines.append("MacroGen 尺寸清单")
         lines.append("外形 L×W×H = \(ncf(Double(b.width))) × \(ncf(Double(b.height))) × \(ncf(PartProg.maxZ(spec) - PartProg.minZ(spec))) mm")
         lines.append("孔 \(holes) 个，型腔 \(pockets) 个，草图内轮廓 \(spec.innerLoops.count) 个")
+        for (i, s) in spec.steps.enumerated() {
+            lines.append("台阶\(i + 1) \(s.name)：\(s.mode.rawValue) \(s.shape.summary) Z\(ncf(s.drawBottom))~\(ncf(s.drawTop))")
+        }
         for (i, f) in spec.feats.enumerated() {
             if f.kind == .rectPocket {
                 lines.append("方腔\(i + 1)：\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth)) @X\(ncf(f.x)) Y\(ncf(f.y))")
@@ -4156,6 +4159,12 @@ struct StudioScreen: View {
         if cam2DSketch {
             context.stroke(closed(PartProg.pts(spec)), with: .color(.orange),
                            style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            for s in spec.steps {
+                let sp = PartProg.pts(s, spec)
+                guard sp.count > 2 else { continue }
+                context.stroke(closed(sp), with: .color(.orange.opacity(0.7)),
+                               style: StrokeStyle(lineWidth: 0.9, dash: [3, 3]))
+            }
             for l in spec.innerLoops {
                 let lp = PartProg.loopPoints(l).map {
                     CGPoint(x: $0.x + CGFloat(l.cx), y: $0.y + CGFloat(l.cy))
@@ -4347,16 +4356,18 @@ struct StudioScreen: View {
                             .font(.system(size: 9, design: .monospaced))
                             .foregroundStyle(.secondary)
                             HStack(spacing: 6) {
-                                Button(op.status == .disabled ? "启用" : "禁用") {
-                                    pushUndo()
-                                    if spec.disabledOps.contains(op.id) {
-                                        spec.disabledOps.remove(op.id)
-                                    } else {
-                                        spec.disabledOps.insert(op.id)
+                                if op.status != .modelOnly {
+                                    Button(op.status == .disabled ? "启用" : "禁用") {
+                                        pushUndo()
+                                        if spec.disabledOps.contains(op.id) {
+                                            spec.disabledOps.remove(op.id)
+                                        } else {
+                                            spec.disabledOps.insert(op.id)
+                                        }
                                     }
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .buttonStyle(.bordered)
                                 }
-                                .font(.system(size: 10, weight: .semibold))
-                                .buttonStyle(.bordered)
                                 Button("单独重算") {
                                     guard op.status != .modelOnly else {
                                         showToastView("\(op.title) 仅参与建模，不生成刀路")
@@ -4649,6 +4660,17 @@ private struct TransformSheet: View {
                 spec.innerLoops[i] = l
             }
         }
+        for i in spec.steps.indices {
+            let sp = PartProg.pts(spec.steps[i], spec)
+            var m = spec.steps[i]
+            m.shape.template = .free
+            m.shape.nodes = sp.map { q in
+                let x = Double(q.x), y = Double(q.y)
+                return ContourNode(x: x * cos(rad) - y * sin(rad),
+                                   y: x * sin(rad) + y * cos(rad))
+            }
+            spec.steps[i] = m
+        }
     }
 
     private func scalePart(_ s: Double) {
@@ -4674,6 +4696,21 @@ private struct TransformSheet: View {
                 spec.innerLoops[i].nodes[j].x *= s
                 spec.innerLoops[i].nodes[j].y *= s
                 spec.innerLoops[i].nodes[j].r *= s
+            }
+        }
+        for i in spec.steps.indices {
+            spec.steps[i].z0 *= s
+            spec.steps[i].height *= s
+            spec.steps[i].shape.rectL *= s
+            spec.steps[i].shape.rectW *= s
+            spec.steps[i].shape.rectR *= s
+            spec.steps[i].shape.circleD *= s
+            spec.steps[i].shape.slotL *= s
+            spec.steps[i].shape.slotW *= s
+            for j in spec.steps[i].shape.nodes.indices {
+                spec.steps[i].shape.nodes[j].x *= s
+                spec.steps[i].shape.nodes[j].y *= s
+                spec.steps[i].shape.nodes[j].r *= s
             }
         }
         spec.height *= s; spec.topStock *= s
