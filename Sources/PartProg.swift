@@ -22,6 +22,7 @@ struct PartFeat: Identifiable, Equatable, Codable {
     var id = UUID()
     var name: String = ""
     var kind: PartFeatKind = .hole
+    var suppressed: Bool = false      // 抑制：仍保留特征，但不参与刀路/检查/包围盒
     var x: Double = 0
     var y: Double = 0
     var dia: Double = 10
@@ -469,7 +470,7 @@ enum PartProg {
                     zRange: zr, status: status(id)))
             }
         }
-        for f in p.feats {
+        for f in p.feats where !f.suppressed {
             let id = "feat-\(f.id.uuidString)"
             let host = hostZ(p, f.x, f.y)
             if f.kind == .hole {
@@ -649,7 +650,7 @@ enum PartProg {
             line(pts, z: 0, cut: true)
         }
 
-        for f in p.feats {
+        for f in p.feats where !f.suppressed {
             let id = "feat-\(f.id.uuidString)"
             let host = hostZ(p, f.x, f.y)
             guard enabled(id) else { continue }
@@ -836,7 +837,7 @@ enum PartProg {
             }
         }
         let b = bbox(p)
-        for (i, f) in p.feats.enumerated() {
+        for (i, f) in p.feats.enumerated() where !f.suppressed {
             let host = hostZ(p, f.x, f.y)
             let available = host - minZ(p)
             let r = f.dia / 2
@@ -885,7 +886,7 @@ enum PartProg {
                 seen[t] = d
             }
         }
-        for (i, f) in p.feats.enumerated() {
+        for (i, f) in p.feats.enumerated() where !f.suppressed {
             let r = max(p.holeDia, p.pocketDia) / 2
             let margin = min(min(Double(f.x) - Double(sb.minX), Double(sb.maxX) - Double(f.x)),
                              min(Double(f.y) - Double(sb.minY), Double(sb.maxY) - Double(f.y)))
@@ -982,7 +983,7 @@ enum PartProg {
             add("外形轮廓铣 T\(p.contourTool) D\(ncf(p.contourDia))", p.contourTool, ContourProg.generate(outline(p)), id: "contour")
         }
 
-        for f in p.feats {
+        for f in p.feats where !f.suppressed {
             let id = "feat-\(f.id.uuidString)"
             let host = hostZ(p, f.x, f.y)
             guard wanted(id) else { continue }

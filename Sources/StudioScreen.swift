@@ -241,6 +241,7 @@ struct StudioScreen: View {
         var detail: String
         var canMove: Bool
         var canDelete: Bool
+        var suppressed: Bool = false
     }
 
     init() {
@@ -1479,6 +1480,7 @@ struct StudioScreen: View {
     }
 
     private func selectSketchTool(_ name: String) {
+        if isDrawTool(name) || isTemplateTool(name) { constraintPickMode = false }
         if !isEditTool(name) && name != "多段线" {
             selectedSegIndex = nil
             selectedSegB = nil
@@ -1658,7 +1660,15 @@ struct StudioScreen: View {
                 if d < bestSeg { bestSeg = d; segIndex = i }
             }
         }
-        // 靠近线段时优先选段；靠近端点时选点。UG 里选边和选点是两个过滤级别。
+        // 靠近端点先锁点，其次才选段：UG 里点过滤和边过滤分开
+        if let i = nodeIndex, bestNode < 10 {
+            selectedNode = i
+            selectedSegIndex = nil
+            selectedSegB = nil
+            showToastView("已选中点 \(i + 1)")
+            return
+        }
+        // 靠近线段时优先选段
         if let s = segIndex, bestNode > 18 || bestSeg < 8 {
             if constraintPickMode {
                 if selectedSegIndex == nil {
@@ -3712,7 +3722,7 @@ struct StudioScreen: View {
                 title: f.name.isEmpty ? "\(f.kind.rawValue) \(i + 1)" : f.name,
                 icon: f.kind == .hole ? "circle" : "square.dashed",
                 detail: f.kind == .hole ? "Ø\(ncf(f.dia)) 通孔" : "\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth))",
-                canMove: true, canDelete: true))
+                canMove: true, canDelete: true, suppressed: f.suppressed))
         }
         out.append(StudioTreeItem(
             id: "extrude", index: out.count + 1, title: "拉伸",
@@ -3758,13 +3768,14 @@ struct StudioScreen: View {
                 LazyVStack(spacing: 0) {
                     ForEach(treeItems) { item in
                         HStack(spacing: 6) {
-                            Image(systemName: item.icon)
+                            Image(systemName: item.suppressed ? "slash.circle" : item.icon)
                                 .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(item.id == selectedTreeID ? studioBlue : .secondary)
+                                .foregroundColor(item.suppressed ? Color.red : (item.id == selectedTreeID ? studioBlue : Color.secondary))
                                 .frame(width: 18)
                             VStack(alignment: .leading, spacing: 1) {
-                                Text("\(item.index) · \(item.title)")
+                                Text("\(item.index) · \(item.title)\(item.suppressed ? "（已抑制）" : "")")
                                     .font(.system(size: 12, weight: item.id == selectedTreeID ? .bold : .medium))
+                                    .foregroundStyle(item.suppressed ? .secondary : .primary)
                                     .lineLimit(1)
                                 Text(item.detail)
                                     .font(.system(size: 8))
@@ -4324,7 +4335,7 @@ struct StudioScreen: View {
                                 w: w, h: h, bottomZ: bottomZ, onBottom: onBottom)
         }
 
-        for f in spec.feats {
+        for f in spec.feats where !f.suppressed {
             let host = PartProg.hostZ(spec, f.x, f.y)
             let w = f.kind == .rectPocket ? f.w : f.dia
             let h = f.kind == .rectPocket ? f.h : f.dia
@@ -4478,7 +4489,7 @@ struct StudioScreen: View {
                 consider(Double(p.x), Double(p.y), bottom)
             }
         }
-        for f in spec.feats {
+        for f in spec.feats where !f.suppressed {
             let host = PartProg.hostZ(spec, f.x, f.y)
             consider(f.x, f.y, host)
             consider(f.x, f.y, f.kind == .hole ? PartProg.minZ(spec) : host - f.depth)
@@ -5185,6 +5196,10 @@ struct StudioScreen: View {
                         } label: {
                             Image(systemName: "trash").foregroundStyle(.red)
                         }
+                        Toggle("抑制", isOn: $f.suppressed)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .scaleEffect(0.7)
                     }
                     HStack(spacing: 6) {
                         miniNum("X", $f.x)
@@ -6075,7 +6090,7 @@ struct StudioScreen: View {
                 for i in 0..<pts.count { line(pts[i], pts[(i + 1) % pts.count]) }
             }
         }
-        for f in spec.feats {
+        for f in spec.feats where !f.suppressed {
             if f.kind == .hole {
                 circle(f.x, f.y, f.dia / 2)
             } else if f.kind == .pocket {
@@ -6195,7 +6210,7 @@ struct StudioScreen: View {
                      at: CGPoint(x: P(l.cx, l.cy).x, y: P(l.cx, l.cy).y - 10))
         }
 
-        for f in spec.feats {
+        for f in spec.feats where !f.suppressed {
             if f.kind == .rectPocket {
                 var rp = Path()
                 rp.addRect(CGRect(x: P(f.x - f.w / 2, f.y - f.h / 2).x,
@@ -6399,7 +6414,7 @@ struct StudioScreen: View {
                                 .foregroundColor(tint),
                              at: CGPoint(x: q.x, y: q.y - 9))
             }
-            for f in spec.feats {
+            for f in spec.feats where !f.suppressed {
                 if f.kind == .hole {
                     context.fill(circle(f.x, f.y, f.dia), with: .color(Color(white: 0.2).opacity(0.55)))
                     context.stroke(circle(f.x, f.y, f.dia), with: .color(Color(white: 0.3)), lineWidth: 1)
