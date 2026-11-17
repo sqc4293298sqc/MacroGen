@@ -701,6 +701,7 @@ enum PartProg {
                     L.append("G1 X\(ncf(Double(pt.x))) Y\(ncf(Double(pt.y)))")
                 }
                 L.append("G1 X\(ncf(Double(first.x))) Y\(ncf(Double(first.y)))")
+                L.append("G0 Z\(ncf(safe, 1))")
             }
         }
         L.append("G0 Z\(ncf(safe, 1))")
