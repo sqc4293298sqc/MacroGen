@@ -88,6 +88,7 @@ struct StudioScreen: View {
     @State private var sectionHandles = true
     @State private var sectionLines = true
     @State private var measureOn = false
+    @State private var showMeasureSheet = false
     @State private var measureTarget: MeasureTarget = .body
     @State private var pickedPoint: ModelPickPoint? = nil
     @State private var pickedEdges: [ModelPickEdge] = []
@@ -283,6 +284,9 @@ struct StudioScreen: View {
                 }
             }
             .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showMeasureSheet) {
+            measureSheet
         }
         .sheet(isPresented: $showRotate) {
             TransformSheet(spec: $spec, rotate: true, onUndo: { pushUndo() })
@@ -3229,9 +3233,10 @@ struct StudioScreen: View {
                 railButton("显示", "eye", active: modelPanel == .display) {
                     modelPanel = modelPanel == .display ? .none : .display
                 }
-                railButton("测量", "ruler", active: modelPanel == .measure) {
-                    modelPanel = modelPanel == .measure ? .none : .measure
-                    if modelPanel == .measure { measureOn = true }
+                railButton("测量", "ruler", active: showMeasureSheet) {
+                    showMeasureSheet = true
+                    measureOn = true
+                    modelPanel = .none
                 }
                 railButton("适合", "arrow.up.left.and.arrow.down.right", active: false) {
                     setView(0.78, 0.62)
@@ -3350,7 +3355,7 @@ struct StudioScreen: View {
             case .section:
                 sectionPanel
             case .measure:
-                AnyView(measurePanel)
+                EmptyView()
             case .display:
                 displayPanel
             case .tools:
@@ -4111,208 +4116,130 @@ struct StudioScreen: View {
         pickTolerance = min(max(v + delta, 12), 40)
     }
 
-    private var measurePanel: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text("测量目标").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                    Spacer()
-                    Text(measureTarget.rawValue).font(.system(size: 11, weight: .bold)).foregroundStyle(studioBlue)
-                }
-                HStack(spacing: 5) {
-                    ForEach(MeasureTarget.allCases) { t in
-                        Button { measureTarget = t } label: {
-                            VStack(spacing: 2) {
-                                Image(systemName: t.icon).font(.system(size: 12))
-                                Text(t.rawValue).font(.system(size: 9, weight: .medium))
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
-                            .background(RoundedRectangle(cornerRadius: 8)
-                                .fill(measureTarget == t ? studioBlue.opacity(0.14) : Color(.secondarySystemBackground)))
-                            .foregroundStyle(measureTarget == t ? studioBlue : .primary)
+    private var measureSheet: some View {
+        NavigationStack {
+            Form {
+                Section("测量目标") {
+                    Picker("目标", selection: $measureTarget) {
+                        ForEach(MeasureTarget.allCases) { t in
+                            Label(t.rawValue, systemImage: t.icon).tag(t)
                         }
-                        .buttonStyle(.plain)
                     }
+                    .pickerStyle(.segmented)
                 }
-                VStack(alignment: .leading, spacing: 6) {
+
+                Section("拾取半径") {
                     HStack {
-                        Text("拾取半径").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                        Text("当前")
                         Spacer()
-                        Text(toleranceLabel).font(.system(size: 11, weight: .bold)).foregroundStyle(studioBlue)
+                        Text(toleranceLabel).font(.system(size: 13, weight: .bold)).foregroundStyle(studioBlue)
                     }
-                    HStack(spacing: 8) {
+                    HStack(spacing: 10) {
                         Button("−2") { adjustTolerance(-2) }
                             .buttonStyle(.bordered)
                         Button("+2") { adjustTolerance(2) }
                             .buttonStyle(.bordered)
+                        Spacer()
                         Button("重置") { pickTolerance = 22 }
                             .buttonStyle(.borderless)
-                            .foregroundStyle(.secondary)
                     }
                     Text("边/孔太难点就调大；点错相邻边就调小。")
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
-                Toggle("拾取校准模式", isOn: $calibratingPick).tint(studioBlue)
-                if calibratingPick {
-                    Text("打开测量后，在模型上点一下：这里会显示该点到最近边/第二近边/孔/面的屏幕距离，用来决定拾取半径。")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let sample = calibrationSample {
-                        HStack {
-                            Text("最近边").font(.system(size: 11))
-                            Spacer()
-                            Text(sample.edgeDistances.first.map { "\(ncf($0)) pt" } ?? "未命中")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(studioBlue)
-                        }
-                        if sample.edgeDistances.count > 1 {
-                            HStack {
-                                Text("第二近边").font(.system(size: 11))
-                                Spacer()
-                                Text("\(ncf(sample.edgeDistances[1])) pt")
-                                    .font(.system(size: 11, weight: .bold))
+
+                Section("拾取校准") {
+                    Toggle("拾取校准模式", isOn: $calibratingPick)
+                    if calibratingPick {
+                        Text("打开测量后，在模型上点一下，下面显示该点到最近边、第二近边、孔和面的屏幕距离。")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                        if let sample = calibrationSample {
+                            LabeledContent("最近边", value: sample.edgeDistances.first.map { "\(ncf($0)) pt" } ?? "未命中")
+                            if sample.edgeDistances.count > 1 {
+                                LabeledContent("第二近边", value: "\(ncf(sample.edgeDistances[1])) pt")
                                     .foregroundStyle(sample.edgeDistances[1] - sample.edgeDistances[0] < 3 ? Color.red : Color.secondary)
                             }
-                        }
-                        if let h = sample.hole {
-                            Text("孔/腔命中：\(h.name)").font(.system(size: 11)).foregroundStyle(.secondary)
-                        }
-                        if let f = sample.face {
-                            Text("面命中：\(f.name) · Z\(ncf(f.z))").font(.system(size: 11)).foregroundStyle(.secondary)
-                        }
-                        if let first = sample.edgeDistances.first {
-                            Button("按当前命中设容差 \(Int(max(12, min(40, first + 4)))) pt") {
-                                pickTolerance = max(12, min(40, first + 4))
+                            if let h = sample.hole {
+                                LabeledContent("孔/腔", value: h.name)
                             }
-                            .font(.system(size: 11, weight: .semibold))
+                            if let f = sample.face {
+                                LabeledContent("面", value: "\(f.name) · Z\(ncf(f.z))")
+                            }
+                            if let first = sample.edgeDistances.first {
+                                Button("按当前命中设容差 \(Int(max(12, min(40, first + 4)))) pt") {
+                                    pickTolerance = max(12, min(40, first + 4))
+                                }
+                            }
+                        } else {
+                            Text("还没有校准样本，去画布上点一下。").font(.system(size: 11)).foregroundStyle(.secondary)
                         }
                     }
+                    HStack {
+                        Text(measurePickHint).font(.system(size: 11)).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("清空") { clearMeasurePicks() }
+                    }
                 }
-                Button("恢复默认容差 22 pt") {
-                    pickTolerance = 22
-                    calibrationSample = nil
-                }
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
 
-                HStack(spacing: 6) {
-                    Text(measurePickHint)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                    Spacer()
-                    Button("清空") { clearMeasurePicks() }
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                HStack {
-                    Text("材料").font(.system(size: 12, weight: .semibold))
-                    Spacer()
-                    Picker("", selection: $material) {
+                Section("显示") {
+                    Toggle("显示测量框", isOn: $measureOn)
+                    Picker("材料", selection: $material) {
                         ForEach(StudioMaterial.allCases) { m in Text(m.rawValue).tag(m) }
                     }
-                    .labelsHidden()
-                    .frame(width: 105)
                 }
-                Toggle("显示测量框", isOn: $measureOn).tint(studioBlue)
-                let pts = PartProg.pts(spec)
-                let longestEdge = longestEdgeLength(pts)
-                switch measureTarget {
-                case .point:
+
+                Section("结果") {
                     if let p = pickedPoint {
-                        metricCard("拾取点", "X\(ncf(p.x))  Y\(ncf(p.y))  Z\(ncf(p.z))")
-                        metricCard("到原点", "\(ncf(hypot(hypot(p.x, p.y), p.z))) mm")
-                    } else {
-                        metricCard("取点", hasPtr ? "X\(ncf(ptrX))  Y\(ncf(ptrY))" : "未取点")
-                        metricCard("提示", "打开测量后点模型上的边/面/孔")
+                        LabeledContent("拾取点", value: "X\(ncf(p.x)) Y\(ncf(p.y)) Z\(ncf(p.z))")
+                        LabeledContent("到原点", value: "\(ncf(hypot(hypot(p.x, p.y), p.z))) mm")
                     }
-                case .edge:
                     if let e = pickedEdges.first {
-                        metricCard("边1 长度", "\(ncf(edgeLength(e))) mm")
-                        metricCard("边1 端点", "(\(ncf(Double(e.a.x))),\(ncf(Double(e.a.y))),\(ncf(e.z))) → (\(ncf(Double(e.b.x))),\(ncf(Double(e.b.y))),\(ncf(e.z)))")
+                        LabeledContent("边1 长度", value: "\(ncf(edgeLength(e))) mm")
+                        LabeledContent("边1 端点", value: "(\(ncf(Double(e.a.x))),\(ncf(Double(e.a.y))),\(ncf(e.z))) → (\(ncf(Double(e.b.x))),\(ncf(Double(e.b.y))),\(ncf(e.z)))")
                     }
                     if pickedEdges.count > 1 {
-                        metricCard("边2 长度", "\(ncf(edgeLength(pickedEdges[1]))) mm")
-                        metricCard("两边最短距离（3D）", "\(ncf(edgeGap(pickedEdges[0], pickedEdges[1]))) mm")
-                    } else if pickedEdges.count == 1 {
-                        metricCard("下一步", "再点一条边可测两条边 3D 最短距离")
+                        LabeledContent("边2 长度", value: "\(ncf(edgeLength(pickedEdges[1]))) mm")
+                        LabeledContent("两边最短距离（3D）", value: "\(ncf(edgeGap(pickedEdges[0], pickedEdges[1]))) mm")
                     }
-                    metricCard("外轮廓边数", "\(pts.count) 段")
-                    metricCard("最长边", "\(ncf(longestEdge)) mm")
-                case .face:
                     if let f = pickedFace {
-                        metricCard("拾取面", f.name)
-                        metricCard("所在 Z", "Z\(ncf(f.z))")
-                        metricCard("该面面积", "\(ncf(f.area)) mm²")
-                    } else {
-                        metricCard("提示", "点在外轮廓或台阶顶面内部")
+                        LabeledContent("拾取面", value: f.name)
+                        LabeledContent("所在 Z", value: "Z\(ncf(f.z))")
+                        LabeledContent("该面面积", value: "\(ncf(f.area)) mm²")
                     }
-                    metricCard("顶面面积", "\(ncf(partProjectedArea)) mm²")
-                    metricCard("外形面积", "\(ncf(outerSurfaceArea)) mm²")
-                case .body:
                     if let h = pickedHole {
-                        metricCard("拾取孔/腔", h.name)
-                        metricCard("中心 / 顶面", "X\(ncf(h.x)) Y\(ncf(h.y)) Z\(ncf(h.z))")
-                        metricCard(h.isPocket ? "外形尺寸" : "直径", "\(ncf(h.dia)) mm")
-                        metricCard("深度", h.through ? "通孔 / 通腔" : "\(ncf(h.depth)) mm")
-                    } else if let f = pickedFace {
-                        metricCard("拾取面", "\(f.name) · Z\(ncf(f.z))")
-                        metricCard("面积", "\(ncf(f.area)) mm²")
+                        LabeledContent("拾取孔/腔", value: h.name)
+                        LabeledContent("中心 / 顶面", value: "X\(ncf(h.x)) Y\(ncf(h.y)) Z\(ncf(h.z))")
+                        LabeledContent(h.isPocket ? "外形尺寸" : "直径", value: "\(ncf(h.dia)) mm")
+                        LabeledContent("深度", value: h.through ? "通孔 / 通腔" : "\(ncf(h.depth)) mm")
                     }
-                    metricCard("体积", "\(ncf(partVolume)) mm³")
-                    metricCard("重量", "\(ncf(partWeight)) g（\(material.rawValue)）")
-                    metricCard("价格", "¥\(ncf(partPrice))")
-                    metricCard("包容体积", "\(ncf(partBBoxVolume)) mm³")
+                    LabeledContent("体积", value: "\(ncf(partVolume)) mm³")
+                    LabeledContent("重量", value: "\(ncf(partWeight)) g（\(material.rawValue)）")
+                    LabeledContent("价格", value: "¥\(ncf(partPrice))")
+                    LabeledContent("包容体积", value: "\(ncf(partBBoxVolume)) mm³")
+                    LabeledContent("外形尺寸", value: "\(ncf(Double(partBBox.width))) × \(ncf(Double(partBBox.height))) × \(ncf(PartProg.maxZ(spec) - PartProg.minZ(spec))) mm")
+                    LabeledContent("顶面面积", value: "\(ncf(partProjectedArea)) mm²")
+                    LabeledContent("外形面积", value: "\(ncf(outerSurfaceArea)) mm²")
                     if !spec.steps.isEmpty {
-                        metricCard("台阶层数", "\(spec.steps.count) 层")
-                        metricCard("总 Z 范围", "Z\(ncf(PartProg.minZ(spec))) → Z\(ncf(PartProg.maxZ(spec)))")
-                        ForEach(spec.steps) { s in
-                            let area = abs(ContourGeo.signedArea(PartProg.shapePoints(s.shape, spec)))
-                            metricCard(s.name, "Z\(ncf(s.drawBottom))~Z\(ncf(s.drawTop)) · \(ncf(area * max(s.height, 0))) mm³")
-                        }
-                    }
-                case .compound:
-                    if let h = pickedHole {
-                        metricCard("拾取孔/腔", h.name)
-                        metricCard("中心 / 顶面", "X\(ncf(h.x)) Y\(ncf(h.y)) Z\(ncf(h.z))")
-                        metricCard(h.isPocket ? "外形尺寸" : "直径", "\(ncf(h.dia)) mm")
-                    } else if let f = pickedFace {
-                        metricCard("拾取面", "\(f.name) · Z\(ncf(f.z))")
-                        metricCard("面积", "\(ncf(f.area)) mm²")
-                    }
-                    metricCard("体积", "\(ncf(partVolume)) mm³")
-                    metricCard("重量", "\(ncf(partWeight)) g")
-                    metricCard("价格", "¥\(ncf(partPrice))")
-                    metricCard("包容体积", "\(ncf(partBBoxVolume)) mm³")
-                    metricCard("顶面面积", "\(ncf(partProjectedArea)) mm²")
-                    metricCard("尺寸", "\(ncf(Double(partBBox.width))) × \(ncf(Double(partBBox.height))) × \(ncf(PartProg.maxZ(spec) - PartProg.minZ(spec))) mm")
-                    if !spec.steps.isEmpty {
-                        metricCard("台阶层数", "\(spec.steps.count) 层")
-                        metricCard("总 Z 范围", "Z\(ncf(PartProg.minZ(spec))) → Z\(ncf(PartProg.maxZ(spec)))")
+                        LabeledContent("台阶层数", value: "\(spec.steps.count) 层")
+                        LabeledContent("总 Z 范围", value: "Z\(ncf(PartProg.minZ(spec))) → Z\(ncf(PartProg.maxZ(spec)))")
                     }
                 }
-                Text("点=当前指针；边=外轮廓；面=顶面；体=整个实体；复合=体积+包容+面积。")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                Text("体积按外形面积×厚度，再加上/减去台阶，并按孔/型腔所在台阶的真实 Z 扣减；重量按材料密度换算，价格为参考估价。")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 13)
-            .padding(.bottom, 14)
-        }
-    }
 
-    private func metricCard(_ title: String, _ value: String) -> some View {
-        HStack {
-            Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-            Spacer()
-            Text(value).font(.system(size: 11, weight: .bold)).multilineTextAlignment(.trailing)
+                Section("说明") {
+                    Text("点=当前指针；边=外轮廓；面=顶面；体=整个实体；复合=体积+包容+面积。")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text("体积按外形面积×厚度，再加上/减去台阶，并按孔/型腔所在台阶的真实 Z 扣减；重量按材料密度换算，价格为参考估价。")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("测量")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { showMeasureSheet = false }
+                }
+            }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 9).fill(Color(.secondarySystemBackground).opacity(0.75)))
+        .presentationDetents([.large])
     }
 
     private var displayPanel: some View {
