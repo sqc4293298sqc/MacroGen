@@ -6981,7 +6981,8 @@ struct StudioScreen: View {
         let cutLen = cam2DPaths.filter { $0.cut }.reduce(0) { $0 + $1.len }
         let rapidLen = cam2DPaths.filter { !$0.cut }.reduce(0) { $0 + $1.len }
         let minutes = cutLen / Double(max(spec.feed, 1)) + rapidLen / 5000
-        VStack(alignment: .leading, spacing: 10) {
+        let issues = PartProg.issues(spec)
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("程序概览")
@@ -7009,7 +7010,6 @@ struct StudioScreen: View {
                 camMetric("估算", camDuration(minutes), "")
             }
 
-            let issues = PartProg.issues(spec)
             if issues.isEmpty {
                 Label("没有发现明显问题，可以先生成看刀路", systemImage: "checkmark.seal")
                     .font(.system(size: 9.5, weight: .semibold))
