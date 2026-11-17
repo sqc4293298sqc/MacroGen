@@ -4176,7 +4176,7 @@ struct StudioScreen: View {
                     Image(systemName: "square.stack.3d.up")
                         .font(.system(size: 17))
                         .foregroundStyle(studioBlue)
-                    Text("基础层 + \(spec.steps.count) 个台阶")
+                    Text("基础层 + \(spec.steps.count) 个凸台/型腔")
                         .font(.system(size: 13, weight: .semibold))
                 }
 
@@ -4211,7 +4211,7 @@ struct StudioScreen: View {
                 .background(RoundedRectangle(cornerRadius: 8).fill(studioBlue.opacity(0.08)))
 
                 if spec.steps.isEmpty {
-                    Text("还没有台阶。下面的按钮会把当前草图复制成第一层，之后可单独改这一层的尺寸和 Z。")
+                    Text("还没有凸台。下面可直接加圆/方凸台、圆/方型腔，或把当前草图做成一层。")
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                 }
 
@@ -4328,16 +4328,12 @@ struct StudioScreen: View {
                             .font(.system(size: 10, weight: .semibold))
                             Button("复制到草图") {
                                 pushUndo()
-                                spec.template = s.shape.template
-                                spec.rectL = s.shape.rectL
-                                spec.rectW = s.shape.rectW
-                                spec.rectR = s.shape.rectR
-                                spec.circleD = s.shape.circleD
-                                spec.slotL = s.shape.slotL
-                                spec.slotW = s.shape.slotW
-                                spec.nodes = s.shape.nodes
+                                // 用展平后的真实坐标，避免把偏置过的凸台复制回原点
+                                let sp = PartProg.pts(s, spec)
+                                spec.template = .free
+                                spec.nodes = sp.map { ContourNode(x: Double($0.x), y: Double($0.y)) }
                                 step = 0
-                                showToastView("台阶轮廓已复制到草图，可继续编辑")
+                                showToastView("凸台轮廓已复制到草图，可继续编辑")
                             }
                             .font(.system(size: 10, weight: .semibold))
                         }
