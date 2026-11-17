@@ -4412,14 +4412,20 @@ struct StudioScreen: View {
                 Label("2D 刀路检查", systemImage: "square.on.square")
                     .font(.system(size: 11, weight: .semibold))
                 Spacer()
-                Button { cam2DZoom = max(0.5, cam2DZoom - 0.25) } label: {
+                Button {
+                    cam2DZoom = max(0.5, cam2DZoom - 0.25)
+                    cam2DZoomBase = cam2DZoom
+                } label: {
                     Image(systemName: "minus.magnifyingglass")
                 }
                 .buttonStyle(.bordered)
                 Text("\(Int(cam2DZoom * 100))%")
                     .font(.system(size: 10, design: .monospaced))
                     .frame(width: 38)
-                Button { cam2DZoom = min(4.0, cam2DZoom + 0.25) } label: {
+                Button {
+                    cam2DZoom = min(4.0, cam2DZoom + 0.25)
+                    cam2DZoomBase = cam2DZoom
+                } label: {
                     Image(systemName: "plus.magnifyingglass")
                 }
                 .buttonStyle(.bordered)
