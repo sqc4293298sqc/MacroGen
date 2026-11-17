@@ -3350,7 +3350,7 @@ struct StudioScreen: View {
             case .section:
                 sectionPanel
             case .measure:
-                measurePanel
+                AnyView(measurePanel)
             case .display:
                 displayPanel
             case .tools:
