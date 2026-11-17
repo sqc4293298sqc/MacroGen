@@ -75,8 +75,10 @@ final class MacroInterp {
             if s.first == "#" { assign(s); pc += 1; continue }
 
             if s.hasPrefix("WHILE") {
-                let open = s.firstIndex(of: "[")!
-                let close = match(s, open)
+                guard let open = s.firstIndex(of: "["), let close = match(s, open) else {
+                    err = "WHILE 条件缺少完整的 [ ]"
+                    break
+                }
                 let cond = eval(String(s[s.index(after: open)..<close]))
                 let rest = String(s[s.index(close, offsetBy: 1)...])
                 let numStr = rest.replacingOccurrences(of: "DO", with: "")
@@ -90,8 +92,10 @@ final class MacroInterp {
             }
 
             if s.hasPrefix("IF") {
-                let open = s.firstIndex(of: "[")!
-                let close = match(s, open)
+                guard let open = s.firstIndex(of: "["), let close = match(s, open) else {
+                    err = "IF 条件缺少完整的 [ ]"
+                    break
+                }
                 let cond = eval(String(s[s.index(after: open)..<close]))
                 if let r = s.range(of: "THEN") {
                     let rest = String(s[r.upperBound...]).trimmingCharacters(in: .whitespaces)
@@ -148,7 +152,7 @@ final class MacroInterp {
     }
 
     /// 从 open 处的 [ 找到配对的 ]（返回其下标）
-    private func match(_ str: String, _ open: String.Index) -> String.Index {
+    private func match(_ str: String, _ open: String.Index) -> String.Index? {
         var d = 0
         var idx = open
         while idx < str.endIndex {
@@ -159,7 +163,7 @@ final class MacroInterp {
             }
             idx = str.index(after: idx)
         }
-        return str.index(before: str.endIndex)
+        return nil
     }
 
     private func findEnd(_ whilePc: Int, _ doNum: Int) -> Int {

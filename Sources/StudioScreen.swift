@@ -931,23 +931,7 @@ struct StudioScreen: View {
 
     @ViewBuilder
     private var sketchControls: some View {
-        Section("绘制") {
-            ForEach(drawToolNames, id: \.self) { name in
-                toolRow(name, active: sketchTool == name) { selectSketchTool(name) }
-                Divider()
-            }
-        }
-
-        Section("编辑") {
-            ForEach(editToolNames, id: \.self) { name in
-                toolRow(name, active: false) { selectSketchTool(name) }
-                Divider()
-            }
-            Text("修剪/延伸/打断按当前轮廓的末段处理；圆角/倒角/偏置对整条外轮廓生效。")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-
-        Section("内轮廓（和外轮廓叠在同一张草图）") {
+        Section("加内轮廓") {
             HStack {
                 Button { addInner(.circle) } label: { Label("内圆", systemImage: "circle") }
                 Spacer()
@@ -1008,6 +992,8 @@ struct StudioScreen: View {
 
         Section {
             DisclosureGroup("编辑参数（圆角 / 倒角 / 框选 / 移动）") {
+                Text("修剪/延伸/打断按当前轮廓的末段处理；圆角/倒角/偏置对整条外轮廓生效。")
+                    .font(.caption).foregroundStyle(.secondary)
                 numRow("圆角 R (mm)", $filletR)
                 numRow("倒角 C (mm)", $chamferC)
                 HStack(spacing: 6) {
@@ -1044,7 +1030,7 @@ struct StudioScreen: View {
             }
         }
 
-        Section("内轮廓（和外形叠在同一张草图）") {
+        Section("内轮廓列表") {
             if spec.innerLoops.isEmpty {
                 Text("还没有内轮廓。点上面的「内圆」或「内方」，就会在外形里加一个可挖的孔/型腔。")
                     .font(.footnote).foregroundStyle(.secondary)
