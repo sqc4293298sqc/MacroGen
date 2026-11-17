@@ -4106,8 +4106,14 @@ struct StudioScreen: View {
         let edge = candidates.first(where: { $0.1 <= pickTolerance })?.0
         let topFace = faceAt(xy, basePts: basePts)
         let sideFace = sideFaceAt(cam, at: loc)
-        let face = closerFace(sideFace, topFace, cam: cam, at: loc)
+        var face = closerFace(sideFace, topFace, cam: cam, at: loc)
         let hole = nearestHole(cam, at: loc)
+        if measureTarget == .face, let h = hole, h.onBottom {
+            let area = h.isPocket && h.w > 0 ? h.w * h.h : Double.pi * pow(h.dia / 2, 2)
+            face = ModelPickFace(id: h.id + "-bottom", name: h.name + " 底面",
+                                 z: h.bottomZ, area: area,
+                                 center: CGPoint(x: h.x, y: h.y))
+        }
         let z = (hole?.onBottom == true ? hole?.bottomZ : hole?.z) ?? face?.z ?? 0
 
         if calibratingPick {
