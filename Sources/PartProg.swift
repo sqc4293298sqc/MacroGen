@@ -73,6 +73,8 @@ struct PartShape: Equatable, Codable {
     var slotL: Double = 120
     var slotW: Double = 30
     var nodes: [ContourNode] = []
+    var cx: Double = 0          // 该层轮廓中心 X（UG 里放凸台时的定位）
+    var cy: Double = 0          // 该层轮廓中心 Y
 
     init() {}
 
@@ -342,6 +344,7 @@ enum PartProg {
         let d = asDraw(step.shape, p, outward: true, dia: p.contourDia,
                        depth: max(step.height, 0.1), hNo: p.contourTool, zTop: step.z1)
         return ContourGeo.flatten(ContourGeo.segments(ContourGeo.buildNodes(d)))
+            .map { CGPoint(x: Double($0.x) + step.shape.cx, y: Double($0.y) + step.shape.cy) }
     }
 
     /// 台阶最高点（基础顶面是 0）
@@ -403,6 +406,7 @@ enum PartProg {
             let sp = pts(s, p)
             m.shape.template = .free
             m.shape.nodes = sp.map { ContourNode(x: Double($0.x) + dx, y: Double($0.y) + dy) }
+            m.shape.cx = 0; m.shape.cy = 0
             return m
         }
         return q
@@ -713,9 +717,8 @@ enum PartProg {
 
     /// 不含台阶的毛坯外形（用于判断台阶周边粗加工是否出界）
     static func stockBBox(_ p: PartSpec) -> CGRect {
-        var q = p
-        q.steps = []
-        let part = bbox(q)
+        // 毛坯要包住整件，包括比基础更大的凸台；不能只取基础外形
+        let part = bbox(p)
         let m = max(0, p.stockMarginXY)
         return part.insetBy(dx: -m, dy: -m)
     }

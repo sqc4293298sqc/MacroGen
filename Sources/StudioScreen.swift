@@ -44,6 +44,7 @@ struct StudioScreen: View {
     @State private var ptrY = 0.0
     @State private var hasPtr = false
     @State private var tapOnModel = false
+    @State private var stepShapeEditID: UUID? = nil
 
     @State private var showRotate = false
     @State private var showScale = false
@@ -3431,6 +3432,17 @@ struct StudioScreen: View {
                                 showToastView("已选中草图")
                                 return
                             }
+                            if let id = stepShapeEditID,
+                               let idx = spec.steps.firstIndex(where: { $0.id == id }) {
+                                let xy = modelXY(at: g.location, size: geo.size)
+                                spec.steps[idx].shape.template = .free
+                                spec.steps[idx].shape.nodes.append(ContourNode(x: xy.0, y: xy.1))
+                                spec.steps[idx].shape.cx = 0
+                                spec.steps[idx].shape.cy = 0
+                                ptrX = xy.0; ptrY = xy.1; hasPtr = true
+                                showToastView("异形轮廓第 \(spec.steps[idx].shape.nodes.count) 点 X\(ncf(xy.0)) Y\(ncf(xy.1))")
+                                return
+                            }
                             guard tapOnModel else { return }
                             let xy = modelXY(at: g.location, size: geo.size)
                             ptrX = xy.0; ptrY = xy.1; hasPtr = true
@@ -3472,6 +3484,29 @@ struct StudioScreen: View {
                 .padding(.leading, 76)
                 .padding(.top, 8)
             }
+
+            if let id = stepShapeEditID,
+               let idx = spec.steps.firstIndex(where: { $0.id == id }) {
+                HStack(spacing: 8) {
+                    Text("异形凸台：点模型顶面落点（\(spec.steps[idx].shape.nodes.count) 点）")
+                        .font(.system(size: 10, weight: .semibold))
+                    Button("撤销一点") {
+                        if !spec.steps[idx].shape.nodes.isEmpty {
+                            spec.steps[idx].shape.nodes.removeLast()
+                        }
+                    }
+                    .font(.system(size: 10, weight: .semibold))
+                    .buttonStyle(.bordered)
+                    Button("完成") { finishStepShapeEdit() }
+                        .font(.system(size: 10, weight: .bold))
+                        .buttonStyle(.borderedProminent)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 9).fill(.ultraThinMaterial))
+                .padding(.top, 64)
+                .frame(maxWidth: .infinity, alignment: .top)
+            }
         }
     }
 
@@ -3482,7 +3517,7 @@ struct StudioScreen: View {
                 railButton("拉伸", "arrow.up.right.square", active: modelPanel == .extrude) {
                     modelPanel = modelPanel == .extrude ? .none : .extrude
                 }
-                railButton("台阶", "square.stack.3d.up", active: modelPanel == .steps) {
+                railButton("凸台", "square.stack.3d.up", active: modelPanel == .steps) {
                     modelPanel = modelPanel == .steps ? .none : .steps
                 }
                 railButton("孔", "circle.circle", active: false) {
@@ -3669,7 +3704,7 @@ struct StudioScreen: View {
         case .tree: return "建模树"
         case .body: return "体"
         case .extrude: return "拉伸"
-        case .steps: return "多台阶"
+        case .steps: return "凸台 / 台阶"
         case .section: return "剖切"
         case .measure: return "测量"
         case .display: return "显示"
@@ -4004,6 +4039,69 @@ struct StudioScreen: View {
         }
     }
 
+    /// 进入“在模型上点异形凸台”的模式：点一下落一个点，至少 3 点自动闭合
+    private func beginStepShapeEdit(_ id: UUID, clear: Bool) {
+        guard let idx = spec.steps.firstIndex(where: { $0.id == id }) else { return }
+        pushUndo()
+        if clear {
+            spec.steps[idx].shape = PartShape()
+            spec.steps[idx].shape.template = .free
+            spec.steps[idx].shape.nodes = []
+        }
+        spec.steps[idx].shape.template = .free
+        spec.steps[idx].shape.cx = 0
+        spec.steps[idx].shape.cy = 0
+        stepShapeEditID = id
+        step = 1
+        modelPanel = .none
+        showToastView("异形模式：在模型顶面依次点轮廓点，至少 3 点")
+    }
+
+    private func finishStepShapeEdit() {
+        guard let id = stepShapeEditID,
+              let idx = spec.steps.firstIndex(where: { $0.id == id }) else {
+            stepShapeEditID = nil
+            return
+        }
+        let n = spec.steps[idx].shape.nodes.count
+        if n < 3 {
+            showToastView("异形轮廓少于 3 点，先继续点")
+            return
+        }
+        stepShapeEditID = nil
+        modelPanel = .steps
+        showToastView("异形凸台已完成：\(n) 点")
+    }
+
+    /// 直接从基本形状加一层凸台/型腔，不必先回草图重画
+    private func addPrimitiveStep(_ template: ContourTemplate, mode: PartStepMode) {
+        pushUndo()
+        var s = PartStep()
+        s.mode = mode
+        s.height = mode == .add ? 5 : 3
+        s.z0 = max(0, spec.steps.map(\.z1).max() ?? 0)
+        s.shape.template = template
+        switch template {
+        case .circle:
+            s.shape.circleD = min(max(spec.circleD > 1 ? spec.circleD : 80, 10), 2000)
+        case .rect:
+            s.shape.rectL = min(max(spec.rectL > 1 ? spec.rectL : 100, 10), 2000)
+            s.shape.rectW = min(max(spec.rectW > 1 ? spec.rectW : 80, 10), 2000)
+            s.shape.rectR = 0
+        case .slot:
+            s.shape.slotL = min(max(spec.slotL > 1 ? spec.slotL : 100, 10), 2000)
+            s.shape.slotW = min(max(spec.slotW > 1 ? spec.slotW : 30, 2), 500)
+        case .free: break
+        }
+        s.shape.cx = hasPtr ? ptrX : 0
+        s.shape.cy = hasPtr ? ptrY : 0
+        s.name = mode == .add
+            ? (template == .circle ? "圆凸台" : "方凸台")
+            : (template == .circle ? "圆型腔" : "方型腔")
+        spec.steps.append(s)
+        showToastView("已加\(s.name)：Z\(ncf(s.drawBottom))~\(ncf(s.drawTop))，可在这一行改尺寸/中心")
+    }
+
     private var stepsPanel: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
@@ -4059,6 +4157,16 @@ struct StudioScreen: View {
                             Text("Z \(ncf(s.drawBottom))~\(ncf(s.drawTop))")
                                 .font(.system(size: 9)).foregroundStyle(.secondary)
                         }
+                        HStack(spacing: 6) {
+                            miniNum("中心 X", $s.shape.cx)
+                            miniNum("中心 Y", $s.shape.cy)
+                            Button("居中") {
+                                $s.shape.cx.wrappedValue = 0
+                                $s.shape.cy.wrappedValue = 0
+                            }
+                                .font(.system(size: 9, weight: .semibold))
+                                .buttonStyle(.bordered)
+                        }
                         Picker("轮廓", selection: $s.shape.template) {
                             ForEach(ContourTemplate.allCases) { t in Text(t.rawValue).tag(t) }
                         }
@@ -4081,6 +4189,25 @@ struct StudioScreen: View {
                             Text("手画轮廓：\(s.shape.nodes.count) 段")
                                 .font(.system(size: 9)).foregroundStyle(.secondary)
                         }
+                        HStack(spacing: 8) {
+                            Button("模型点轮廓") {
+                                beginStepShapeEdit(s.id, clear: s.shape.template != .free || s.shape.nodes.isEmpty)
+                            }
+                            .font(.system(size: 10, weight: .semibold))
+                            Button("清空异形") {
+                                pushUndo()
+                                if let idx = spec.steps.firstIndex(where: { $0.id == s.id }) {
+                                    spec.steps[idx].shape = PartShape()
+                                    spec.steps[idx].shape.template = .free
+                                    spec.steps[idx].shape.nodes = []
+                                }
+                                stepShapeEditID = s.id
+                                showToastView("已清空：到建模画布点轮廓")
+                            }
+                            .font(.system(size: 10, weight: .semibold))
+                        }
+                        .buttonStyle(.bordered)
+
                         HStack(spacing: 8) {
                             Button("用当前草图更新") {
                                 pushUndo()
@@ -4110,21 +4237,55 @@ struct StudioScreen: View {
                     .background(RoundedRectangle(cornerRadius: 10).fill(Color(.secondarySystemBackground)))
                 }
 
-                Button {
-                    pushUndo()
-                    var s = PartStep(from: spec)
-                    s.name = "台阶 \(spec.steps.count + 1)"
-                    s.z0 = max(0, spec.steps.map(\.z1).max() ?? 0)
-                    s.height = 5
-                    spec.steps.append(s)
-                    showToastView("已加台阶：默认在当前最高面往上 5 mm")
-                } label: {
-                    Label("新增台阶（复制当前草图）", systemImage: "plus.square.on.square")
-                        .font(.system(size: 12, weight: .semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
+                HStack(spacing: 8) {
+                    Button {
+                        addPrimitiveStep(.circle, mode: .add)
+                    } label: {
+                        Label("加圆形凸台", systemImage: "circle")
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 7)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button {
+                        addPrimitiveStep(.rect, mode: .add)
+                    } label: {
+                        Label("加方形凸台", systemImage: "square")
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 7)
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.borderedProminent)
+
+                HStack(spacing: 8) {
+                    Button {
+                        addPrimitiveStep(.circle, mode: .cut)
+                    } label: {
+                        Label("圆形型腔", systemImage: "circle.dashed")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    Button {
+                        addPrimitiveStep(.rect, mode: .cut)
+                    } label: {
+                        Label("方形型腔", systemImage: "square.dashed")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    Button {
+                        pushUndo()
+                        var s = PartStep(from: spec)
+                        s.name = "台阶 \(spec.steps.count + 1)"
+                        s.z0 = max(0, spec.steps.map(\.z1).max() ?? 0)
+                        s.height = 5
+                        spec.steps.append(s)
+                    } label: {
+                        Label("用草图", systemImage: "square.on.square")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .buttonStyle(.bordered)
+                }
 
                 Text("说明：增料台阶会先出周边多刀粗加工、再出轮廓精加工；除料台阶按多刀清腔出粗加工。台阶上的孔/腔会按所在台阶自动取顶面 Z；整面飞面和复杂清角仍需补工步。")
                     .font(.system(size: 9)).foregroundStyle(.orange)
