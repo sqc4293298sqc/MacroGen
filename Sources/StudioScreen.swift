@@ -21,6 +21,7 @@ struct StudioScreen: View {
     @State private var cam2DSketch = false
     @State private var cam2DToolpath = true
     @State private var cam2DRapid = true
+    @State private var cam2DPaths: [TPSeg] = []
 
     // 3D 视角
     @State private var yaw = 0.78
@@ -191,6 +192,10 @@ struct StudioScreen: View {
         .onChange(of: spec) { _ in
             opGenerated = false
             opCodeCache.removeAll()
+            cam2DPaths = PartProg.toolpaths2D(spec)
+        }
+        .onAppear {
+            cam2DPaths = PartProg.toolpaths2D(spec)
         }
         .sheet(isPresented: $showOpCode) {
             NavigationStack {
@@ -4180,7 +4185,7 @@ struct StudioScreen: View {
         }
 
         if cam2DToolpath || cam2DRapid {
-            for seg in PartProg.toolpaths2D(spec) {
+            for seg in cam2DPaths {
                 if seg.cut && !cam2DToolpath { continue }
                 if !seg.cut && !cam2DRapid { continue }
                 let sp = seg.pts.map { p(Double($0.x), Double($0.y)) }
@@ -4344,6 +4349,13 @@ struct StudioScreen: View {
                                     Text(op.kind).font(.system(size: 9)).foregroundStyle(.secondary)
                                 }
                                 Spacer()
+                                if opCodeCache[op.id] != nil {
+                                    Text("已缓存")
+                                        .font(.system(size: 8, weight: .semibold))
+                                        .padding(.horizontal, 5).padding(.vertical, 2)
+                                        .background(Capsule().fill(Color.green.opacity(0.12)))
+                                        .foregroundStyle(.green)
+                                }
                                 Text(opStatusText(op))
                                     .font(.system(size: 9, weight: .bold))
                                     .padding(.horizontal, 6).padding(.vertical, 3)
@@ -4398,8 +4410,12 @@ struct StudioScreen: View {
                     Text("已按当前参数生成；改动参数后会自动回到“可生成”。")
                         .font(.system(size: 9)).foregroundStyle(.green)
                 } else if !ops.isEmpty {
-                    Text("点“生成程序”后为已生成；每道工序可单独重算预览。")
+                    Text("点“生成程序”后为已生成；每道工序可单独重算，重算结果会优先合并进最终程序。")
                         .font(.system(size: 9)).foregroundStyle(.secondary)
+                }
+                if !opCodeCache.isEmpty {
+                    Text("已缓存 \(opCodeCache.count) 段单工序程序；改参数会自动清空缓存。")
+                        .font(.system(size: 9)).foregroundStyle(.green)
                 }
             }
 
