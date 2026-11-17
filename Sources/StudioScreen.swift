@@ -1315,6 +1315,8 @@ struct StudioScreen: View {
                             Spacer()
                             if spec.nodes.count > 1 {
                                 Button {
+                                    pushUndo()
+                                    spec.constraints.removeAll()
                                     spec.nodes.remove(at: i)
                                 } label: {
                                     Image(systemName: "minus.circle").foregroundStyle(.red)
@@ -2383,11 +2385,13 @@ struct StudioScreen: View {
     }
 
     private func setOuterPoints(_ pts: [CGPoint]) {
+        spec.constraints.removeAll()
         spec.nodes = pts.map { ContourNode(x: Double($0.x), y: Double($0.y)) }
         spec.template = .free
     }
 
     private func trimLast() {
+        spec.constraints.removeAll()
         if !spec.nodes.isEmpty {
             spec.nodes.removeLast()
         } else {
