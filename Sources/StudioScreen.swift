@@ -89,6 +89,11 @@ struct StudioScreen: View {
     @State private var sectionLines = true
     @State private var measureOn = false
     @State private var measureTarget: MeasureTarget = .body
+    @State private var pickedPoint: ModelPickPoint? = nil
+    @State private var pickedEdges: [ModelPickEdge] = []
+    @State private var pickedFace: ModelPickFace? = nil
+    @State private var pickedHole: ModelPickHole? = nil
+    @State private var measurePickHint = "点模型上的边、面或孔进行拾取"
     @State private var bodyHighlight = false
     @State private var drawingExportURL: URL?
     @State private var material: StudioMaterial = .abs
@@ -143,6 +148,39 @@ struct StudioScreen: View {
             case .compound: return "circle.grid.2x2"
             }
         }
+    }
+
+    private struct ModelPickEdge: Identifiable, Equatable {
+        var id: String
+        var a: CGPoint
+        var b: CGPoint
+        var z: Double
+    }
+
+    private struct ModelPickFace: Identifiable, Equatable {
+        var id: String
+        var name: String
+        var z: Double
+        var area: Double
+        var center: CGPoint
+    }
+
+    private struct ModelPickHole: Identifiable, Equatable {
+        var id: String
+        var name: String
+        var x: Double
+        var y: Double
+        var z: Double
+        var dia: Double
+        var depth: Double
+        var through: Bool
+        var isPocket: Bool
+    }
+
+    private struct ModelPickPoint: Equatable {
+        var x: Double
+        var y: Double
+        var z: Double
     }
 
     private enum StudioMaterial: String, CaseIterable, Identifiable {
@@ -569,16 +607,16 @@ struct StudioScreen: View {
                 railButton("角度", "angle", active: sketchSidePanel == .angle) {
                     sketchSidePanel = sketchSidePanel == .angle ? .none : .angle
                 }
-                railButton("水平", "line.3.horizontal", active: false) { pushUndo(); constrain(horizontal: true) }
-                railButton("竖直", "line.3.horizontal.decrease", active: false) { pushUndo(); constrain(horizontal: false) }
+                railButton("水平", "line.3.horizontal", active: false) { addSketchConstraint(.horizontal) }
+                railButton("竖直", "line.3.horizontal.decrease", active: false) { addSketchConstraint(.vertical) }
                 railButton("固定", "pin", active: sketchFixed) { sketchFixed.toggle() }
-                railButton("重合", "circle.circle", active: false) { pushUndo(); snapLastToFirst() }
-                railButton("中点", "smallcircle.filled.circle", active: false) { pushUndo(); midpointConstraint() }
-                railButton("平行", "equal", active: false) { pushUndo(); makeParallel() }
-                railButton("垂直", "plus", active: false) { pushUndo(); makePerpendicular() }
-                railButton("相切", "circle.dashed", active: false) { pushUndo(); tangentLastSegment() }
-                railButton("同心", "circle.and.line.horizontal", active: false) { pushUndo(); makeConcentric() }
-                railButton("等长", "equal.circle", active: false) { pushUndo(); equalizeSegments() }
+                railButton("重合", "circle.circle", active: false) { addSketchConstraint(.coincident) }
+                railButton("中点", "smallcircle.filled.circle", active: false) { addSketchConstraint(.midpoint) }
+                railButton("平行", "equal", active: false) { addSketchConstraint(.parallel) }
+                railButton("垂直", "plus", active: false) { addSketchConstraint(.perpendicular) }
+                railButton("相切", "circle.dashed", active: false) { addSketchConstraint(.tangent) }
+                railButton("同心", "circle.and.line.horizontal", active: false) { addSketchConstraint(.concentric) }
+                railButton("等长", "equal.circle", active: false) { addSketchConstraint(.equal) }
                 railButton("取消固定", "xmark.circle", active: false) {
                     sketchFixed = false
                     showToastView("已取消固定状态")
@@ -1042,9 +1080,10 @@ struct StudioScreen: View {
                                        R: spec.rectR)
         guard local.count >= 3 else { return }
         pushUndo()
+        spec.constraints.removeAll()
         spec.nodes = local.map { ContourNode(x: $0.x + cx, y: $0.y + cy) }
         spec.template = .free
-        showToastView("\(name) 已按参数更新")
+        showToastView("\(name) 已按参数更新，约束已清空")
     }
 
     @ViewBuilder
@@ -1080,6 +1119,38 @@ struct StudioScreen: View {
             } else {
                 Text("选一个模板工具（矩形/圆/槽…）后，这里显示该工具的实际尺寸参数。")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+
+        Section("草图约束") {
+            HStack {
+                Text("已加 \(spec.constraints.count) 条").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                if !spec.constraints.isEmpty {
+                    Button("清空") { clearSketchConstraints() }
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.red)
+                }
+            }
+            if spec.constraints.isEmpty {
+                Text("右侧约束按钮添加后，拖动节点会按约束自动求解；改模板尺寸会清空约束。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            ForEach(spec.constraints) { c in
+                HStack {
+                    Text(c.label).font(.system(size: 12))
+                    Spacer()
+                    Button {
+                        pushUndo()
+                        spec.constraints.removeAll { $0.id == c.id }
+                    } label: {
+                        Image(systemName: "trash").foregroundStyle(.red)
+                    }
+                }
+            }
+            if !spec.constraints.isEmpty {
+                Button("重新求解") { solveSketchConstraints() }
+                    .font(.system(size: 12, weight: .semibold))
             }
         }
 
@@ -1431,6 +1502,7 @@ struct StudioScreen: View {
     private func clearSketch() {
         pushUndo()
         lastShapeTool = ""
+        spec.constraints.removeAll()
         spec.template = .free
         spec.nodes = []
         spec.innerLoops = []
@@ -1467,6 +1539,7 @@ struct StudioScreen: View {
         }
         spec.nodes[i].x = nx
         spec.nodes[i].y = ny
+        solveSketchConstraints()
     }
 
     private func selectSketchNode(at loc: CGPoint, size: CGSize) {
@@ -1845,6 +1918,7 @@ struct StudioScreen: View {
         case .none:
             break
         }
+        solveSketchConstraints()
     }
 
     private func sketchDrawSpec(_ source: PartSpec? = nil) -> DrawSpec {
@@ -1887,6 +1961,7 @@ struct StudioScreen: View {
     }
 
     private func fillRectNodes() {
+        spec.constraints.removeAll()
         let d = sketchDrawSpec()
         var nodes = ContourGeo.buildNodes(d)
         if nodes.isEmpty {
@@ -1910,6 +1985,7 @@ struct StudioScreen: View {
     private func makeLine() {
         sketchTool = "直线"
         lastShapeTool = ""
+        spec.constraints.removeAll()
         spec.nodes = []
         spec.template = .free
         refPoints.removeAll()
@@ -1918,6 +1994,7 @@ struct StudioScreen: View {
     private func makePolyline() {
         sketchTool = "多段线"
         lastShapeTool = ""
+        spec.constraints.removeAll()
         spec.nodes = []
         spec.template = .free
         refPoints.removeAll()
@@ -2182,6 +2259,7 @@ struct StudioScreen: View {
         guard local.count >= 3 else { return }
         lastShapeTool = name
         pushUndo()
+        spec.constraints.removeAll()
         spec.nodes = local.map { ContourNode(x: $0.x + px, y: $0.y + py) }
         spec.template = .free
         selectedNode = nil
@@ -2335,6 +2413,131 @@ struct StudioScreen: View {
         let a = spec.nodes[spec.nodes.count - 2]
         let b = spec.nodes[spec.nodes.count - 1]
         spec.nodes.insert(ContourNode(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2), at: spec.nodes.count - 1)
+    }
+
+    private func addSketchConstraint(_ kind: SketchConstraintKind) {
+        if spec.template != .free { fillRectNodes() }
+        let n = spec.nodes.count
+        guard n >= 3 else {
+            showToastView("至少要有 3 个节点才能加约束")
+            return
+        }
+        var c = SketchConstraint(kind: kind)
+        switch kind {
+        case .horizontal, .vertical:
+            c.a = 0; c.b = n - 1
+        case .coincident:
+            c.a = 0; c.b = n - 1
+        case .parallel, .perpendicular, .equal:
+            guard n >= 3 else { return }
+            c.a = max(0, n - 3); c.b = max(0, n - 2)
+            c.c = max(0, n - 2); c.d = n - 1
+        case .midpoint:
+            guard let i = selectedNode, i >= 0, i < n else {
+                showToastView("先选一个节点，再加中点约束")
+                return
+            }
+            c.a = i
+        case .tangent:
+            guard spec.nodes[n - 1].kind != .line else {
+                showToastView("末段不是圆弧：先把末点类型改成圆弧")
+                return
+            }
+            c.a = n - 1
+        case .concentric:
+            guard !spec.innerLoops.isEmpty else {
+                showToastView("先加内圆/内方，再加同心约束")
+                return
+            }
+        }
+        pushUndo()
+        spec.constraints.append(c)
+        solveSketchConstraints()
+        showToastView("已加约束：\(kind.rawValue)")
+    }
+
+    private func solveSketchConstraints() {
+        guard spec.template == .free, spec.nodes.count >= 3 else { return }
+        for _ in 0..<6 {
+            for c in spec.constraints {
+                applySketchConstraint(c)
+            }
+        }
+    }
+
+    private func applySketchConstraint(_ c: SketchConstraint) {
+        let n = spec.nodes.count
+        guard n >= 3 else { return }
+        switch c.kind {
+        case .horizontal:
+            guard let first = spec.nodes.first else { return }
+            for i in spec.nodes.indices { spec.nodes[i].y = first.y }
+        case .vertical:
+            guard let first = spec.nodes.first else { return }
+            for i in spec.nodes.indices { spec.nodes[i].x = first.x }
+        case .coincident:
+            guard c.a < n, c.b < n else { return }
+            spec.nodes[c.b].x = spec.nodes[c.a].x
+            spec.nodes[c.b].y = spec.nodes[c.a].y
+        case .parallel, .perpendicular:
+            guard c.a < n, c.b < n, c.c < n, c.d < n else { return }
+            let a = spec.nodes[c.a], b = spec.nodes[c.b]
+            let cc = spec.nodes[c.c], d = spec.nodes[c.d]
+            let ux = b.x - a.x, uy = b.y - a.y
+            let vx = d.x - cc.x, vy = d.y - cc.y
+            let lu = hypot(ux, uy), lv = hypot(vx, vy)
+            guard lu > 1e-6, lv > 1e-6 else { return }
+            let nx: Double, ny: Double
+            if c.kind == .parallel {
+                nx = ux / lu; ny = uy / lu
+            } else {
+                nx = -uy / lu; ny = ux / lu
+            }
+            spec.nodes[c.d].x = cc.x + nx * lv
+            spec.nodes[c.d].y = cc.y + ny * lv
+        case .equal:
+            guard c.a < n, c.b < n, c.c < n, c.d < n else { return }
+            let a = spec.nodes[c.a], b = spec.nodes[c.b]
+            let cc = spec.nodes[c.c], d = spec.nodes[c.d]
+            let ux = b.x - a.x, uy = b.y - a.y
+            let vx = d.x - cc.x, vy = d.y - cc.y
+            let lu = hypot(ux, uy), lv = hypot(vx, vy)
+            guard lu > 1e-6, lv > 1e-6 else { return }
+            spec.nodes[c.d].x = cc.x + vx / lv * lu
+            spec.nodes[c.d].y = cc.y + vy / lv * lu
+        case .midpoint:
+            guard c.a < n else { return }
+            let prev = spec.nodes[(c.a + n - 1) % n]
+            let next = spec.nodes[(c.a + 1) % n]
+            spec.nodes[c.a].x = (prev.x + next.x) / 2
+            spec.nodes[c.a].y = (prev.y + next.y) / 2
+        case .tangent:
+            guard c.a < n, c.a >= 2 else { return }
+            let i = c.a
+            let p0 = spec.nodes[i - 1], p1 = spec.nodes[i]
+            let seg = ContourSeg(p0: CGPoint(x: p0.x, y: p0.y),
+                                 p1: CGPoint(x: p1.x, y: p1.y),
+                                 kind: spec.nodes[i].kind,
+                                 r: spec.nodes[i].r)
+            let t = ContourGeo.tangent(seg)
+            let d = hypot(Double(spec.nodes[i - 2].x - p0.x), Double(spec.nodes[i - 2].y - p0.y))
+            guard d > 1e-6 else { return }
+            spec.nodes[i - 2].x = p0.x - Double(t.x) * d
+            spec.nodes[i - 2].y = p0.y - Double(t.y) * d
+        case .concentric:
+            let b = PartProg.bbox(spec)
+            for i in spec.innerLoops.indices {
+                spec.innerLoops[i].cx = Double(b.midX)
+                spec.innerLoops[i].cy = Double(b.midY)
+            }
+        }
+    }
+
+    private func clearSketchConstraints() {
+        guard !spec.constraints.isEmpty else { return }
+        pushUndo()
+        spec.constraints.removeAll()
+        showToastView("已清空草图约束")
     }
 
     private func constrain(horizontal: Bool) {
@@ -2732,6 +2935,10 @@ struct StudioScreen: View {
                                 return
                             }
                             lastTapAt = now
+                            if measureOn {
+                                handleMeasureTap(at: g.location, size: geo.size)
+                                return
+                            }
                             if !tapOnModel && (modelFilter == .feat || modelFilter == .all) {
                                 let cam = modelCam(size: geo.size)
                                 var best = 32.0
@@ -3479,6 +3686,173 @@ struct StudioScreen: View {
         }
     }
 
+    private func distanceToSegment(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint) -> Double {
+        let dx = Double(b.x - a.x), dy = Double(b.y - a.y)
+        let l2 = dx * dx + dy * dy
+        guard l2 > 1e-9 else { return hypot(Double(p.x - a.x), Double(p.y - a.y)) }
+        let t = max(0, min(1, (Double(p.x - a.x) * dx + Double(p.y - a.y) * dy) / l2))
+        let qx = Double(a.x) + dx * t, qy = Double(a.y) + dy * t
+        return hypot(Double(p.x) - qx, Double(p.y) - qy)
+    }
+
+    private func nearestEdge(_ cam: Cam, at loc: CGPoint) -> ModelPickEdge? {
+        var best = 15.0
+        var hit: ModelPickEdge? = nil
+        func scan(_ pts: [CGPoint], z: Double, prefix: String) {
+            guard pts.count > 1 else { return }
+            for i in pts.indices {
+                let a = pts[i], b = pts[(i + 1) % pts.count]
+                let pa = cam.p(Double(a.x), Double(a.y), z)
+                let pb = cam.p(Double(b.x), Double(b.y), z)
+                let d = distanceToSegment(loc, pa, pb)
+                if d < best {
+                    best = d
+                    hit = ModelPickEdge(id: "\(prefix)-\(i)", a: a, b: b, z: z)
+                }
+            }
+        }
+        scan(PartProg.pts(spec), z: 0, prefix: "base")
+        for s in spec.steps {
+            scan(PartProg.pts(s, spec), z: s.drawTop, prefix: "step-\(s.id.uuidString)")
+        }
+        return hit
+    }
+
+    private func nearestHole(_ cam: Cam, at loc: CGPoint) -> ModelPickHole? {
+        var best = 30.0
+        var hit: ModelPickHole? = nil
+        for f in spec.feats {
+            let host = PartProg.hostZ(spec, f.x, f.y)
+            let q = cam.p(f.x, f.y, host)
+            let d = hypot(Double(loc.x) - Double(q.x), Double(loc.y) - Double(q.y))
+            let dia = f.kind == .rectPocket ? max(f.w, f.h) : f.dia
+            if d < best, d < 12 + dia / 2 {
+                best = d
+                hit = ModelPickHole(id: "feat-\(f.id.uuidString)",
+                                    name: f.name.isEmpty ? f.kind.rawValue : f.name,
+                                    x: f.x, y: f.y, z: host,
+                                    dia: f.kind == .rectPocket ? max(f.w, f.h) : f.dia,
+                                    depth: f.kind == .hole ? 0 : f.depth,
+                                    through: f.kind == .hole,
+                                    isPocket: f.kind != .hole)
+            }
+        }
+        for l in spec.innerLoops where l.template == .circle {
+            let host = PartProg.hostZ(spec, l.cx, l.cy)
+            let q = cam.p(l.cx, l.cy, host)
+            let d = hypot(Double(loc.x) - Double(q.x), Double(loc.y) - Double(q.y))
+            if d < best, d < 12 + l.circleD / 2 {
+                best = d
+                hit = ModelPickHole(id: "loop-\(l.id.uuidString)",
+                                    name: l.name, x: l.cx, y: l.cy, z: host,
+                                    dia: l.circleD,
+                                    depth: l.through ? 0 : l.depth,
+                                    through: l.through, isPocket: false)
+            }
+        }
+        return hit
+    }
+
+    private func faceAt(_ xy: (Double, Double), basePts: [CGPoint]) -> ModelPickFace? {
+        var best: ModelPickFace? = nil
+        if PartProg.pointIn(basePts, xy.0, xy.1) {
+            best = ModelPickFace(id: "base-face", name: "基础顶面", z: 0,
+                                 area: abs(ContourGeo.signedArea(basePts)),
+                                 center: CGPoint(x: xy.0, y: xy.1))
+        }
+        for s in spec.steps {
+            let pts = PartProg.pts(s, spec)
+            guard PartProg.pointIn(pts, xy.0, xy.1) else { continue }
+            if best == nil || s.drawTop > best!.z {
+                best = ModelPickFace(id: "step-\(s.id.uuidString)",
+                                     name: "\(s.name) 顶面", z: s.drawTop,
+                                     area: abs(ContourGeo.signedArea(pts)),
+                                     center: CGPoint(x: xy.0, y: xy.1))
+            }
+        }
+        return best
+    }
+
+    private func clearMeasurePicks() {
+        pickedPoint = nil
+        pickedEdges = []
+        pickedFace = nil
+        pickedHole = nil
+        measurePickHint = "点模型上的边、面或孔进行拾取"
+    }
+
+    private func handleMeasureTap(at loc: CGPoint, size: CGSize) {
+        let cam = modelCam(size: size)
+        let xy = modelXY(at: loc, size: size)
+        let basePts = PartProg.pts(spec)
+        let edge = nearestEdge(cam, at: loc)
+        let face = faceAt(xy, basePts: basePts)
+        let hole = nearestHole(cam, at: loc)
+        let z = hole?.z ?? face?.z ?? 0
+        pickedPoint = ModelPickPoint(x: xy.0, y: xy.1, z: z)
+
+        switch measureTarget {
+        case .edge:
+            guard let edge else {
+                measurePickHint = "没有拾取到边：点靠近外轮廓/台阶上沿"
+                showToastView("未拾取到边")
+                return
+            }
+            if pickedEdges.count >= 2 { pickedEdges = [] }
+            pickedEdges.append(edge)
+            pickedFace = nil; pickedHole = nil
+            measurePickHint = pickedEdges.count == 1 ? "边1 已拾取；再点一条边可测间距" : "两条边已拾取"
+            showToastView("已拾取边")
+        case .face:
+            guard let face else {
+                measurePickHint = "没有拾取到面：点在外轮廓/台阶顶面内部"
+                showToastView("未拾取到面")
+                return
+            }
+            pickedFace = face
+            pickedEdges = []; pickedHole = nil
+            measurePickHint = "面已拾取：\(face.name)"
+            showToastView("已拾取面")
+        case .point:
+            pickedEdges = []; pickedFace = nil; pickedHole = nil
+            measurePickHint = "点已拾取 X\(ncf(xy.0)) Y\(ncf(xy.1)) Z\(ncf(z))"
+            showToastView("已拾取点")
+        case .body, .compound:
+            if let hole {
+                pickedHole = hole
+                pickedEdges = []; pickedFace = nil
+                measurePickHint = "孔/腔已拾取：\(hole.name)"
+                showToastView("已拾取孔/腔")
+            } else if let face {
+                pickedFace = face
+                pickedEdges = []; pickedHole = nil
+                measurePickHint = "面已拾取：\(face.name)"
+                showToastView("已拾取面")
+            } else if let edge {
+                if pickedEdges.count >= 2 { pickedEdges = [] }
+                pickedEdges.append(edge)
+                pickedFace = nil; pickedHole = nil
+                measurePickHint = "边已拾取"
+                showToastView("已拾取边")
+            } else {
+                measurePickHint = "未拾取到实体对象"
+            }
+        }
+    }
+
+    private func edgeLength(_ e: ModelPickEdge) -> Double {
+        hypot(Double(e.b.x - e.a.x), Double(e.b.y - e.a.y))
+    }
+
+    private func midpoint(_ e: ModelPickEdge) -> (Double, Double, Double) {
+        (Double(e.a.x + e.b.x) / 2, Double(e.a.y + e.b.y) / 2, e.z)
+    }
+
+    private func edgeGap(_ a: ModelPickEdge, _ b: ModelPickEdge) -> Double {
+        let ma = midpoint(a), mb = midpoint(b)
+        return hypot(hypot(ma.0 - mb.0, ma.1 - mb.1), ma.2 - mb.2)
+    }
+
     private var measurePanel: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
@@ -3503,6 +3877,15 @@ struct StudioScreen: View {
                         .buttonStyle(.plain)
                     }
                 }
+                HStack(spacing: 6) {
+                    Text(measurePickHint)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    Spacer()
+                    Button("清空") { clearMeasurePicks() }
+                        .font(.system(size: 11, weight: .semibold))
+                }
                 HStack {
                     Text("材料").font(.system(size: 12, weight: .semibold))
                     Spacer()
@@ -3517,15 +3900,46 @@ struct StudioScreen: View {
                 let longestEdge = longestEdgeLength(pts)
                 switch measureTarget {
                 case .point:
-                    metricCard("取点", hasPtr ? "X\(ncf(ptrX))  Y\(ncf(ptrY))" : "未取点")
-                    metricCard("所在面", "工件顶面 Z0")
+                    if let p = pickedPoint {
+                        metricCard("拾取点", "X\(ncf(p.x))  Y\(ncf(p.y))  Z\(ncf(p.z))")
+                        metricCard("到原点", "\(ncf(hypot(hypot(p.x, p.y), p.z))) mm")
+                    } else {
+                        metricCard("取点", hasPtr ? "X\(ncf(ptrX))  Y\(ncf(ptrY))" : "未取点")
+                        metricCard("提示", "打开测量后点模型上的边/面/孔")
+                    }
                 case .edge:
+                    if let e = pickedEdges.first {
+                        metricCard("边1 长度", "\(ncf(edgeLength(e))) mm")
+                        metricCard("边1 端点", "(\(ncf(Double(e.a.x))),\(ncf(Double(e.a.y))),\(ncf(e.z))) → (\(ncf(Double(e.b.x))),\(ncf(Double(e.b.y))),\(ncf(e.z)))")
+                    }
+                    if pickedEdges.count > 1 {
+                        metricCard("边2 长度", "\(ncf(edgeLength(pickedEdges[1]))) mm")
+                        metricCard("两边中点距离", "\(ncf(edgeGap(pickedEdges[0], pickedEdges[1]))) mm")
+                    } else if pickedEdges.count == 1 {
+                        metricCard("下一步", "再点一条边可测两条边中点距离")
+                    }
                     metricCard("外轮廓边数", "\(pts.count) 段")
                     metricCard("最长边", "\(ncf(longestEdge)) mm")
                 case .face:
+                    if let f = pickedFace {
+                        metricCard("拾取面", f.name)
+                        metricCard("所在 Z", "Z\(ncf(f.z))")
+                        metricCard("该面面积", "\(ncf(f.area)) mm²")
+                    } else {
+                        metricCard("提示", "点在外轮廓或台阶顶面内部")
+                    }
                     metricCard("顶面面积", "\(ncf(partProjectedArea)) mm²")
                     metricCard("外形面积", "\(ncf(outerSurfaceArea)) mm²")
                 case .body:
+                    if let h = pickedHole {
+                        metricCard("拾取孔/腔", h.name)
+                        metricCard("中心 / 顶面", "X\(ncf(h.x)) Y\(ncf(h.y)) Z\(ncf(h.z))")
+                        metricCard(h.isPocket ? "外形尺寸" : "直径", "\(ncf(h.dia)) mm")
+                        metricCard("深度", h.through ? "通孔 / 通腔" : "\(ncf(h.depth)) mm")
+                    } else if let f = pickedFace {
+                        metricCard("拾取面", "\(f.name) · Z\(ncf(f.z))")
+                        metricCard("面积", "\(ncf(f.area)) mm²")
+                    }
                     metricCard("体积", "\(ncf(partVolume)) mm³")
                     metricCard("重量", "\(ncf(partWeight)) g（\(material.rawValue)）")
                     metricCard("价格", "¥\(ncf(partPrice))")
@@ -3539,6 +3953,14 @@ struct StudioScreen: View {
                         }
                     }
                 case .compound:
+                    if let h = pickedHole {
+                        metricCard("拾取孔/腔", h.name)
+                        metricCard("中心 / 顶面", "X\(ncf(h.x)) Y\(ncf(h.y)) Z\(ncf(h.z))")
+                        metricCard(h.isPocket ? "外形尺寸" : "直径", "\(ncf(h.dia)) mm")
+                    } else if let f = pickedFace {
+                        metricCard("拾取面", "\(f.name) · Z\(ncf(f.z))")
+                        metricCard("面积", "\(ncf(f.area)) mm²")
+                    }
                     metricCard("体积", "\(ncf(partVolume)) mm³")
                     metricCard("重量", "\(ncf(partWeight)) g")
                     metricCard("价格", "¥\(ncf(partPrice))")
@@ -4438,6 +4860,40 @@ struct StudioScreen: View {
             ctx.draw(Text("\(ncf(Double(b.width))) × \(ncf(Double(b.height))) × \(ncf(PartProg.maxZ(spec) - PartProg.minZ(spec)))")
                         .font(.system(size: 9)).foregroundColor(.orange),
                      at: CGPoint(x: q.x, y: q.y - 13))
+        }
+
+        for e in pickedEdges {
+            let a = cam.p(Double(e.a.x), Double(e.a.y), e.z)
+            let b = cam.p(Double(e.b.x), Double(e.b.y), e.z)
+            ctx.stroke(Path { p in p.move(to: a); p.addLine(to: b) },
+                       with: .color(.blue), lineWidth: 3)
+            for q in [a, b] {
+                ctx.fill(Path(ellipseIn: CGRect(x: q.x - 4, y: q.y - 4, width: 8, height: 8)),
+                         with: .color(.blue))
+            }
+            ctx.draw(Text("边 \(ncf(edgeLength(e)))").font(.system(size: 9, weight: .semibold)).foregroundColor(.blue),
+                     at: CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 12))
+        }
+        if let f = pickedFace {
+            let q = cam.p(Double(f.center.x), Double(f.center.y), f.z)
+            ctx.stroke(Path(ellipseIn: CGRect(x: q.x - 9, y: q.y - 9, width: 18, height: 18)),
+                       with: .color(.blue), lineWidth: 2)
+            ctx.draw(Text(f.name).font(.system(size: 9, weight: .semibold)).foregroundColor(.blue),
+                     at: CGPoint(x: q.x, y: q.y - 20))
+        }
+        if let h = pickedHole {
+            let q = cam.p(h.x, h.y, h.z)
+            let edge = cam.p(h.x + h.dia / 2, h.y, h.z)
+            let r = max(5, abs(Double(edge.x - q.x)))
+            ctx.stroke(Path(ellipseIn: CGRect(x: q.x - r, y: q.y - r, width: r * 2, height: r * 2)),
+                       with: .color(.blue), lineWidth: 2)
+            ctx.draw(Text(h.name).font(.system(size: 9, weight: .semibold)).foregroundColor(.blue),
+                     at: CGPoint(x: q.x, y: q.y - 18))
+        }
+        if let p = pickedPoint {
+            let q = cam.p(p.x, p.y, p.z)
+            ctx.fill(Path(ellipseIn: CGRect(x: q.x - 4, y: q.y - 4, width: 8, height: 8)),
+                     with: .color(.blue))
         }
     }
 

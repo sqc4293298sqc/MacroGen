@@ -125,6 +125,29 @@ struct PartStep: Identifiable, Equatable {
     }
 }
 
+enum SketchConstraintKind: String, CaseIterable, Identifiable {
+    case horizontal = "水平（全部点）"
+    case vertical = "竖直（全部点）"
+    case coincident = "重合（首尾）"
+    case parallel = "平行"
+    case perpendicular = "垂直"
+    case equal = "等长（末两段）"
+    case tangent = "相切（末段圆弧）"
+    case midpoint = "中点"
+    case concentric = "同心（内轮廓）"
+    var id: String { rawValue }
+}
+
+struct SketchConstraint: Identifiable, Equatable {
+    var id = UUID()
+    var kind: SketchConstraintKind
+    var a: Int = 0
+    var b: Int = 0
+    var c: Int = 0
+    var d: Int = 0
+    var label: String { kind.rawValue }
+}
+
 struct PartSpec: Equatable {
     // 外形草图
     var template: ContourTemplate = .rect
@@ -145,6 +168,8 @@ struct PartSpec: Equatable {
 
     /// 基础拉伸之上的独立台阶；空数组就是旧的单实体 2.5D
     var steps: [PartStep] = []
+    /// 草图约束（关联节点索引；结构变化时清空）
+    var constraints: [SketchConstraint] = []
     /// 工序禁用：id 由 PartProg.opInfo 统一生成
     var disabledOps: Set<String> = []
 
