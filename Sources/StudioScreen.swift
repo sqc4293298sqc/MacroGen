@@ -111,7 +111,7 @@ struct StudioScreen: View {
     @State private var bodyHighlight = false
     @State private var drawingExportURL: URL?
     @State private var dxfExportURL: URL?
-    @State private var material: StudioMaterial = .abs
+    @State private var material: StudioMaterial = .aluminum
     @State private var toastText: String = ""
     @State private var showToast = false
     @State private var arrayCount = 6
@@ -548,7 +548,17 @@ struct StudioScreen: View {
     }
 
     private var studioBlue: Color { Color(red: 0.15, green: 0.35, blue: 0.86) }
-    private var bodyTint: Color { Color(red: 0.08, green: 0.56, blue: 0.46) }
+    private var bodyTint: Color { Color(red: 0.28, green: 0.33, blue: 0.39) }
+
+    /// 实体基色（RGB 0...1）：按当前材料给金属/塑料底色
+    private var metalBaseRGB: (Double, Double, Double) {
+        switch material {
+        case .aluminum: return (0.76, 0.80, 0.84)
+        case .steel:    return (0.52, 0.56, 0.60)
+        case .brass:    return (0.80, 0.64, 0.34)
+        case .abs:      return (0.86, 0.85, 0.81)
+        }
+    }
 
 
     // MARK: - 1 草图
@@ -4748,10 +4758,12 @@ struct StudioScreen: View {
                 metricCard("材料", material.rawValue)
                 metricCard("特征", "\(spec.innerLoops.count) 内轮廓 · \(spec.feats.count) 孔/型腔")
 
-                Picker("材料", selection: $material) {
+                Picker("材料 / 实体外观", selection: $material) {
                     ForEach(StudioMaterial.allCases) { m in Text(m.rawValue).tag(m) }
                 }
                 .pickerStyle(.menu)
+                Text("材料色同时用于建模实体着色；铝合金/钢/黄铜按金属明暗，ABS 按塑料。")
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
 
                 HStack {
                     Button(bodyHighlight ? "取消高亮实体" : "高亮实体") {
@@ -6048,27 +6060,72 @@ struct StudioScreen: View {
             return path
         }
 
+        func metalTone(_ k: Double, _ alpha: Double = 1) -> Color {
+            let t = max(0, min(1, k))
+            let b = metalBaseRGB
+            let f = 0.42 + 0.62 * t
+            return Color(red: min(1, b.0 * f),
+                         green: min(1, b.1 * f),
+                         blue: min(1, b.2 * f)).opacity(alpha)
+        }
+
+        /// 侧面朝光程度：外法向与固定光照方向点积，做出面与面之间的明暗差
+        func sideShade(_ a: CGPoint, _ b: CGPoint,
+                       centroid: (Double, Double)) -> Double {
+            let dx = Double(b.x - a.x), dy = Double(b.y - a.y)
+            let len = max(hypot(dx, dy), 0.0001)
+            var nx = -dy / len, ny = dx / len
+            let mx = (Double(a.x) + Double(b.x)) / 2
+            let my = (Double(a.y) + Double(b.y)) / 2
+            if nx * (mx - centroid.0) + ny * (my - centroid.1) < 0 {
+                nx = -nx; ny = -ny
+            }
+            let light = nx * 0.38 - ny * 0.46 + 0.08
+            return max(0.40, min(0.96, 0.56 + light * 0.58))
+        }
+
         func prism(_ ring: [CGPoint], zTop: Double, zBottom: Double,
-                   tint: Color, alpha: Double, dashed: Bool = false) {
+                   tint: Color, alpha: Double, dashed: Bool = false,
+                   metal: Bool = false) {
             guard ring.count > 2 else { return }
             let top = ringPath(ring, zTop)
             let bottom = ringPath(ring, zBottom)
-            ctx.fill(bottom, with: .color(tint.opacity(alpha * 0.45)))
-            ctx.stroke(bottom, with: .color(tint.opacity(alpha + 0.25)), lineWidth: 1)
-            for i in ring.indices {
-                let a = ring[i], b = ring[(i + 1) % ring.count]
-                var side = Path()
-                side.move(to: cam.p(Double(a.x), Double(a.y), zTop))
-                side.addLine(to: cam.p(Double(b.x), Double(b.y), zTop))
-                side.addLine(to: cam.p(Double(b.x), Double(b.y), zBottom))
-                side.addLine(to: cam.p(Double(a.x), Double(a.y), zBottom))
-                side.closeSubpath()
-                ctx.fill(side, with: .color(tint.opacity(alpha * 0.55)))
+            if metal {
+                let cx = ring.reduce(0.0) { $0 + Double($1.x) } / Double(ring.count)
+                let cy = ring.reduce(0.0) { $0 + Double($1.y) } / Double(ring.count)
+                ctx.fill(bottom, with: .color(metalTone(0.26)))
+                ctx.stroke(bottom, with: .color(metalTone(0.22)), lineWidth: 1)
+                for i in ring.indices {
+                    let a = ring[i], b = ring[(i + 1) % ring.count]
+                    var side = Path()
+                    side.move(to: cam.p(Double(a.x), Double(a.y), zTop))
+                    side.addLine(to: cam.p(Double(b.x), Double(b.y), zTop))
+                    side.addLine(to: cam.p(Double(b.x), Double(b.y), zBottom))
+                    side.addLine(to: cam.p(Double(a.x), Double(a.y), zBottom))
+                    side.closeSubpath()
+                    let shade = sideShade(a, b, centroid: (cx, cy))
+                    ctx.fill(side, with: .color(metalTone(shade)))
+                }
+                ctx.fill(top, with: .color(metalTone(1.0)))
+                ctx.stroke(top, with: .color(metalTone(0.30)), lineWidth: 1.2)
+            } else {
+                ctx.fill(bottom, with: .color(tint.opacity(alpha * 0.45)))
+                ctx.stroke(bottom, with: .color(tint.opacity(alpha + 0.25)), lineWidth: 1)
+                for i in ring.indices {
+                    let a = ring[i], b = ring[(i + 1) % ring.count]
+                    var side = Path()
+                    side.move(to: cam.p(Double(a.x), Double(a.y), zTop))
+                    side.addLine(to: cam.p(Double(b.x), Double(b.y), zTop))
+                    side.addLine(to: cam.p(Double(b.x), Double(b.y), zBottom))
+                    side.addLine(to: cam.p(Double(a.x), Double(a.y), zBottom))
+                    side.closeSubpath()
+                    ctx.fill(side, with: .color(tint.opacity(alpha * 0.55)))
+                }
+                ctx.fill(top, with: .color(tint.opacity(alpha)))
+                ctx.stroke(top, with: .color(tint),
+                           style: StrokeStyle(lineWidth: dashed ? 1.4 : 2,
+                                              dash: dashed ? [4, 3] : []))
             }
-            ctx.fill(top, with: .color(tint.opacity(alpha)))
-            ctx.stroke(top, with: .color(tint),
-                       style: StrokeStyle(lineWidth: dashed ? 1.4 : 2,
-                                          dash: dashed ? [4, 3] : []))
         }
 
         func selectedMarker(_ f: PartFeat, radius: Double, z: Double = 0) {
@@ -6081,8 +6138,73 @@ struct StudioScreen: View {
             }, with: .color(studioBlue), lineWidth: 1.2)
         }
 
+        if spec.showStock {
+            let sb = PartProg.stockBBox(spec)
+            let sz = PartProg.stockZRange(spec)
+            let ring = [CGPoint(x: sb.minX, y: sb.minY), CGPoint(x: sb.maxX, y: sb.minY),
+                        CGPoint(x: sb.maxX, y: sb.maxY), CGPoint(x: sb.minX, y: sb.maxY)]
+            if let (st, sbot) = clipZ(sz.top, sz.bottom) {
+                prism(ring, zTop: st, zBottom: sbot,
+                      tint: Color(white: 0.45), alpha: 0.035, dashed: true)
+                let q = cam.p(Double(sb.minX), Double(sb.maxY), st)
+                ctx.draw(Text("毛坯 \(ncf(Double(sb.width)))×\(ncf(Double(sb.height)))")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.secondary),
+                         at: CGPoint(x: q.x + 6, y: q.y - 8))
+            }
+        }
+
+        if let (baseTop, baseBottom) = clipZ(0, -depth) {
+            let bottom = ringPath(baseBottom)
+            ctx.stroke(bottom, with: .color(metalTone(0.24)), lineWidth: 1)
+            let baseCx = pts.reduce(0.0) { $0 + Double($1.x) } / Double(pts.count)
+            let baseCy = pts.reduce(0.0) { $0 + Double($1.y) } / Double(pts.count)
+
+            for i in pts.indices {
+                let a = pts[i], b = pts[(i + 1) % pts.count]
+                var side = Path()
+                side.move(to: cam.p(a.x, a.y, baseTop))
+                side.addLine(to: cam.p(b.x, b.y, baseTop))
+                side.addLine(to: cam.p(b.x, b.y, baseBottom))
+                side.addLine(to: cam.p(a.x, a.y, baseBottom))
+                side.closeSubpath()
+                let shade = sideShade(a, b, centroid: (baseCx, baseCy))
+                ctx.fill(side, with: .color(metalTone(shade)))
+            }
+
+            let layers = max(1, Int(ceil((baseTop - baseBottom) / max(spec.stepDown, 0.1))))
+            if layers > 1 {
+                for i in 1..<layers {
+                    let z = max(baseBottom, baseTop - Double(i) * spec.stepDown)
+                    ctx.stroke(ringPath(z), with: .color(metalTone(0.38, 0.45)), lineWidth: 0.7)
+                }
+            }
+            for i in Swift.stride(from: 0, to: pts.count, by: max(1, pts.count / 30)) {
+                let q = pts[i]
+                ctx.stroke(Path { p in
+                    p.move(to: cam.p(q.x, q.y, baseTop))
+                    p.addLine(to: cam.p(q.x, q.y, baseBottom))
+                }, with: .color(metalTone(0.30, 0.75)), lineWidth: 0.8)
+            }
+
+            ctx.fill(ringPath(baseTop), with: .color(metalTone(1.0)))
+            ctx.stroke(ringPath(baseTop), with: .color(metalTone(0.25)), lineWidth: 1.2)
+
+            if bodyHighlight {
+                ctx.fill(ringPath(baseTop), with: .color(Color.yellow.opacity(0.14)))
+                ctx.stroke(ringPath(baseTop), with: .color(Color.yellow.opacity(0.95)), lineWidth: 4)
+            }
+
+            if showZCut {
+                ctx.fill(bottom, with: .color(Color.orange.opacity(0.42)))
+                ctx.stroke(bottom, with: .color(.orange), lineWidth: 2)
+            } else {
+                ctx.fill(bottom, with: .color(metalTone(0.30)))
+            }
+        }
+
         // 建模页参考网格：让“显示”里的网格步距有真实反馈
-        if showModelGrid, gridStep > 0.01 {
+        if showModelGrid, gridStep > 0.01, !showZCut {
             let b = PartProg.bbox(spec)
             let step = gridStep
             let x0 = floor(Double(b.minX) / step) * step
@@ -6109,68 +6231,6 @@ struct StudioScreen: View {
             }
         }
 
-        if spec.showStock {
-            let sb = PartProg.stockBBox(spec)
-            let sz = PartProg.stockZRange(spec)
-            let ring = [CGPoint(x: sb.minX, y: sb.minY), CGPoint(x: sb.maxX, y: sb.minY),
-                        CGPoint(x: sb.maxX, y: sb.maxY), CGPoint(x: sb.minX, y: sb.maxY)]
-            if let (st, sbot) = clipZ(sz.top, sz.bottom) {
-                prism(ring, zTop: st, zBottom: sbot,
-                      tint: Color(white: 0.45), alpha: 0.035, dashed: true)
-                let q = cam.p(Double(sb.minX), Double(sb.maxY), st)
-                ctx.draw(Text("毛坯 \(ncf(Double(sb.width)))×\(ncf(Double(sb.height)))")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.secondary),
-                         at: CGPoint(x: q.x + 6, y: q.y - 8))
-            }
-        }
-
-        if let (baseTop, baseBottom) = clipZ(0, -depth) {
-            let bottom = ringPath(baseBottom)
-            ctx.stroke(bottom, with: .color(bodyTint.opacity(0.55)), lineWidth: 1)
-
-            for i in pts.indices {
-                let a = pts[i], b = pts[(i + 1) % pts.count]
-                var side = Path()
-                side.move(to: cam.p(a.x, a.y, baseTop))
-                side.addLine(to: cam.p(b.x, b.y, baseTop))
-                side.addLine(to: cam.p(b.x, b.y, baseBottom))
-                side.addLine(to: cam.p(a.x, a.y, baseBottom))
-                side.closeSubpath()
-                ctx.fill(side, with: .color(bodyTint.opacity(0.16)))
-            }
-
-            let layers = max(1, Int(ceil((baseTop - baseBottom) / max(spec.stepDown, 0.1))))
-            if layers > 1 {
-                for i in 1..<layers {
-                    let z = max(baseBottom, baseTop - Double(i) * spec.stepDown)
-                    ctx.stroke(ringPath(z), with: .color(bodyTint.opacity(0.22)), lineWidth: 0.7)
-                }
-            }
-            for i in Swift.stride(from: 0, to: pts.count, by: max(1, pts.count / 30)) {
-                let q = pts[i]
-                ctx.stroke(Path { p in
-                    p.move(to: cam.p(q.x, q.y, baseTop))
-                    p.addLine(to: cam.p(q.x, q.y, baseBottom))
-                }, with: .color(bodyTint.opacity(0.35)), lineWidth: 0.8)
-            }
-
-            ctx.fill(ringPath(baseTop), with: .color(bodyTint.opacity(0.30)))
-            ctx.stroke(ringPath(baseTop), with: .color(bodyTint), lineWidth: 2)
-
-            if bodyHighlight {
-                ctx.fill(ringPath(baseTop), with: .color(Color.yellow.opacity(0.14)))
-                ctx.stroke(ringPath(baseTop), with: .color(Color.yellow.opacity(0.95)), lineWidth: 4)
-            }
-
-            if showZCut {
-                ctx.fill(bottom, with: .color(Color.orange.opacity(0.42)))
-                ctx.stroke(bottom, with: .color(.orange), lineWidth: 2)
-            } else {
-                ctx.fill(bottom, with: .color(bodyTint.opacity(0.14)))
-            }
-        }
-
         // 多台阶：基础体之上按各自的 Z 画独立棱柱；除料层用红色虚线
         for s in spec.steps.sorted(by: { $0.z0 < $1.z0 })
             where bodyVisible && !hiddenTreeIDs.contains("extrude") && !hiddenTreeIDs.contains("step-\(s.id.uuidString)") {
@@ -6181,7 +6241,7 @@ struct StudioScreen: View {
             guard let (vt, vb) = clipZ(top, bottom) else { continue }
             if s.mode == .add {
                 prism(sp, zTop: vt, zBottom: vb,
-                      tint: bodyTint, alpha: 0.20)
+                      tint: bodyTint, alpha: 0.20, metal: true)
             } else {
                 prism(sp, zTop: vt, zBottom: vb,
                       tint: Color.red, alpha: 0.13, dashed: true)
