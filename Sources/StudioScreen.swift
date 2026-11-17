@@ -579,7 +579,11 @@ struct StudioScreen: View {
             HStack(alignment: .top, spacing: 0) {
                 sketchLeftRail
                 Spacer(minLength: 0)
-                sketchConstraintRail
+                if selectedSegIndex != nil || constraintPickMode || sketchSidePanel == .dim || sketchSidePanel == .angle {
+                    sketchConstraintRail
+                } else {
+                    sketchConstraintHintPill
+                }
             }
             .padding(.horizontal, 8)
             .padding(.top, 8)
@@ -617,21 +621,8 @@ struct StudioScreen: View {
                 railButton("矩形", "rectangle", active: sketchTool == "矩形") { selectSketchTool("矩形") }
                 railButton("圆", "circle", active: sketchTool == "圆") { selectSketchTool("圆") }
                 railButton("圆弧", "arrow.turn.up.left", active: sketchTool == "圆弧") { selectSketchTool("圆弧") }
-                railButton("样条", "scribble", active: false) { selectSketchTool("样条曲线") }
-                railButton("多边形", "hexagon", active: false) { selectSketchTool("多边形") }
-                railButton("椭圆", "oval", active: false) { selectSketchTool("椭圆") }
 
                 Divider().padding(.vertical, 2)
-                railButton("线阵", "square.grid.3x1.folder.badge.plus", active: false) { arrayInner() }
-                railButton("圆阵", "circle.grid.cross", active: false) { circularArrayInner() }
-                railButton("镜像", "arrow.left.and.right", active: false) { requestEditTool("镜像") }
-
-                Divider().padding(.vertical, 2)
-                railButton("修剪", "scissors", active: false) { requestEditTool("修剪") }
-                railButton("延伸", "arrow.up.right", active: false) { requestEditTool("延伸") }
-                railButton("圆角", "square.bottomleft", active: false) { requestEditTool("圆角") }
-                railButton("倒角", "square.topright", active: false) { requestEditTool("倒角") }
-
                 railButton("更多", "square.grid.2x2", active: sketchSidePanel == .tools) {
                     sketchSidePanel = sketchSidePanel == .tools ? .none : .tools
                 }
@@ -640,10 +631,30 @@ struct StudioScreen: View {
             .padding(.horizontal, 4)
         }
         .frame(width: 62)
-        .frame(maxHeight: 560)
+        .frame(maxHeight: 430)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 132))
         .overlay(RoundedRectangle(cornerRadius: 132).stroke(Color.white.opacity(0.85), lineWidth: 1))
         .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
+    }
+
+    private var sketchConstraintHintPill: some View {
+        Button {
+            constraintPickMode = true
+            showToastView("先点一条线段；右侧约束栏会出现")
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: "pin")
+                    .font(.system(size: 16, weight: .semibold))
+                Text("约束")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundStyle(studioBlue)
+            .frame(width: 46, height: 70)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+            .overlay(RoundedRectangle(cornerRadius: 24).stroke(Color.white.opacity(0.85), lineWidth: 1))
+            .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
+        }
+        .buttonStyle(.plain)
     }
 
     private var sketchConstraintRail: some View {
@@ -774,7 +785,7 @@ struct StudioScreen: View {
                 .foregroundColor(selectedSegIndex == nil ? Color.secondary : studioBlue)
 
             Button { step = 1 } label: {
-                Label("完成", systemImage: "checkmark")
+                Label("完成草图", systemImage: "checkmark")
                     .font(.system(size: 12, weight: .bold))
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .background(Capsule().fill(studioBlue))
@@ -3480,8 +3491,9 @@ struct StudioScreen: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
 
-            VStack {
+            VStack(spacing: 6) {
                 Spacer()
+                modelQuickBar
                 modelBottomBar
             }
 
@@ -3621,6 +3633,65 @@ struct StudioScreen: View {
         .clipShape(RoundedRectangle(cornerRadius: 5))
         .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.white.opacity(0.9), lineWidth: 0.8))
         .shadow(color: .black.opacity(0.12), radius: 6, y: 3)
+    }
+
+    private var modelQuickBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                quickModelButton("方凸台", "square") {
+                    addPrimitiveStep(.rect, mode: .add)
+                }
+                quickModelButton("圆凸台", "circle") {
+                    addPrimitiveStep(.circle, mode: .add)
+                }
+                quickModelButton("方型腔", "square.dashed") {
+                    addPrimitiveStep(.rect, mode: .cut)
+                }
+                quickModelButton("圆型腔", "circle.dashed") {
+                    addPrimitiveStep(.circle, mode: .cut)
+                }
+                quickModelButton("异形", "scribble") {
+                    addFreeformStep()
+                }
+                Menu {
+                    Button("方板 120×80×20") { applyStarterTemplate(.rect) }
+                    Button("圆板 Ø100×20") { applyStarterTemplate(.circle) }
+                    Button("方板 + 圆凸台") { applyStarterTemplate(.rect, withCircleBoss: true) }
+                    Button("圆板 + 方凸台") { applyStarterTemplate(.circle, withRectBoss: true) }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "square.grid.2x2")
+                        Text("模板")
+                    }
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(studioBlue)
+                    .padding(.horizontal, 10)
+                    .frame(height: 34)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(studioBlue.opacity(0.10)))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 8)
+        }
+        .padding(.vertical, 3)
+    }
+
+    private func quickModelButton(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 9)
+            .frame(height: 34)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.88)))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.06), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
     }
 
     private var modelBottomBar: some View {
@@ -4134,6 +4205,75 @@ struct StudioScreen: View {
             : (template == .circle ? "圆型腔" : "方型腔")
         spec.steps.append(s)
         showToastView("已加\(s.name)：Z\(ncf(s.drawBottom))~\(ncf(s.drawTop))，可在这一行改尺寸/中心")
+    }
+
+    /// 直接加一个自由轮廓凸台，落点后马上进入“点模型画异形”模式
+    private func addFreeformStep() {
+        pushUndo()
+        var s = PartStep()
+        s.mode = .add
+        s.height = 5
+        s.z0 = topAddZ
+        s.name = "异形凸台"
+        s.shape = PartShape()
+        s.shape.template = .free
+        s.shape.nodes = []
+        s.shape.cx = hasPtr ? ptrX : 0
+        s.shape.cy = hasPtr ? ptrY : 0
+        spec.steps.append(s)
+        stepShapeEditBackup = s.shape
+        stepShapeEditID = s.id
+        step = 1
+        modelPanel = .none
+        showToastView("异形模式：在模型顶面依次点轮廓点，至少 3 点")
+    }
+
+    /// 一键铺一个可继续编辑的基础板，避免每次从空网格开始
+    private func applyStarterTemplate(_ template: ContourTemplate,
+                                      withCircleBoss: Bool = false,
+                                      withRectBoss: Bool = false) {
+        pushUndo()
+        spec.template = template
+        spec.nodes = []
+        spec.innerLoops = []
+        spec.feats = []
+        spec.steps = []
+        spec.height = 20
+        if template == .rect {
+            spec.rectL = 120
+            spec.rectW = 80
+            spec.rectR = 0
+        } else {
+            spec.circleD = 100
+        }
+        if withCircleBoss {
+            var s = PartStep()
+            s.name = "圆凸台"
+            s.mode = .add
+            s.z0 = 0
+            s.height = 6
+            s.shape.template = .circle
+            s.shape.circleD = 40
+            s.shape.cx = 0
+            s.shape.cy = 0
+            spec.steps.append(s)
+        }
+        if withRectBoss {
+            var s = PartStep()
+            s.name = "方凸台"
+            s.mode = .add
+            s.z0 = 0
+            s.height = 6
+            s.shape.template = .rect
+            s.shape.rectL = 50
+            s.shape.rectW = 30
+            s.shape.rectR = 4
+            s.shape.cx = 0
+            s.shape.cy = 0
+            spec.steps.append(s)
+        }
+        modelPanel = .steps
+        showToastView("已铺\(template.rawValue)基础板；可继续点“方/圆凸台”往上加")
     }
 
     /// 凸台阵列：以当前层为种子复制，不改变原层
@@ -6836,8 +6976,110 @@ struct StudioScreen: View {
         showToastView("工序已恢复自动顺序")
     }
 
+    private var camOverviewCard: some View {
+        let ops = PartProg.ops(spec)
+        let cutLen = cam2DPaths.filter { $0.cut }.reduce(0) { $0 + $1.len }
+        let rapidLen = cam2DPaths.filter { !$0.cut }.reduce(0) { $0 + $1.len }
+        let minutes = cutLen / Double(max(spec.feed, 1)) + rapidLen / 5000
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("程序概览")
+                        .font(.system(size: 15, weight: .bold))
+                    Text("先看刀路，再生成程序；参数还在下面逐项可改")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { generateProgram() } label: {
+                    Label("生成程序", systemImage: "function")
+                        .font(.system(size: 12, weight: .bold))
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 8)
+                        .background(Capsule().fill(studioBlue))
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+            }
+
+            HStack(spacing: 6) {
+                camMetric("工序", "\(ops.count)", "道")
+                camMetric("切削", ncf(cutLen), "mm")
+                camMetric("快移", ncf(rapidLen), "mm")
+                camMetric("估算", camDuration(minutes), "")
+            }
+
+            let issues = PartProg.issues(spec)
+            if issues.isEmpty {
+                Label("没有发现明显问题，可以先生成看刀路", systemImage: "checkmark.seal")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(.green)
+            } else {
+                Label("有 \(issues.count) 条检查项，先看下面的“检查”", systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(.orange)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(studioBlue.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(studioBlue.opacity(0.16), lineWidth: 1)
+        )
+    }
+
+    private func camMetric(_ title: String, _ value: String, _ unit: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 8.5))
+                .foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text(value)
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .foregroundStyle(.primary)
+                if !unit.isEmpty {
+                    Text(unit)
+                        .font(.system(size: 8.5))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(0.8)))
+    }
+
+    private func camDuration(_ minutes: Double) -> String {
+        let total = max(0, Int((minutes * 60).rounded()))
+        return "\(total / 60)m\(total % 60)s"
+    }
+
+    private func generateProgram() {
+        var validCache: [String: String] = [:]
+        var expiredIDs: [String] = []
+        for (id, text) in opCodeCache {
+            if opCacheSpecs[id] == spec { validCache[id] = text }
+            else { expiredIDs.append(id) }
+        }
+        code = PartProg.build(spec, prebuilt: validCache)
+        opGenerated = true
+        for id in expiredIDs {
+            opCodeCache.removeValue(forKey: id)
+            opCacheSpecs.removeValue(forKey: id)
+        }
+        showResult = true
+    }
+
     private var camPage: some View {
         Group {
+            Section {
+                camOverviewCard
+            }
+
             Section("2D 刀路检查") {
                 cam2DPanel
             }
@@ -7113,19 +7355,7 @@ struct StudioScreen: View {
 
             Section {
                 Button {
-                    var validCache: [String: String] = [:]
-                    var expiredIDs: [String] = []
-                    for (id, text) in opCodeCache {
-                        if opCacheSpecs[id] == spec { validCache[id] = text }
-                        else { expiredIDs.append(id) }
-                    }
-                    code = PartProg.build(spec, prebuilt: validCache)
-                    opGenerated = true
-                    for id in expiredIDs {
-                        opCodeCache.removeValue(forKey: id)
-                        opCacheSpecs.removeValue(forKey: id)
-                    }
-                    showResult = true
+                    generateProgram()
                 } label: {
                     HStack {
                         Spacer()
