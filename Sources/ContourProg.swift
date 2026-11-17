@@ -50,6 +50,7 @@ struct DrawSpec {
     var rpm: Double = 2000
     var safeZ: Double = 50
     var hNo: Int = 13
+    var coord: Int = 54          // G54~G59
     var outward: Bool = true      // true 外形（刀在轮廓外） / false 内腔（刀在轮廓内）
     var leadR: Double = 0         // 0 = 自动取 刀径/2 + 2
     var zTop: Double = 0          // 这一层的顶面 Z；基础层为 0，台阶层为正
@@ -308,7 +309,7 @@ enum ContourProg {
         L.append("( \(s.outward ? "外形, 刀在轮廓外" : "内腔, 刀在轮廓内")  \(ccw ? "逆时针" : "顺时针") 走向 )")
         L.append("( 刀Ø\(ncf(s.toolDia))  深\(ncf(s.depth))  每层\(ncf(s.stepDown))  层数\(layers) )")
         L.append("( 起点 X\(ncf(p0.x)) Y\(ncf(p0.y))  半圆进刀R\(ncf(lead)) )")
-        L.append("G17 G21 G40 G49 G80 G90 G54")
+        L.append("G17 G21 G40 G49 G80 G90 G\(s.coord)")
         L.append("( X0 Y0 就是 G54 零点, 不对刀不用改 )")
         L.append("G43 H\(s.hNo) Z\(ncf(s.safeZ + s.zTop, 1))")
         L.append("M3 S\(Int(s.rpm))")

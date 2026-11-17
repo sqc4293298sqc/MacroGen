@@ -111,6 +111,9 @@ struct PartStep: Identifiable, Equatable {
     var mode: PartStepMode = .add
     var colorIndex: Int = 1
     var z1: Double { z0 + height }
+    /// 建模/标注用的上下表面：增料向上加，除料从 z0 向下挖
+    var drawTop: Double { mode == .add ? z1 : z0 }
+    var drawBottom: Double { mode == .add ? z0 : z0 - height }
 
     init() {}
 
@@ -244,6 +247,7 @@ enum PartProg {
         d.rpm = Double(p.spindle)
         d.safeZ = p.safeZ
         d.hNo = hNo
+        d.coord = p.coord
         d.outward = outward
         d.zTop = zTop
         return d
@@ -268,6 +272,7 @@ enum PartProg {
         d.rpm = Double(p.spindle)
         d.safeZ = p.safeZ
         d.hNo = hNo
+        d.coord = p.coord
         d.outward = false
         return d
     }
@@ -291,12 +296,12 @@ enum PartProg {
 
     /// 台阶最高点（基础顶面是 0）
     static func maxZ(_ p: PartSpec) -> Double {
-        max(0, p.steps.map(\.z1).max() ?? 0)
+        max(0, p.steps.map(\.drawTop).max() ?? 0)
     }
 
     /// 零件最低点（基础底面是 -height）
     static func minZ(_ p: PartSpec) -> Double {
-        min(-p.height, p.steps.map(\.z0).min() ?? -p.height)
+        min(-p.height, p.steps.map(\.drawBottom).min() ?? -p.height)
     }
 
     /// 按工件原点平移整件：让设定的 X0Y0 点变成程序里的 0,0
@@ -366,7 +371,7 @@ enum PartProg {
                 id: id, title: s.name, kind: s.mode == .add ? "台阶轮廓铣" : "除料台阶",
                 geometry: "\(s.mode.rawValue) \(s.shape.summary)",
                 tool: p.contourTool, dia: p.contourDia, spindle: p.spindle, feed: p.feed,
-                zRange: "Z\(ncf(s.z1)) → Z\(ncf(s.z0))",
+                zRange: "Z\(ncf(s.drawTop)) → Z\(ncf(s.drawBottom))",
                 status: status(id, fallback: s.mode == .add ? .ready : .modelOnly)))
         }
         for f in p.feats {
@@ -526,6 +531,7 @@ enum PartProg {
             s.toolDia = p.faceDia
             s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ
             s.hNo = p.faceTool
+            s.coord = p.coord
             addSegs(ToolpathEngine.build(s), dx: Double(b.midX), dy: Double(b.midY))
         }
 
@@ -552,6 +558,7 @@ enum PartProg {
                 s.stepDown = p.stepDown
                 s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = maxZ(p)
                 s.hNo = p.holeTool
+                s.coord = p.coord
                 addSegs(ToolpathEngine.build(s), dx: f.x, dy: f.y)
             } else if f.kind == .rectPocket && p.doPocket {
                 var s = PocketSpec()
@@ -561,6 +568,7 @@ enum PartProg {
                 s.toolDia = p.pocketDia
                 s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ
                 s.hNo = p.pocketTool
+                s.coord = p.coord
                 addSegs(ToolpathEngine.build(s), dx: f.x, dy: f.y)
             } else if p.doPocket {
                 var s = PocketSpec()
@@ -570,6 +578,7 @@ enum PartProg {
                 s.depth = f.depth; s.stepDown = p.stepDown
                 s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ
                 s.hNo = p.pocketTool
+                s.coord = p.coord
                 addSegs(ToolpathEngine.build(s), dx: f.x, dy: f.y)
             }
         }
@@ -586,6 +595,7 @@ enum PartProg {
                 s.stepDown = p.stepDown
                 s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = maxZ(p)
                 s.hNo = p.holeTool
+                s.coord = p.coord
                 addSegs(ToolpathEngine.build(s), dx: l.cx, dy: l.cy)
             } else if p.doPocket {
                 let pts = loopPoints(l).map { CGPoint(x: $0.x + CGFloat(l.cx), y: $0.y + CGFloat(l.cy)) }
@@ -683,6 +693,7 @@ enum PartProg {
             s.feed = p.feed
             s.safeZ = p.safeZ
             s.hNo = p.faceTool
+            s.coord = p.coord
             s.cx = Double(b.midX)
             s.cy = Double(b.midY)
             add("顶面 平面铣 T\(p.faceTool) D\(ncf(p.faceDia))", p.faceTool, GCodeGenerator.generate(s))
@@ -719,6 +730,7 @@ enum PartProg {
                     s.feed = p.feed
                     s.safeZ = p.safeZ; s.zTop = maxZ(p)
                     s.hNo = p.holeTool
+                s.coord = p.coord
                     s.cx = f.x
                     s.cy = f.y
                     add("孔 Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) 螺旋铣 T\(p.holeTool) D\(ncf(p.holeDia))",
@@ -769,6 +781,7 @@ enum PartProg {
                     s.feed = p.feed
                     s.safeZ = p.safeZ; s.zTop = maxZ(p)
                     s.hNo = p.holeTool
+                s.coord = p.coord
                     s.cx = l.cx
                     s.cy = l.cy
                     add("\(l.name) Ø\(ncf(l.circleD)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 螺旋铣 T\(p.holeTool) D\(ncf(p.holeDia))",

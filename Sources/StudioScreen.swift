@@ -2596,7 +2596,7 @@ struct StudioScreen: View {
                 id: "step-\(s.id.uuidString)", index: out.count + 1,
                 title: s.name.isEmpty ? "台阶 \(i + 1)" : s.name,
                 icon: "square.stack.3d.up",
-                detail: "\(s.mode.rawValue) \(s.shape.summary) · Z\(ncf(s.z0))~Z\(ncf(s.z1))",
+                detail: "\(s.mode.rawValue) \(s.shape.summary) · Z\(ncf(s.drawBottom))~Z\(ncf(s.drawTop))",
                 canMove: true, canDelete: true))
         }
         for (i, l) in spec.innerLoops.enumerated() {
@@ -2854,9 +2854,9 @@ struct StudioScreen: View {
                             .buttonStyle(.plain)
                         }
                         HStack(spacing: 6) {
-                            miniNum("底 Z", $s.z0)
+                            miniNum(s.mode == .add ? "底 Z" : "顶 Z", $s.z0)
                             miniNum("厚", $s.height)
-                            Text("顶 Z \(ncf(s.z1))")
+                            Text("Z \(ncf(s.drawBottom))~\(ncf(s.drawTop))")
                                 .font(.system(size: 9)).foregroundStyle(.secondary)
                         }
                         Picker("轮廓", selection: $s.shape.template) {
@@ -2953,7 +2953,7 @@ struct StudioScreen: View {
 
                 Divider()
 
-                metricCard("外形尺寸", "\(ncf(Double(partBBox.width))) × \(ncf(Double(partBBox.height))) × \(ncf(spec.height)) mm")
+                metricCard("外形尺寸", "\(ncf(Double(partBBox.width))) × \(ncf(Double(partBBox.height))) × \(ncf(PartProg.maxZ(spec) - PartProg.minZ(spec))) mm")
                 metricCard("体积", "\(ncf(partVolume)) mm³")
                 metricCard("重量", "\(ncf(partWeight)) g（\(material.rawValue)）")
                 metricCard("材料", material.rawValue)
@@ -3080,7 +3080,7 @@ struct StudioScreen: View {
                     metricCard("价格", "¥\(ncf(partPrice))")
                     metricCard("包容体积", "\(ncf(partBBoxVolume)) mm³")
                     metricCard("顶面面积", "\(ncf(partProjectedArea)) mm²")
-                    metricCard("尺寸", "\(ncf(Double(partBBox.width))) × \(ncf(Double(partBBox.height))) × \(ncf(spec.height)) mm")
+                    metricCard("尺寸", "\(ncf(Double(partBBox.width))) × \(ncf(Double(partBBox.height))) × \(ncf(PartProg.maxZ(spec) - PartProg.minZ(spec))) mm")
                 }
                 Text("点=当前指针；边=外轮廓；面=顶面；体=整个实体；复合=体积+包容+面积。")
                     .font(.system(size: 10))
@@ -3209,8 +3209,17 @@ struct StudioScreen: View {
         return cut
     }
 
+    private var stepVolume: Double {
+        var v = 0.0
+        for s in spec.steps {
+            let a = abs(ContourGeo.signedArea(PartProg.shapePoints(s.shape, spec)))
+            v += (s.mode == .add ? 1 : -1) * a * max(s.height, 0)
+        }
+        return v
+    }
+
     private var partVolume: Double {
-        max(0, outerSurfaceArea * spec.height - cutVolume)
+        max(0, outerSurfaceArea * spec.height - cutVolume + stepVolume)
     }
 
     private var partWeight: Double { partVolume * material.density / 1000 }
@@ -3218,7 +3227,8 @@ struct StudioScreen: View {
     private var partPrice: Double { partWeight / 1000 * material.pricePerKg }
 
     private var partBBoxVolume: Double {
-        Double(partBBox.width) * Double(partBBox.height) * spec.height
+        Double(partBBox.width) * Double(partBBox.height)
+            * max(0, PartProg.maxZ(spec) - PartProg.minZ(spec))
     }
 
     private var partProjectedArea: Double {
@@ -3529,20 +3539,20 @@ struct StudioScreen: View {
 
         // 多台阶：基础体之上按各自的 Z 画独立棱柱；除料层用红色虚线
         for s in spec.steps.sorted(by: { $0.z0 < $1.z0 })
-            where !hiddenTreeIDs.contains("step-\(s.id.uuidString)") {
+            where bodyVisible && !hiddenTreeIDs.contains("extrude") && !hiddenTreeIDs.contains("step-\(s.id.uuidString)") {
             let sp = PartProg.pts(s, spec)
             guard sp.count > 2 else { continue }
             if s.mode == .add {
                 prism(sp, zTop: s.z1, zBottom: s.z0,
                       tint: bodyTint, alpha: 0.20)
             } else {
-                prism(sp, zTop: s.z1, zBottom: s.z0,
+                prism(sp, zTop: s.drawTop, zBottom: s.drawBottom,
                       tint: Color.red, alpha: 0.13, dashed: true)
             }
             let cx = sp.reduce(0.0) { $0 + Double($1.x) } / Double(sp.count)
             let cy = sp.reduce(0.0) { $0 + Double($1.y) } / Double(sp.count)
-            let q = cam.p(cx, cy, s.z1)
-            ctx.draw(Text("\(s.name)  Z\(ncf(s.z0))~\(ncf(s.z1))")
+            let q = cam.p(cx, cy, s.drawTop)
+            ctx.draw(Text("\(s.name)  Z\(ncf(s.drawBottom))~\(ncf(s.drawTop))")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(s.mode == .add ? bodyTint : .red),
                      at: CGPoint(x: q.x, y: q.y - 11))
@@ -3803,7 +3813,7 @@ struct StudioScreen: View {
             let q = cam.p(Double(b.midX), Double(b.midY), 0)
             ctx.draw(Text("体积 \(ncf(partVolume)) mm³").font(.system(size: 10, weight: .semibold)).foregroundColor(.orange),
                      at: CGPoint(x: q.x, y: q.y - 26))
-            ctx.draw(Text("\(ncf(Double(b.width))) × \(ncf(Double(b.height))) × \(ncf(spec.height))")
+            ctx.draw(Text("\(ncf(Double(b.width))) × \(ncf(Double(b.height))) × \(ncf(PartProg.maxZ(spec) - PartProg.minZ(spec)))")
                         .font(.system(size: 9)).foregroundColor(.orange),
                      at: CGPoint(x: q.x, y: q.y - 13))
         }
@@ -3829,7 +3839,7 @@ struct StudioScreen: View {
             }
             Section("图纸信息") {
                 let b = PartProg.bbox(spec)
-                Text("外形 \(ncf(Double(b.width))) × \(ncf(Double(b.height))) × 厚 \(ncf(spec.height))")
+                Text("外形 \(ncf(Double(b.width))) × \(ncf(Double(b.height))) × 总高 \(ncf(PartProg.maxZ(spec) - PartProg.minZ(spec)))")
                 Text("孔 \(spec.feats.filter { $0.kind == .hole }.count) 个 · 型腔 \(spec.feats.filter { $0.kind != .hole }.count) 个")
                     .font(.caption).foregroundStyle(.secondary)
                 Text("尺寸按草图与特征自动标注，改建模参数这里会同步。")
@@ -3882,7 +3892,7 @@ struct StudioScreen: View {
             return
         }
         let b = PartProg.bbox(spec)
-        let name = "MacroGen-尺寸图-\(Int(Double(b.width)))x\(Int(Double(b.height)))x\(Int(spec.height)).png"
+        let name = "MacroGen-尺寸图-\(Int(Double(b.width)))x\(Int(Double(b.height)))x\(Int(PartProg.maxZ(spec) - PartProg.minZ(spec))).png"
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
         do {
             try data.write(to: url, options: .atomic)
@@ -3899,7 +3909,7 @@ struct StudioScreen: View {
         let pockets = spec.feats.filter { $0.kind != .hole }.count
         var lines: [String] = []
         lines.append("MacroGen 尺寸清单")
-        lines.append("外形 L×W×H = \(ncf(Double(b.width))) × \(ncf(Double(b.height))) × \(ncf(spec.height)) mm")
+        lines.append("外形 L×W×H = \(ncf(Double(b.width))) × \(ncf(Double(b.height))) × \(ncf(PartProg.maxZ(spec) - PartProg.minZ(spec))) mm")
         lines.append("孔 \(holes) 个，型腔 \(pockets) 个，草图内轮廓 \(spec.innerLoops.count) 个")
         for (i, f) in spec.feats.enumerated() {
             if f.kind == .rectPocket {
@@ -3928,6 +3938,22 @@ struct StudioScreen: View {
         if let f = pts.first { path.move(to: P(f.x, f.y)) }
         for q in pts.dropFirst() { path.addLine(to: P(q.x, q.y)) }
         ctx.stroke(path, with: .color(.orange), lineWidth: 2)
+
+        for s in spec.steps {
+            let sp = PartProg.shapePoints(s.shape, spec)
+            guard sp.count > 2 else { continue }
+            var spPath = Path()
+            if let f = sp.first { spPath.move(to: P(Double(f.x), Double(f.y))) }
+            for q in sp.dropFirst() { spPath.addLine(to: P(Double(q.x), Double(q.y))) }
+            spPath.closeSubpath()
+            ctx.stroke(spPath, with: .color(s.mode == .add ? .green : .red),
+                       style: StrokeStyle(lineWidth: 1.2, dash: s.mode == .cut ? [3, 2] : []))
+            let c = P(sp.reduce(0.0) { $0 + Double($1.x) } / Double(sp.count),
+                      sp.reduce(0.0) { $0 + Double($1.y) } / Double(sp.count))
+            ctx.draw(Text("\(s.name) Z\(ncf(s.drawBottom))~\(ncf(s.drawTop))")
+                        .font(.system(size: 8)).foregroundColor(s.mode == .add ? .green : .red),
+                     at: CGPoint(x: c.x, y: c.y - 10))
+        }
 
         for l in spec.innerLoops {
             let d = PartProg.drawForLoop(l, spec, depth: l.through ? spec.height + 1 : l.depth,
@@ -3979,7 +4005,7 @@ struct StudioScreen: View {
                 text: "长 \(ncf(Double(b.width)))")
         drawDim(ctx, from: P(Double(b.minX) - 8, Double(b.minY)), to: P(Double(b.minX) - 8, Double(b.maxY)),
                 text: "宽 \(ncf(Double(b.height)))")
-        ctx.draw(Text("厚度 \(ncf(spec.height))").font(.system(size: 10, weight: .medium)).foregroundColor(.blue),
+        ctx.draw(Text("总高 \(ncf(PartProg.maxZ(spec) - PartProg.minZ(spec)))").font(.system(size: 10, weight: .medium)).foregroundColor(.blue),
                  at: CGPoint(x: ox, y: Double(size.height) - 22))
     }
 
@@ -4097,7 +4123,7 @@ struct StudioScreen: View {
                                style: StrokeStyle(lineWidth: 1.2, dash: s.mode == .cut ? [3, 2] : []))
                 let q = p(sp.reduce(0.0) { $0 + Double($1.x) } / Double(sp.count),
                           sp.reduce(0.0) { $0 + Double($1.y) } / Double(sp.count))
-                context.draw(Text("\(s.name) Z\(ncf(s.z0))~\(ncf(s.z1))")
+                context.draw(Text("\(s.name) Z\(ncf(s.drawBottom))~\(ncf(s.drawTop))")
                                 .font(.system(size: 8, weight: .semibold))
                                 .foregroundColor(tint),
                              at: CGPoint(x: q.x, y: q.y - 9))
