@@ -88,7 +88,6 @@ struct StudioScreen: View {
     @State private var sectionHandles = true
     @State private var sectionLines = true
     @State private var measureOn = false
-    @State private var showMeasureSheet = false
     @State private var measureTarget: MeasureTarget = .body
     @State private var pickedPoint: ModelPickPoint? = nil
     @State private var pickedEdges: [ModelPickEdge] = []
@@ -284,9 +283,6 @@ struct StudioScreen: View {
                 }
             }
             .presentationDetents([.medium, .large])
-        }
-        .sheet(isPresented: $showMeasureSheet) {
-            AnyView(measureSheet)
         }
         .sheet(isPresented: $showRotate) {
             TransformSheet(spec: $spec, rotate: true, onUndo: { pushUndo() })
@@ -3233,10 +3229,8 @@ struct StudioScreen: View {
                 railButton("显示", "eye", active: modelPanel == .display) {
                     modelPanel = modelPanel == .display ? .none : .display
                 }
-                railButton("测量", "ruler", active: showMeasureSheet) {
-                    showMeasureSheet = true
-                    measureOn = true
-                    modelPanel = .none
+                railButton("测量", "ruler", active: measureOn) {
+                    presentMeasureSheet()
                 }
                 railButton("适合", "arrow.up.left.and.arrow.down.right", active: false) {
                     setView(0.78, 0.62)
@@ -4116,6 +4110,30 @@ struct StudioScreen: View {
         pickTolerance = min(max(v + delta, 12), 40)
     }
 
+    private func topViewController() -> UIViewController? {
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { return nil }
+        var vc = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController
+        while let p = vc?.presentedViewController { vc = p }
+        return vc
+    }
+
+    private func presentMeasureSheet() {
+        measureOn = true
+        modelPanel = .none
+        guard let top = topViewController() else { return }
+        let host = UIHostingController(rootView: AnyView(measureSheet))
+        host.modalPresentationStyle = .pageSheet
+        if let sheet = host.sheetPresentationController {
+            sheet.detents = [.large()]
+            sheet.prefersGrabberVisible = true
+        }
+        top.present(host, animated: true)
+    }
+
+    private func dismissMeasureSheet() {
+        topViewController()?.dismiss(animated: true)
+    }
+
     private var measureSheet: some View {
         NavigationStack {
             Form {
@@ -4235,7 +4253,7 @@ struct StudioScreen: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { showMeasureSheet = false }
+                    Button("完成") { dismissMeasureSheet() }
                 }
             }
         }
