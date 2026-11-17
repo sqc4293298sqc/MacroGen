@@ -976,12 +976,12 @@ struct StudioScreen: View {
                     miniNum("X1", $trimX1)
                     miniNum("Y1", $trimY1)
                 }
-                Button("按这个方框围栏修剪") { regionTrim() }
+                Button("按这个方框围栏修剪") { pushUndo(); regionTrim() }
                     .font(.system(size: 13, weight: .semibold))
                 HStack(spacing: 6) {
                     miniNum("dx", $moveDX)
                     miniNum("dy", $moveDY)
-                    Button("移动轮廓") { moveOuter() }
+                    Button("移动轮廓") { pushUndo(); moveOuter() }
                         .font(.system(size: 13, weight: .semibold))
                 }
                 numRow("偏置距离 (mm)", $offsetD)
@@ -2098,6 +2098,7 @@ struct StudioScreen: View {
         let y0 = min(trimY0, trimY1), y1 = max(trimY0, trimY1)
         let kept = pts.filter { Double($0.x) < x0 || Double($0.x) > x1 || Double($0.y) < y0 || Double($0.y) > y1 }
         if kept.count >= 3 { setOuterPoints(kept) }
+        else { showToastView("框选区域太大，修剪后不足 3 个点") }
     }
 
     private func moveOuter() {
@@ -3799,6 +3800,7 @@ struct StudioScreen: View {
                 let hasPocket = hasPocketFeature
                 HStack {
                     Toggle("平面铣（顶面余量 > 0）", isOn: $spec.doFace)
+                        .disabled(spec.topStock <= 0)
                     Button("参数") { openOp("平面铣") }.buttonStyle(.borderless)
                         .font(.system(size: 12, weight: .semibold))
                 }
