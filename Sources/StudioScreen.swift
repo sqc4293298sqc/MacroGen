@@ -1014,7 +1014,18 @@ struct StudioScreen: View {
         return nil
     }
 
+    private func scheduleTemplateRebuild() {
+        guard activeTemplateTool != nil, spec.nodes.count >= 3 else { return }
+        templateRebuildToken += 1
+        let token = templateRebuildToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            guard token == templateRebuildToken else { return }
+            rebuildLastTemplate()
+        }
+    }
+
     private func rebuildLastTemplate() {
+        templateRebuildToken += 1
         guard let name = activeTemplateTool ?? (isTemplateTool(lastShapeTool) ? lastShapeTool : nil),
               spec.nodes.count >= 3 else {
             showToastView("当前没有可更新的模板轮廓")
@@ -1040,21 +1051,21 @@ struct StudioScreen: View {
     private var sketchControls: some View {
         Section("当前工具参数") {
             if let t = activeTemplateTool {
-                Text("\(t) · 改尺寸后点“更新轮廓”；再点画布放置也按这组尺寸")
+                Text("\(t) · 输入停止 0.45 秒自动重建，也可点“更新轮廓”")
                     .font(.caption).foregroundStyle(.secondary)
                 switch t {
                 case "矩形", "中心矩形":
-                    numRow("长 L (mm)", $spec.rectL)
-                    numRow("宽 W (mm)", $spec.rectW)
+                    autoNumRow("长 L (mm)", $spec.rectL)
+                    autoNumRow("宽 W (mm)", $spec.rectW)
                 case "圆角矩形":
-                    numRow("长 L (mm)", $spec.rectL)
-                    numRow("宽 W (mm)", $spec.rectW)
-                    numRow("圆角 R (mm)", $spec.rectR)
+                    autoNumRow("长 L (mm)", $spec.rectL)
+                    autoNumRow("宽 W (mm)", $spec.rectW)
+                    autoNumRow("圆角 R (mm)", $spec.rectR)
                 case "圆", "多边形", "五角星", "样条曲线":
-                    numRow("直径 D (mm)", $spec.circleD)
+                    autoNumRow("直径 D (mm)", $spec.circleD)
                 case "椭圆", "槽", "平行四边形":
-                    numRow("长 L (mm)", $spec.rectL)
-                    numRow("宽 W (mm)", $spec.rectW)
+                    autoNumRow("长 L (mm)", $spec.rectL)
+                    autoNumRow("宽 W (mm)", $spec.rectW)
                 default:
                     EmptyView()
                 }
@@ -1266,6 +1277,7 @@ struct StudioScreen: View {
     @State private var dragNode: Int? = nil
     @State private var sketchTool: String = ""
     @State private var lastShapeTool: String = "矩形"
+    @State private var templateRebuildToken = 0
     @State private var refPoints: [CGPoint] = []
     @State private var pendingEditTool: String? = nil
     @State private var editPreviewSpec: PartSpec? = nil
@@ -3444,6 +3456,9 @@ struct StudioScreen: View {
                 }
                 Slider(value: $sectionT, in: 0.02...0.98)
                     .tint(studioBlue)
+                Text("截面 Z = \(ncf(PartProg.maxZ(spec) - max(PartProg.maxZ(spec) - PartProg.minZ(spec), 0.2) * (sectionReverse ? (1 - sectionT) : sectionT)))")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
                 HStack(spacing: 8) {
                     Button("反向") { sectionReverse.toggle() }
                         .buttonStyle(.bordered)
@@ -3454,8 +3469,8 @@ struct StudioScreen: View {
                 Toggle("手柄", isOn: $sectionHandles).tint(studioBlue)
                 Toggle("截面线", isOn: $sectionLines).tint(studioBlue)
                 Text(sectionAxis == .z
-                     ? "Z 向是真实等高剖切：只显示剖切面以上的实体，橙色面为截面。"
-                     : "X/Y 向显示剖切平面和截面试算；当前内核为 2.5D，复杂曲面截面暂不计算。")
+                     ? "Z 向按整个零件最高/最低 Z 剖切，多台阶、孔、型腔一起截断；橙色面为截面。"
+                     : "X/Y 向显示完整高度范围的剖切平面；复杂曲面截面仍按 2.5D 近似。")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
@@ -3515,6 +3530,14 @@ struct StudioScreen: View {
                     metricCard("重量", "\(ncf(partWeight)) g（\(material.rawValue)）")
                     metricCard("价格", "¥\(ncf(partPrice))")
                     metricCard("包容体积", "\(ncf(partBBoxVolume)) mm³")
+                    if !spec.steps.isEmpty {
+                        metricCard("台阶层数", "\(spec.steps.count) 层")
+                        metricCard("总 Z 范围", "Z\(ncf(PartProg.minZ(spec))) → Z\(ncf(PartProg.maxZ(spec)))")
+                        ForEach(spec.steps) { s in
+                            let area = abs(ContourGeo.signedArea(PartProg.shapePoints(s.shape, spec)))
+                            metricCard(s.name, "Z\(ncf(s.drawBottom))~Z\(ncf(s.drawTop)) · \(ncf(area * max(s.height, 0))) mm³")
+                        }
+                    }
                 case .compound:
                     metricCard("体积", "\(ncf(partVolume)) mm³")
                     metricCard("重量", "\(ncf(partWeight)) g")
@@ -3522,11 +3545,15 @@ struct StudioScreen: View {
                     metricCard("包容体积", "\(ncf(partBBoxVolume)) mm³")
                     metricCard("顶面面积", "\(ncf(partProjectedArea)) mm²")
                     metricCard("尺寸", "\(ncf(Double(partBBox.width))) × \(ncf(Double(partBBox.height))) × \(ncf(PartProg.maxZ(spec) - PartProg.minZ(spec))) mm")
+                    if !spec.steps.isEmpty {
+                        metricCard("台阶层数", "\(spec.steps.count) 层")
+                        metricCard("总 Z 范围", "Z\(ncf(PartProg.minZ(spec))) → Z\(ncf(PartProg.maxZ(spec)))")
+                    }
                 }
                 Text("点=当前指针；边=外轮廓；面=顶面；体=整个实体；复合=体积+包容+面积。")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
-                Text("体积按外形面积×厚度，再减去孔/型腔/内轮廓；重量按材料密度换算，价格为参考估价。")
+                Text("体积按外形面积×厚度，再加上/减去台阶，并按孔/型腔所在台阶的真实 Z 扣减；重量按材料密度换算，价格为参考估价。")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
@@ -3642,18 +3669,22 @@ struct StudioScreen: View {
 
     private var cutVolume: Double {
         var cut = 0.0
+        let bottom = PartProg.minZ(spec)
         for l in spec.innerLoops {
             let a = abs(ContourGeo.signedArea(PartProg.loopPoints(l)))
-            cut += a * (l.through ? spec.height : min(max(l.depth, 0), spec.height))
+            let host = PartProg.hostZ(spec, l.cx, l.cy)
+            let avail = max(host - bottom, 0)
+            let d = l.through ? avail : min(max(l.depth, 0), avail)
+            cut += a * d
         }
         for f in spec.feats {
-            if f.kind == .hole {
-                cut += Double.pi * (f.dia / 2) * (f.dia / 2) * spec.height
-            } else if f.kind == .rectPocket {
-                cut += f.w * f.h * min(max(f.depth, 0), spec.height)
-            } else {
-                cut += Double.pi * (f.dia / 2) * (f.dia / 2) * min(max(f.depth, 0), spec.height)
-            }
+            let host = PartProg.hostZ(spec, f.x, f.y)
+            let avail = max(host - bottom, 0)
+            let area = f.kind == .rectPocket
+                ? f.w * f.h
+                : Double.pi * (f.dia / 2) * (f.dia / 2)
+            let d = f.kind == .hole ? avail : min(max(f.depth, 0), avail)
+            cut += area * d
         }
         return cut
     }
@@ -3903,9 +3934,20 @@ struct StudioScreen: View {
         guard pts.count > 2 else { return }
         let depth = max(spec.height, 0.1)
         let showZCut = sectionOn && sectionAxis == .z
-        let visibleDepth = showZCut
-            ? max(0.2, depth * (sectionReverse ? (1 - sectionT) : sectionT))
-            : depth
+        let zTopAll = PartProg.maxZ(spec)
+        let zBottomAll = PartProg.minZ(spec)
+        let zSpanAll = max(zTopAll - zBottomAll, 0.2)
+        let cutZ: Double? = showZCut
+            ? zTopAll - zSpanAll * (sectionReverse ? (1 - sectionT) : sectionT)
+            : nil
+        func clipZ(_ top: Double, _ bottom: Double) -> (Double, Double)? {
+            let b = max(bottom, cutZ ?? -Double.greatestFiniteMagnitude)
+            return top > b + 0.0001 ? (top, b) : nil
+        }
+        func visibleZ(_ z: Double) -> Bool {
+            guard let cutZ else { return true }
+            return z >= cutZ - 0.0001
+        }
 
         func ringPath(_ z: Double) -> Path {
             var path = Path()
@@ -3994,47 +4036,50 @@ struct StudioScreen: View {
             }
         }
 
-        let bottom = ringPath(-visibleDepth)
-        ctx.fill(bottom, with: .color(bodyTint.opacity(0.14)))
-        ctx.stroke(bottom, with: .color(bodyTint.opacity(0.55)), lineWidth: 1)
+        if let (baseTop, baseBottom) = clipZ(0, -depth) {
+            let bottom = ringPath(baseBottom)
+            ctx.stroke(bottom, with: .color(bodyTint.opacity(0.55)), lineWidth: 1)
 
-        for i in pts.indices {
-            let a = pts[i], b = pts[(i + 1) % pts.count]
-            var side = Path()
-            side.move(to: cam.p(a.x, a.y, 0))
-            side.addLine(to: cam.p(b.x, b.y, 0))
-            side.addLine(to: cam.p(b.x, b.y, -visibleDepth))
-            side.addLine(to: cam.p(a.x, a.y, -visibleDepth))
-            side.closeSubpath()
-            ctx.fill(side, with: .color(bodyTint.opacity(0.16)))
-        }
-
-        let layers = max(1, Int(ceil(visibleDepth / max(spec.stepDown, 0.1))))
-        if layers > 1 {
-            for i in 1..<layers {
-                let z = -min(visibleDepth, Double(i) * spec.stepDown)
-                ctx.stroke(ringPath(z), with: .color(bodyTint.opacity(0.22)), lineWidth: 0.7)
+            for i in pts.indices {
+                let a = pts[i], b = pts[(i + 1) % pts.count]
+                var side = Path()
+                side.move(to: cam.p(a.x, a.y, baseTop))
+                side.addLine(to: cam.p(b.x, b.y, baseTop))
+                side.addLine(to: cam.p(b.x, b.y, baseBottom))
+                side.addLine(to: cam.p(a.x, a.y, baseBottom))
+                side.closeSubpath()
+                ctx.fill(side, with: .color(bodyTint.opacity(0.16)))
             }
-        }
-        for i in Swift.stride(from: 0, to: pts.count, by: max(1, pts.count / 30)) {
-            let q = pts[i]
-            ctx.stroke(Path { p in
-                p.move(to: cam.p(q.x, q.y, 0))
-                p.addLine(to: cam.p(q.x, q.y, -visibleDepth))
-            }, with: .color(bodyTint.opacity(0.35)), lineWidth: 0.8)
-        }
 
-        ctx.fill(ringPath(0), with: .color(bodyTint.opacity(0.30)))
-        ctx.stroke(ringPath(0), with: .color(bodyTint), lineWidth: 2)
+            let layers = max(1, Int(ceil((baseTop - baseBottom) / max(spec.stepDown, 0.1))))
+            if layers > 1 {
+                for i in 1..<layers {
+                    let z = max(baseBottom, baseTop - Double(i) * spec.stepDown)
+                    ctx.stroke(ringPath(z), with: .color(bodyTint.opacity(0.22)), lineWidth: 0.7)
+                }
+            }
+            for i in Swift.stride(from: 0, to: pts.count, by: max(1, pts.count / 30)) {
+                let q = pts[i]
+                ctx.stroke(Path { p in
+                    p.move(to: cam.p(q.x, q.y, baseTop))
+                    p.addLine(to: cam.p(q.x, q.y, baseBottom))
+                }, with: .color(bodyTint.opacity(0.35)), lineWidth: 0.8)
+            }
 
-        if bodyHighlight {
-            ctx.fill(ringPath(0), with: .color(Color.yellow.opacity(0.14)))
-            ctx.stroke(ringPath(0), with: .color(Color.yellow.opacity(0.95)), lineWidth: 4)
-        }
+            ctx.fill(ringPath(baseTop), with: .color(bodyTint.opacity(0.30)))
+            ctx.stroke(ringPath(baseTop), with: .color(bodyTint), lineWidth: 2)
 
-        if showZCut {
-            ctx.fill(ringPath(-visibleDepth), with: .color(Color.orange.opacity(0.42)))
-            ctx.stroke(ringPath(-visibleDepth), with: .color(.orange), lineWidth: 2)
+            if bodyHighlight {
+                ctx.fill(ringPath(baseTop), with: .color(Color.yellow.opacity(0.14)))
+                ctx.stroke(ringPath(baseTop), with: .color(Color.yellow.opacity(0.95)), lineWidth: 4)
+            }
+
+            if showZCut {
+                ctx.fill(bottom, with: .color(Color.orange.opacity(0.42)))
+                ctx.stroke(bottom, with: .color(.orange), lineWidth: 2)
+            } else {
+                ctx.fill(bottom, with: .color(bodyTint.opacity(0.14)))
+            }
         }
 
         // 多台阶：基础体之上按各自的 Z 画独立棱柱；除料层用红色虚线
@@ -4042,17 +4087,24 @@ struct StudioScreen: View {
             where bodyVisible && !hiddenTreeIDs.contains("extrude") && !hiddenTreeIDs.contains("step-\(s.id.uuidString)") {
             let sp = PartProg.pts(s, spec)
             guard sp.count > 2 else { continue }
+            let top = s.mode == .add ? s.z1 : s.drawTop
+            let bottom = s.mode == .add ? s.z0 : s.drawBottom
+            guard let (vt, vb) = clipZ(top, bottom) else { continue }
             if s.mode == .add {
-                prism(sp, zTop: s.z1, zBottom: s.z0,
+                prism(sp, zTop: vt, zBottom: vb,
                       tint: bodyTint, alpha: 0.20)
             } else {
-                prism(sp, zTop: s.drawTop, zBottom: s.drawBottom,
+                prism(sp, zTop: vt, zBottom: vb,
                       tint: Color.red, alpha: 0.13, dashed: true)
+            }
+            if showZCut {
+                ctx.fill(ringPath(sp, vb), with: .color(Color.orange.opacity(0.42)))
+                ctx.stroke(ringPath(sp, vb), with: .color(.orange), lineWidth: 1.6)
             }
             let cx = sp.reduce(0.0) { $0 + Double($1.x) } / Double(sp.count)
             let cy = sp.reduce(0.0) { $0 + Double($1.y) } / Double(sp.count)
-            let q = cam.p(cx, cy, s.drawTop)
-            ctx.draw(Text("\(s.name)  Z\(ncf(s.drawBottom))~\(ncf(s.drawTop))")
+            let q = cam.p(cx, cy, vt)
+            ctx.draw(Text("\(s.name)  Z\(ncf(vb))~\(ncf(vt))")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(s.mode == .add ? bodyTint : .red),
                      at: CGPoint(x: q.x, y: q.y - 11))
@@ -4060,12 +4112,14 @@ struct StudioScreen: View {
 
         for l in spec.innerLoops where !hiddenTreeIDs.contains("inner-\(l.id.uuidString)") {
             let host = PartProg.hostZ(spec, l.cx, l.cy)
-            let d = PartProg.drawForLoop(l, spec, depth: l.through ? spec.height + host + 1 : l.depth,
+            guard visibleZ(host) else { continue }
+            let avail = max(host - PartProg.minZ(spec), 0)
+            let loopCut = l.through ? avail : min(max(l.depth, 0), avail)
+            guard loopCut > 0.001 else { continue }
+            let d = PartProg.drawForLoop(l, spec, depth: loopCut + 1,
                                          dia: max(spec.pocketDia, 1), hNo: spec.pocketTool, zTop: host)
             let segs = ContourGeo.segments(ContourGeo.buildNodes(d))
             let flat = ContourGeo.flatten(segs, arcStep: 24)
-            let cut = l.through ? spec.height : min(l.depth, spec.height + host)
-            let loopCut = l.through ? min(cut, visibleDepth) : min(cut, visibleDepth)
             func loopPath(_ z: Double) -> Path {
                 var p = Path()
                 guard let f = flat.first else { return p }
@@ -4077,7 +4131,7 @@ struct StudioScreen: View {
             ctx.fill(topLoop, with: .color(Color.red.opacity(0.12)))
             ctx.stroke(topLoop, with: .color(.red),
                        style: StrokeStyle(lineWidth: 1.4, dash: [4, 3]))
-            let bottomLoopZ = l.through ? -loopCut : host - loopCut
+            let bottomLoopZ = max(host - loopCut, cutZ ?? -Double.greatestFiniteMagnitude)
             ctx.stroke(loopPath(bottomLoopZ), with: .color(Color.red.opacity(0.55)), lineWidth: 0.9)
             let c = cam.p(l.cx, l.cy, host)
             let text: String
@@ -4095,8 +4149,11 @@ struct StudioScreen: View {
             && !(showFeatCommand && featEditID == f.id) {
             let isSelected = selectedTreeID == "feat-\(f.id.uuidString)"
             let host = PartProg.hostZ(spec, f.x, f.y)
+            guard visibleZ(host) else { continue }
             if f.kind == .rectPocket {
-                let d = min(f.depth, spec.height + host)
+                let d = min(f.depth, max(spec.height + host, 0))
+                let botZ = max(host - d, cutZ ?? -Double.greatestFiniteMagnitude)
+                guard botZ < host - 0.001 else { continue }
                 var top = Path()
                 let x0 = f.x - f.w / 2, x1 = f.x + f.w / 2
                 let y0 = f.y - f.h / 2, y1 = f.y + f.h / 2
@@ -4108,10 +4165,10 @@ struct StudioScreen: View {
                 ctx.fill(top, with: .color(Color(red: 1.0, green: 0.42, blue: 0.10).opacity(0.18)))
                 ctx.stroke(top, with: .color(Color(red: 0.95, green: 0.55, blue: 0.20)), lineWidth: 1.4)
                 var bot = Path()
-                bot.move(to: cam.p(x0, y0, host - d))
-                bot.addLine(to: cam.p(x1, y0, host - d))
-                bot.addLine(to: cam.p(x1, y1, host - d))
-                bot.addLine(to: cam.p(x0, y1, host - d))
+                bot.move(to: cam.p(x0, y0, botZ))
+                bot.addLine(to: cam.p(x1, y0, botZ))
+                bot.addLine(to: cam.p(x1, y1, botZ))
+                bot.addLine(to: cam.p(x0, y1, botZ))
                 bot.closeSubpath()
                 ctx.stroke(bot, with: .color(Color(red: 0.95, green: 0.55, blue: 0.20).opacity(0.75)), lineWidth: 1)
                 label(ctx, cam, f, "\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth))", z: host)
@@ -4123,22 +4180,25 @@ struct StudioScreen: View {
                 let c = circle(f.x, f.y, host, r)
                 ctx.fill(c, with: .color(Color(white: 0.28).opacity(0.55)))
                 ctx.stroke(c, with: .color(Color(white: 0.35)), lineWidth: 1.4)
-                ctx.stroke(circle(f.x, f.y, -min(depth, visibleDepth), r), with: .color(Color(white: 0.45)), lineWidth: 0.9)
+                let botZ = max(PartProg.minZ(spec), cutZ ?? -Double.greatestFiniteMagnitude)
+                ctx.stroke(circle(f.x, f.y, botZ, r), with: .color(Color(white: 0.45)), lineWidth: 0.9)
                 label(ctx, cam, f, "Ø\(ncf(f.dia))", z: host)
                 if isSelected { selectedMarker(f, radius: r + 4, z: host) }
             } else {
-                let d = min(f.depth, spec.height + host)
+                let d = min(f.depth, max(spec.height + host, 0))
+                let botZ = max(host - d, cutZ ?? -Double.greatestFiniteMagnitude)
+                guard botZ < host - 0.001 else { continue }
                 let c = circle(f.x, f.y, host, r)
                 ctx.fill(c, with: .color(Color(red: 1.0, green: 0.42, blue: 0.10).opacity(0.18)))
                 ctx.stroke(c, with: .color(Color(red: 0.95, green: 0.55, blue: 0.20)), lineWidth: 1.4)
-                ctx.stroke(circle(f.x, f.y, host - d, r), with: .color(Color(red: 0.95, green: 0.55, blue: 0.20).opacity(0.75)), lineWidth: 1)
+                ctx.stroke(circle(f.x, f.y, botZ, r), with: .color(Color(red: 0.95, green: 0.55, blue: 0.20).opacity(0.75)), lineWidth: 1)
                 label(ctx, cam, f, "Ø\(ncf(f.dia)) 深\(ncf(f.depth))", z: host)
                 if isSelected { selectedMarker(f, radius: r + 4, z: host) }
             }
         }
 
         if showFeatCommand, let d = featDraft {
-            drawFeatDraft(&ctx, cam: cam, feat: d, visibleDepth: visibleDepth)
+            drawFeatDraft(&ctx, cam: cam, feat: d, cutZ: cutZ)
         }
 
         if sectionOn {
@@ -4164,8 +4224,9 @@ struct StudioScreen: View {
     }
 
     private func drawFeatDraft(_ ctx: inout GraphicsContext, cam: Cam,
-                               feat f: PartFeat, visibleDepth: Double) {
+                               feat f: PartFeat, cutZ: Double?) {
         let host = PartProg.hostZ(spec, f.x, f.y)
+        if let cutZ, host < cutZ - 0.0001 { return }
         let color = Color(red: 0.10, green: 0.55, blue: 0.95)
         func ring(_ cx: Double, _ cy: Double, _ z: Double, _ r: Double) -> Path {
             var p = Path()
@@ -4193,14 +4254,16 @@ struct StudioScreen: View {
         case .hole:
             let r = max(f.dia / 2, 0.1)
             top = ring(f.x, f.y, host, r)
-            bottom = ring(f.x, f.y, -min(visibleDepth, spec.height), r)
+            bottom = ring(f.x, f.y, max(PartProg.minZ(spec), cutZ ?? -Double.greatestFiniteMagnitude), r)
         case .pocket:
             let r = max(f.dia / 2, 0.1)
+            let d = min(f.depth, max(spec.height + host, 0))
             top = ring(f.x, f.y, host, r)
-            bottom = ring(f.x, f.y, host - min(f.depth, spec.height + host), r)
+            bottom = ring(f.x, f.y, max(host - d, cutZ ?? -Double.greatestFiniteMagnitude), r)
         case .rectPocket:
+            let d = min(f.depth, max(spec.height + host, 0))
             top = rect(host)
-            bottom = rect(host - min(f.depth, spec.height + host))
+            bottom = rect(max(host - d, cutZ ?? -Double.greatestFiniteMagnitude))
         }
         ctx.fill(top, with: .color(color.opacity(0.12)))
         ctx.stroke(top, with: .color(color), style: StrokeStyle(lineWidth: 1.8, dash: [4, 3]))
@@ -4242,8 +4305,10 @@ struct StudioScreen: View {
 
     private func drawSectionPlane(_ ctx: inout GraphicsContext, _ cam: Cam, size: CGSize) {
         let b = partBBox
-        let depth = max(spec.height, 0.1)
-        let z = -depth * (sectionReverse ? (1 - sectionT) : sectionT)
+        let zTop = PartProg.maxZ(spec)
+        let zBottom = PartProg.minZ(spec)
+        let zSpan = max(zTop - zBottom, 0.2)
+        let z = zTop - zSpan * (sectionReverse ? (1 - sectionT) : sectionT)
         let x = Double(b.minX) + Double(b.width) * (sectionReverse ? (1 - sectionT) : sectionT)
         let y = Double(b.minY) + Double(b.height) * (sectionReverse ? (1 - sectionT) : sectionT)
         var corners: [(Double, Double, Double)] = []
@@ -4252,11 +4317,11 @@ struct StudioScreen: View {
             corners = [(Double(b.minX), Double(b.minY), z), (Double(b.maxX), Double(b.minY), z),
                        (Double(b.maxX), Double(b.maxY), z), (Double(b.minX), Double(b.maxY), z)]
         case .x:
-            corners = [(x, Double(b.minY), 0), (x, Double(b.maxY), 0),
-                       (x, Double(b.maxY), -depth), (x, Double(b.minY), -depth)]
+            corners = [(x, Double(b.minY), zTop), (x, Double(b.maxY), zTop),
+                       (x, Double(b.maxY), zBottom), (x, Double(b.minY), zBottom)]
         case .y:
-            corners = [(Double(b.minX), y, 0), (Double(b.maxX), y, 0),
-                       (Double(b.maxX), y, -depth), (Double(b.minX), y, -depth)]
+            corners = [(Double(b.minX), y, zTop), (Double(b.maxX), y, zTop),
+                       (Double(b.maxX), y, zBottom), (Double(b.minX), y, zBottom)]
         }
         var plane = Path()
         guard let f = corners.first else { return }
@@ -4284,7 +4349,8 @@ struct StudioScreen: View {
 
     private func drawMeasureBox(_ ctx: inout GraphicsContext, _ cam: Cam) {
         let b = partBBox
-        let depth = max(spec.height, 0.1)
+        let zTop = PartProg.maxZ(spec)
+        let zBottom = PartProg.minZ(spec)
         let pts = PartProg.pts(spec)
         let bottom: [(Double, Double)] = [(Double(b.minX), Double(b.minY)), (Double(b.maxX), Double(b.minY)),
                                           (Double(b.maxX), Double(b.maxY)), (Double(b.minX), Double(b.maxY))]
@@ -4358,15 +4424,15 @@ struct StudioScreen: View {
             if measureTarget == .compound {
                 ctx.fill(topPath(), with: .color(Color.yellow.opacity(0.10)))
             }
-            ctx.stroke(boxPath(0), with: .color(.orange), lineWidth: 1.6)
-            ctx.stroke(boxPath(-depth), with: .color(.orange.opacity(0.55)), lineWidth: 1)
+            ctx.stroke(boxPath(zTop), with: .color(.orange), lineWidth: 1.6)
+            ctx.stroke(boxPath(zBottom), with: .color(.orange.opacity(0.55)), lineWidth: 1)
             for q in bottom {
                 ctx.stroke(Path { p in
-                    p.move(to: cam.p(q.0, q.1, 0))
-                    p.addLine(to: cam.p(q.0, q.1, -depth))
+                    p.move(to: cam.p(q.0, q.1, zTop))
+                    p.addLine(to: cam.p(q.0, q.1, zBottom))
                 }, with: .color(.orange.opacity(0.45)), lineWidth: 1)
             }
-            let q = cam.p(Double(b.midX), Double(b.midY), 0)
+            let q = cam.p(Double(b.midX), Double(b.midY), zTop)
             ctx.draw(Text("体积 \(ncf(partVolume)) mm³").font(.system(size: 10, weight: .semibold)).foregroundColor(.orange),
                      at: CGPoint(x: q.x, y: q.y - 26))
             ctx.draw(Text("\(ncf(Double(b.width))) × \(ncf(Double(b.height))) × \(ncf(PartProg.maxZ(spec) - PartProg.minZ(spec)))")
@@ -5127,6 +5193,16 @@ struct StudioScreen: View {
             Spacer()
             TextField("0", value: value, format: .number)
                 .keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 96)
+        }
+    }
+
+    private func autoNumRow(_ title: String, _ value: Binding<Double>) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            TextField("0", value: value, format: .number)
+                .keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 96)
+                .onChange(of: value.wrappedValue) { _ in scheduleTemplateRebuild() }
         }
     }
 
