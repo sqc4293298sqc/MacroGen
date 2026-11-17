@@ -94,7 +94,10 @@ struct StudioScreen: View {
     @State private var pickedFace: ModelPickFace? = nil
     @State private var pickedHole: ModelPickHole? = nil
     @State private var measurePickHint = "点模型上的边、面或孔进行拾取"
-    @State private var pickTolerance = 22.0
+    @AppStorage("measurePickTolerance") private var pickTolerance = 22.0
+    @AppStorage("showSketchConstraintBadges") private var showConstraintBadges = true
+    @State private var calibratingPick = false
+    @State private var calibrationSample: PickCalibration? = nil
     @State private var bodyHighlight = false
     @State private var drawingExportURL: URL?
     @State private var material: StudioMaterial = .abs
@@ -184,6 +187,14 @@ struct StudioScreen: View {
         var y: Double
         var z: Double
     }
+    private struct PickCalibration: Equatable {
+        var point: CGPoint
+        var nearestEdge: ModelPickEdge?
+        var edgeDistances: [Double]
+        var hole: ModelPickHole?
+        var face: ModelPickFace?
+    }
+
 
     private enum StudioMaterial: String, CaseIterable, Identifiable {
         case abs = "ABS", aluminum = "铝合金", steel = "钢", brass = "黄铜"
@@ -1142,6 +1153,8 @@ struct StudioScreen: View {
                 Text("右侧约束按钮添加后，拖动节点会按约束自动求解；改模板尺寸会清空约束。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            Toggle("显示约束图标", isOn: $showConstraintBadges)
+                .font(.system(size: 12))
             ForEach(issues, id: \.self) { issue in
                 Text(issue)
                     .font(.system(size: 11, weight: .semibold))
@@ -1720,21 +1733,23 @@ struct StudioScreen: View {
         }
 
         // 约束图标：贴在关联几何旁，冲突约束显示红色
-        var badgeSlots: [String: Int] = [:]
-        for c in spec.constraints {
-            guard let a = constraintAnchor(c) else { continue }
-            let base = P(a.0, a.1)
-            let key = "\(Int(base.x / 18))-\(Int(base.y / 18))"
-            let slot = badgeSlots[key, default: 0]
-            badgeSlots[key] = slot + 1
-            let pos = CGPoint(x: base.x + 12 + CGFloat(slot % 3) * 16,
-                              y: base.y - 12 - CGFloat(slot / 3) * 16)
-            let bad = constraintResidual(c) > constraintTolerance(c)
-            let rect = CGRect(x: pos.x - 8, y: pos.y - 8, width: 16, height: 16)
-            ctx.fill(Path(roundedRect: rect, cornerRadius: 5),
-                     with: .color(bad ? Color.red : studioBlue))
-            ctx.draw(Text(c.symbol).font(.system(size: 8, weight: .bold)).foregroundColor(.white),
-                     at: pos)
+        if showConstraintBadges {
+            var badgeSlots: [String: Int] = [:]
+            for c in spec.constraints {
+                guard let a = constraintAnchor(c) else { continue }
+                let base = P(a.0, a.1)
+                let key = "\(Int(base.x / 18))-\(Int(base.y / 18))"
+                let slot = badgeSlots[key, default: 0]
+                badgeSlots[key] = slot + 1
+                let pos = CGPoint(x: base.x + 12 + CGFloat(slot % 3) * 16,
+                                  y: base.y - 12 - CGFloat(slot / 3) * 16)
+                let bad = constraintResidual(c) > constraintTolerance(c)
+                let rect = CGRect(x: pos.x - 8, y: pos.y - 8, width: 16, height: 16)
+                ctx.fill(Path(roundedRect: rect, cornerRadius: 5),
+                         with: .color(bad ? Color.red : studioBlue))
+                ctx.draw(Text(c.symbol).font(.system(size: 8, weight: .bold)).foregroundColor(.white),
+                         at: pos)
+            }
         }
 
         // 尺寸标注
@@ -3845,9 +3860,8 @@ struct StudioScreen: View {
         return hypot(Double(p.x) - qx, Double(p.y) - qy)
     }
 
-    private func nearestEdge(_ cam: Cam, at loc: CGPoint) -> ModelPickEdge? {
-        var best = pickTolerance
-        var hit: ModelPickEdge? = nil
+    private func edgeCandidates(_ cam: Cam, at loc: CGPoint) -> [(ModelPickEdge, Double)] {
+        var out: [(ModelPickEdge, Double)] = []
         func scan(_ pts: [CGPoint], z: Double, prefix: String) {
             guard pts.count > 1 else { return }
             for i in pts.indices {
@@ -3855,17 +3869,18 @@ struct StudioScreen: View {
                 let pa = cam.p(Double(a.x), Double(a.y), z)
                 let pb = cam.p(Double(b.x), Double(b.y), z)
                 let d = distanceToSegment(loc, pa, pb)
-                if d < best {
-                    best = d
-                    hit = ModelPickEdge(id: "\(prefix)-\(i)", a: a, b: b, z: z, distance: d)
-                }
+                out.append((ModelPickEdge(id: "\(prefix)-\(i)", a: a, b: b, z: z, distance: d), d))
             }
         }
         scan(PartProg.pts(spec), z: 0, prefix: "base")
         for s in spec.steps {
             scan(PartProg.pts(s, spec), z: s.drawTop, prefix: "step-\(s.id.uuidString)")
         }
-        return hit
+        return out.sorted { $0.1 < $1.1 }
+    }
+
+    private func nearestEdge(_ cam: Cam, at loc: CGPoint) -> ModelPickEdge? {
+        edgeCandidates(cam, at: loc).first(where: { $0.1 <= pickTolerance })?.0
     }
 
     private func nearestHole(_ cam: Cam, at loc: CGPoint) -> ModelPickHole? {
@@ -3878,7 +3893,7 @@ struct StudioScreen: View {
             let dia = f.kind == .rectPocket ? max(f.w, f.h) : f.dia
             let qEdge = cam.p(f.x + dia / 2, f.y, host)
             let screenRadius = abs(Double(qEdge.x - q.x))
-            let tol = min(max(pickTolerance, screenRadius * 0.7), 65)
+            let tol = min(max(pickTolerance, screenRadius * 0.6), 52)
             if d < best, d < tol {
                 best = d
                 hit = ModelPickHole(id: "feat-\(f.id.uuidString)",
@@ -3896,7 +3911,7 @@ struct StudioScreen: View {
             let d = hypot(Double(loc.x) - Double(q.x), Double(loc.y) - Double(q.y))
             let qEdge = cam.p(l.cx + l.circleD / 2, l.cy, host)
             let screenRadius = abs(Double(qEdge.x - q.x))
-            let tol = min(max(pickTolerance, screenRadius * 0.7), 65)
+            let tol = min(max(pickTolerance, screenRadius * 0.6), 52)
             if d < best, d < tol {
                 best = d
                 hit = ModelPickHole(id: "loop-\(l.id.uuidString)",
@@ -3941,10 +3956,28 @@ struct StudioScreen: View {
         let cam = modelCam(size: size)
         let xy = modelXY(at: loc, size: size)
         let basePts = PartProg.pts(spec)
-        let edge = nearestEdge(cam, at: loc)
+        let candidates = edgeCandidates(cam, at: loc)
+        let edge = candidates.first(where: { $0.1 <= pickTolerance })?.0
         let face = faceAt(xy, basePts: basePts)
         let hole = nearestHole(cam, at: loc)
         let z = hole?.z ?? face?.z ?? 0
+
+        if calibratingPick {
+            calibrationSample = PickCalibration(
+                point: loc,
+                nearestEdge: candidates.first?.0,
+                edgeDistances: Array(candidates.prefix(3)).map { $0.1 },
+                hole: hole,
+                face: face)
+            if let d = calibrationSample?.edgeDistances.first {
+                let second = calibrationSample!.edgeDistances.count > 1
+                    ? ncf(calibrationSample!.edgeDistances[1]) : "无"
+                measurePickHint = "校准：最近边 \(ncf(d)) pt；第二近 \(second) pt"
+            } else {
+                measurePickHint = "校准：当前容差内没有边；可调大拾取半径或放大视图"
+            }
+            return
+        }
         pickedPoint = ModelPickPoint(x: xy.0, y: xy.1, z: z)
 
         switch measureTarget {
@@ -4064,19 +4097,7 @@ struct StudioScreen: View {
     }
 
     private func edgeIsAmbiguous(_ cam: Cam, at loc: CGPoint) -> Bool {
-        var ds: [Double] = []
-        func scan(_ pts: [CGPoint], z: Double) {
-            guard pts.count > 1 else { return }
-            for i in pts.indices {
-                let a = pts[i], b = pts[(i + 1) % pts.count]
-                let d = distanceToSegment(loc, cam.p(Double(a.x), Double(a.y), z),
-                                           cam.p(Double(b.x), Double(b.y), z))
-                if d <= pickTolerance { ds.append(d) }
-            }
-        }
-        scan(PartProg.pts(spec), z: 0)
-        for st in spec.steps { scan(PartProg.pts(st, spec), z: st.drawTop) }
-        ds.sort()
+        let ds = edgeCandidates(cam, at: loc).map { $0.1 }.filter { $0 <= pickTolerance }
         return ds.count > 1 && ds[1] - ds[0] < 3
     }
 
@@ -4114,6 +4135,50 @@ struct StudioScreen: View {
                     Text("边/孔太难点就调大；点错相邻边就调小。")
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                 }
+                Toggle("拾取校准模式", isOn: $calibratingPick).tint(studioBlue)
+                if calibratingPick {
+                    Text("打开测量后，在模型上点一下：这里会显示该点到最近边/第二近边/孔/面的屏幕距离，用来决定拾取半径。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let sample = calibrationSample {
+                        HStack {
+                            Text("最近边").font(.system(size: 11))
+                            Spacer()
+                            Text(sample.edgeDistances.first.map { "\(ncf($0)) pt" } ?? "未命中")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(studioBlue)
+                        }
+                        if sample.edgeDistances.count > 1 {
+                            HStack {
+                                Text("第二近边").font(.system(size: 11))
+                                Spacer()
+                                Text("\(ncf(sample.edgeDistances[1])) pt")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(sample.edgeDistances[1] - sample.edgeDistances[0] < 3 ? Color.red : Color.secondary)
+                            }
+                        }
+                        if let h = sample.hole {
+                            Text("孔/腔命中：\(h.name)").font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                        if let f = sample.face {
+                            Text("面命中：\(f.name) · Z\(ncf(f.z))").font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                        if let first = sample.edgeDistances.first {
+                            Button("按当前命中设容差 \(Int(max(12, min(40, first + 4)))) pt") {
+                                pickTolerance = max(12, min(40, first + 4))
+                            }
+                            .font(.system(size: 11, weight: .semibold))
+                        }
+                    }
+                }
+                Button("恢复默认容差 22 pt") {
+                    pickTolerance = 22
+                    calibrationSample = nil
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+
                 HStack(spacing: 6) {
                     Text(measurePickHint)
                         .font(.system(size: 10))
@@ -5131,6 +5196,26 @@ struct StudioScreen: View {
             let q = cam.p(p.x, p.y, p.z)
             ctx.fill(Path(ellipseIn: CGRect(x: q.x - 4, y: q.y - 4, width: 8, height: 8)),
                      with: .color(.blue))
+        }
+
+        if calibratingPick, let sample = calibrationSample {
+            let q = sample.point
+            let r = CGFloat(pickTolerance)
+            ctx.stroke(Path(ellipseIn: CGRect(x: q.x - r, y: q.y - r, width: r * 2, height: r * 2)),
+                       with: .color(.green.opacity(0.8)),
+                       style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+            ctx.stroke(Path { p in
+                p.move(to: CGPoint(x: q.x - 8, y: q.y)); p.addLine(to: CGPoint(x: q.x + 8, y: q.y))
+                p.move(to: CGPoint(x: q.x, y: q.y - 8)); p.addLine(to: CGPoint(x: q.x, y: q.y + 8))
+            }, with: .color(.green), lineWidth: 1.5)
+            ctx.draw(Text("\(Int(pickTolerance)) pt").font(.system(size: 9, weight: .bold)).foregroundColor(.green),
+                     at: CGPoint(x: q.x, y: q.y + r + 10))
+            if let e = sample.nearestEdge {
+                let a = cam.p(Double(e.a.x), Double(e.a.y), e.z)
+                let b = cam.p(Double(e.b.x), Double(e.b.y), e.z)
+                ctx.stroke(Path { p in p.move(to: a); p.addLine(to: b) },
+                           with: .color(.green), lineWidth: 3)
+            }
         }
     }
 
