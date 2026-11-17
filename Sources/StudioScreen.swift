@@ -7454,7 +7454,14 @@ struct StudioScreen: View {
             }
 
             Section("工件坐标系 / 程序") {
-                iRow("程序号 O", $spec.programNo)
+                HStack {
+                    Text("程序号 O")
+                    Spacer()
+                    TextField("1010", value: $spec.programNo, format: .number)
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 100)
+                }
                 Toggle("程序尾 M01 可选停", isOn: $spec.optionalStop)
                 Picker("坐标系", selection: $spec.coord) {
                     ForEach([54, 55, 56, 57, 58, 59], id: \.self) { n in Text("G\(n)").tag(n) }
