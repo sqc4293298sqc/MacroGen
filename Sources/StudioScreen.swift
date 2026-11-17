@@ -28,6 +28,9 @@ struct StudioScreen: View {
     @State private var pitch = 0.62
     @State private var zoom = 1.0
     @State private var zoomBase = 1.0
+    @State private var panX = 0.0
+    @State private var panY = 0.0
+    @State private var viewPanMode = false
     @State private var lastDrag: CGSize = .zero
 
     // 3D 指针
@@ -63,6 +66,7 @@ struct StudioScreen: View {
 
     // Digit 式界面状态
     @State private var modelPanel: StudioModelPanel = .none
+    @State private var modelFilter: ModelSelectionFilter = .all
     @State private var bodyVisible = true
     @State private var selectedTreeID: String? = nil
     @State private var hiddenTreeIDs: Set<String> = []
@@ -105,6 +109,11 @@ struct StudioScreen: View {
 
     private enum StudioModelPanel: Equatable {
         case none, tree, body, extrude, steps, section, measure, display, tools
+    }
+
+    private enum ModelSelectionFilter: String, CaseIterable, Identifiable {
+        case all = "全部", feat = "特征", step = "台阶", sketch = "草图"
+        var id: String { rawValue }
     }
 
     private enum SketchSidePanel: Hashable {
@@ -2300,7 +2309,13 @@ struct StudioScreen: View {
                         .onChanged { g in
                             let travel = hypot(Double(g.translation.width), Double(g.translation.height))
                             guard travel > 3 else { return }
-                            if tapOnModel {
+                            if viewPanMode {
+                                panX += Double(g.translation.width - lastDrag.width)
+                                panY += Double(g.translation.height - lastDrag.height)
+                                lastDrag = g.translation
+                                return
+                            }
+                            if tapOnModel && (modelFilter == .all || modelFilter == .feat) {
                                 if dragFeatID == nil {
                                     let cam = modelCam(size: geo.size)
                                     var best = 40.0
@@ -2342,6 +2357,38 @@ struct StudioScreen: View {
                                 return
                             }
                             lastTapAt = now
+                            if !tapOnModel && (modelFilter == .feat || modelFilter == .all) {
+                                let cam = modelCam(size: geo.size)
+                                var best = 32.0
+                                var hit: PartFeat? = nil
+                                for f in spec.feats {
+                                    let q = cam.p(f.x, f.y, PartProg.hostZ(spec, f.x, f.y))
+                                    let d = hypot(Double(g.location.x) - Double(q.x),
+                                                  Double(g.location.y) - Double(q.y))
+                                    if d < best { best = d; hit = f }
+                                }
+                                if let f = hit {
+                                    selectedTreeID = "feat-\(f.id.uuidString)"
+                                    modelPanel = .tree
+                                    showToastView("已选中特征 \(f.kind.rawValue)，双击树可编辑")
+                                    return
+                                }
+                            }
+                            if !tapOnModel && modelFilter == .step {
+                                let xy = modelXY(at: g.location, size: geo.size)
+                                if let st = PartProg.stepAt(spec, xy.0, xy.1) {
+                                    selectedTreeID = "step-\(st.id.uuidString)"
+                                    modelPanel = .tree
+                                    showToastView("已选中台阶 \(st.name)")
+                                    return
+                                }
+                            }
+                            if !tapOnModel && modelFilter == .sketch {
+                                selectedTreeID = "sketch"
+                                modelPanel = .tree
+                                showToastView("已选中草图")
+                                return
+                            }
                             guard tapOnModel else { return }
                             let xy = modelXY(at: g.location, size: geo.size)
                             ptrX = xy.0; ptrY = xy.1; hasPtr = true
@@ -2496,7 +2543,23 @@ struct StudioScreen: View {
                     .foregroundStyle(studioBlue)
             }
             Spacer()
-            Text("单指 360° · 双指缩放 · 点选顶面")
+            Button {
+                viewPanMode.toggle()
+                lastDrag = .zero
+                showToastView(viewPanMode ? "单指平移已开：拖动只移视图" : "单指旋转已开")
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "hand.draw")
+                    Text("平移")
+                }
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(viewPanMode ? studioBlue : .secondary)
+            }
+            .buttonStyle(.plain)
+            Text("过滤:\(modelFilter.rawValue)")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+            Text("单指\(viewPanMode ? "平移" : "360°") · 双指缩放")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }
@@ -3172,7 +3235,15 @@ struct StudioScreen: View {
                 Text("网格吸附、节点吸附与草图页“参数”里同一组设置，只影响草图落点。")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                 Divider()
-                Text("单指自由旋转（俯仰不锁 ±90°），双指缩放；切换视角后面板自动收起。")
+                Text("选择过滤").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                Picker("选择过滤", selection: $modelFilter) {
+                    ForEach(ModelSelectionFilter.allCases) { f in Text(f.rawValue).tag(f) }
+                }
+                .pickerStyle(.segmented)
+                Text("过滤后：全部=点特征/台阶都能选；特征=只选孔/腔；台阶=只选增料台阶；草图=只选草图。特征树不受影响。")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                Toggle("单指平移视图", isOn: $viewPanMode)
+                Text("单指自由旋转（俯仰不锁 ±90°），双指缩放；打开平移后单指拖动只移视图。")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
             .padding(.horizontal, 13)
@@ -3375,6 +3446,7 @@ struct StudioScreen: View {
 
     private func setView(_ y: Double, _ p: Double) {
         yaw = y; pitch = p; zoom = 0.95; zoomBase = 0.95
+        panX = 0; panY = 0
         if abs(y - 0.78) < 0.1 && abs(p - 0.62) < 0.1 {
             modelViewName = "等轴"
         } else if abs(y) < 0.1 && abs(p - 1.5) < 0.1 {
@@ -3451,7 +3523,8 @@ struct StudioScreen: View {
     }
 
     private func modelCam(size: CGSize) -> Cam {
-        Cam(spec: spec, yaw: yaw, pitch: pitch, zoom: zoom, size: size)
+        Cam(spec: spec, yaw: yaw, pitch: pitch, zoom: zoom,
+            panX: panX, panY: panY, size: size)
     }
 
     private func modelXY(at p: CGPoint, size: CGSize) -> (Double, Double) {
@@ -4437,8 +4510,19 @@ struct StudioScreen: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            Section("工序清单") {
+            Section("工序导航器（CAM）") {
                 let ops = PartProg.ops(spec)
+                HStack {
+                    Label("PROGRAM", systemImage: "list.bullet.indent")
+                        .font(.system(size: 11, weight: .semibold))
+                    Spacer()
+                    Text("T/D · S/F · Z")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Text("\(ops.count) 道")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
                 if ops.isEmpty {
                     Text("没有工序：检查上面的开关和模型").font(.caption).foregroundStyle(.secondary)
                 } else {
@@ -4446,6 +4530,9 @@ struct StudioScreen: View {
                         let i = (ops.firstIndex(where: { $0.id == op.id }) ?? 0) + 1
                         VStack(alignment: .leading, spacing: 5) {
                             HStack(spacing: 7) {
+                                Text(i == ops.count ? "└" : "├")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(.secondary)
                                 Text("\(i)")
                                     .font(.system(size: 10, weight: .semibold)).foregroundStyle(.white)
                                     .frame(width: 18, height: 18)
@@ -4646,6 +4733,8 @@ private struct Cam {
     let yaw: Double
     let pitch: Double
     let zoom: Double
+    let panX: Double
+    let panY: Double
     let size: CGSize
 
     // 缓存投影参数：每帧只算一次，避免每个点都重算包围盒和三角函数
@@ -4657,11 +4746,14 @@ private struct Cam {
     private let midX: Double
     private let midY: Double
 
-    init(spec: PartSpec, yaw: Double, pitch: Double, zoom: Double, size: CGSize) {
+    init(spec: PartSpec, yaw: Double, pitch: Double, zoom: Double,
+         panX: Double = 0, panY: Double = 0, size: CGSize) {
         self.spec = spec
         self.yaw = yaw
         self.pitch = pitch
         self.zoom = zoom
+        self.panX = panX
+        self.panY = panY
         self.size = size
 
         let b = PartProg.bbox(spec)
@@ -4696,14 +4788,14 @@ private struct Cam {
         let rx = x * cy - y * sy
         let ry = x * sy + y * cy
         let syy = -(ry * sp + z * cp)
-        return CGPoint(x: Double(size.width) / 2 + (rx - midX) * kValue,
-                       y: Double(size.height) / 2 + (syy - midY) * kValue)
+        return CGPoint(x: Double(size.width) / 2 + panX + (rx - midX) * kValue,
+                       y: Double(size.height) / 2 + panY + (syy - midY) * kValue)
     }
 
     func unprojectTop(_ pt: CGPoint) -> (Double, Double) {
         let sp2 = abs(sp) < 0.15 ? (sp < 0 ? -0.15 : 0.15) : sp
-        let rx = (Double(pt.x) - Double(size.width) / 2) / kValue + midX
-        let ry = -((Double(pt.y) - Double(size.height) / 2) / kValue + midY) / sp2
+        let rx = (Double(pt.x) - Double(size.width) / 2 - panX) / kValue + midX
+        let ry = -((Double(pt.y) - Double(size.height) / 2 - panY) / kValue + midY) / sp2
         let x = rx * cy + ry * sy
         let y = -rx * sy + ry * cy
         return (x, y)
