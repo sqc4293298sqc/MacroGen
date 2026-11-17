@@ -12,7 +12,7 @@ enum ContourKind: String, CaseIterable, Identifiable {
 }
 
 /// 轮廓节点：kind 表示"从上一个点到本点"这一段用什么走
-struct ContourNode: Identifiable {
+struct ContourNode: Identifiable, Equatable {
     var id = UUID()
     var x: Double = 0
     var y: Double = 0
@@ -52,6 +52,7 @@ struct DrawSpec {
     var hNo: Int = 13
     var outward: Bool = true      // true 外形（刀在轮廓外） / false 内腔（刀在轮廓内）
     var leadR: Double = 0         // 0 = 自动取 刀径/2 + 2
+    var zTop: Double = 0          // 这一层的顶面 Z；基础层为 0，台阶层为正
 }
 
 /// 一段真实轮廓（几何）
@@ -309,7 +310,7 @@ enum ContourProg {
         L.append("( 起点 X\(ncf(p0.x)) Y\(ncf(p0.y))  半圆进刀R\(ncf(lead)) )")
         L.append("G17 G21 G40 G49 G80 G90 G54")
         L.append("( X0 Y0 就是 G54 零点, 不对刀不用改 )")
-        L.append("G43 H\(s.hNo) Z\(ncf(s.safeZ, 1))")
+        L.append("G43 H\(s.hNo) Z\(ncf(s.safeZ + s.zTop, 1))")
         L.append("M3 S\(Int(s.rpm))")
         L.append("M8")
         L.append("#1=\(ncf(s.depth)) (总深)")
@@ -317,15 +318,16 @@ enum ContourProg {
         L.append("#6=\(ncf(s.feed, 1)) (切削F)")
         L.append("#4=\(plungeF) (下刀F, 取切削的1/3)")
         L.append("#10=0 (层号)")
+        L.append("#11=\(ncf(s.zTop, 1)) (这一层顶面Z)")
         L.append("G0 X\(ncf(ap.x)) Y\(ncf(ap.y)) (起刀点, 轮廓外)")
-        L.append("G0 Z2.")
-        L.append("G1 Z0 F#4")
+        L.append("G0 Z\(ncf(s.zTop + 2, 1))")
+        L.append("G1 Z\(ncf(s.zTop, 1)) F#4")
         L.append("( ===== 一层一层往下, 每层到位再切一圈, 不抬Z ===== )")
         L.append("WHILE[#10LT\(layers)]DO1")
         L.append("#10=#10+1")
         L.append("#5=#10*#2")
         L.append("IF[#5GT#1]THEN#5=#1")
-        L.append("G1 Z-#5 F#4 (本层下刀)")
+        L.append("G1 Z[#11-#5] F#4 (本层下刀)")
         L.append("\(compCode) D\(s.hNo) \(leadCode) X\(ncf(p0.x)) Y\(ncf(p0.y)) I\(ncf(cp.x - ap.x)) J\(ncf(cp.y - ap.y)) F#6 (半圆切入)")
 
         for seg in segs {
@@ -347,7 +349,7 @@ enum ContourProg {
 
         L.append("G40 \(leadCode) X\(ncf(ap.x)) Y\(ncf(ap.y)) I\(ncf(cp.x - p0.x)) J\(ncf(cp.y - p0.y)) (半圆切出, 取消刀补)")
         L.append("END1")
-        L.append("G0 Z\(ncf(s.safeZ, 1))")
+        L.append("G0 Z\(ncf(s.safeZ + s.zTop, 1))")
         L.append("M5")
         L.append("M9")
         L.append("G28 G91 Z0")

@@ -9,6 +9,17 @@ struct StudioScreen: View {
     @State private var step = 0
     @State private var code = ""
     @State private var showResult = false
+    @State private var opGenerated = false
+    @State private var showOpCode = false
+    @State private var opCodeTitle = ""
+    @State private var opCodeText = ""
+
+    // 2D 刀路检查图层
+    @State private var cam2DStock = true
+    @State private var cam2DPart = true
+    @State private var cam2DSketch = false
+    @State private var cam2DToolpath = true
+    @State private var cam2DRapid = true
 
     // 3D 视角
     @State private var yaw = 0.78
@@ -88,7 +99,7 @@ struct StudioScreen: View {
     }
 
     private enum StudioModelPanel: Equatable {
-        case none, tree, body, extrude, section, measure, display, tools
+        case none, tree, body, extrude, steps, section, measure, display, tools
     }
 
     private enum SketchSidePanel: Hashable {
@@ -175,6 +186,28 @@ struct StudioScreen: View {
         .navigationBarBackButtonHidden(true)
         .navigationDestination(isPresented: $showResult) {
             PartResultView(code: code)
+        }
+        .onChange(of: spec) { _ in
+            opGenerated = false
+        }
+        .sheet(isPresented: $showOpCode) {
+            NavigationStack {
+                ScrollView {
+                    Text(opCodeText)
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                }
+                .navigationTitle(opCodeTitle)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("关闭") { showOpCode = false }
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showRotate) {
             TransformSheet(spec: $spec, rotate: true, onUndo: { pushUndo() })
@@ -2345,6 +2378,9 @@ struct StudioScreen: View {
                 railButton("拉伸", "arrow.up.right.square", active: modelPanel == .extrude) {
                     modelPanel = modelPanel == .extrude ? .none : .extrude
                 }
+                railButton("台阶", "square.stack.3d.up", active: modelPanel == .steps) {
+                    modelPanel = modelPanel == .steps ? .none : .steps
+                }
                 railButton("孔", "circle.circle", active: false) {
                     let f = addFeat(.hole)
                     selectedTreeID = "feat-\(f.id.uuidString)"
@@ -2493,6 +2529,8 @@ struct StudioScreen: View {
                 bodyPanel
             case .extrude:
                 extrudePanel
+            case .steps:
+                stepsPanel
             case .section:
                 sectionPanel
             case .measure:
@@ -2521,6 +2559,7 @@ struct StudioScreen: View {
         case .tree: return "建模树"
         case .body: return "体"
         case .extrude: return "拉伸"
+        case .steps: return "多台阶"
         case .section: return "剖切"
         case .measure: return "测量"
         case .display: return "显示"
@@ -2534,6 +2573,7 @@ struct StudioScreen: View {
         case .tree: return "\(treeItems.count) 项 · 可见/排序/编辑"
         case .body: return "实体属性 · 体积/重量/材料"
         case .extrude: return "由草图向下拉伸"
+        case .steps: return "\(spec.steps.count) 层 · 独立 Z / 轮廓"
         case .section: return "X/Y/Z · 实时预览"
         case .measure: return "体积/重量/尺寸/面积"
         case .display: return "视角与网格"
@@ -2551,6 +2591,14 @@ struct StudioScreen: View {
             icon: "pencil",
             detail: "\(spec.template.rawValue) · \(spec.nodes.count) 个点",
             canMove: false, canDelete: false))
+        for (i, s) in spec.steps.enumerated() {
+            out.append(StudioTreeItem(
+                id: "step-\(s.id.uuidString)", index: out.count + 1,
+                title: s.name.isEmpty ? "台阶 \(i + 1)" : s.name,
+                icon: "square.stack.3d.up",
+                detail: "\(s.mode.rawValue) \(s.shape.summary) · Z\(ncf(s.z0))~Z\(ncf(s.z1))",
+                canMove: true, canDelete: true))
+        }
         for (i, l) in spec.innerLoops.enumerated() {
             out.append(StudioTreeItem(
                 id: "inner-\(l.id.uuidString)", index: out.count + 1,
@@ -2569,7 +2617,7 @@ struct StudioScreen: View {
         out.append(StudioTreeItem(
             id: "extrude", index: out.count + 1, title: "拉伸",
             icon: "arrow.up.right.square",
-            detail: "H \(ncf(spec.height)) mm",
+            detail: "H \(ncf(spec.height)) mm\(spec.steps.isEmpty ? "" : " · \(spec.steps.count) 台阶")",
             canMove: false, canDelete: false))
         if treeFeatOnly {
             out = out.filter { $0.id.hasPrefix("feat-") }
@@ -2685,6 +2733,11 @@ struct StudioScreen: View {
                   idx > 0 else { return }
             pushUndo()
             spec.feats.swapAt(idx, idx - 1)
+        } else if item.id.hasPrefix("step-") {
+            guard let idx = spec.steps.firstIndex(where: { "step-\($0.id.uuidString)" == item.id }),
+                  idx > 0 else { return }
+            pushUndo()
+            spec.steps.swapAt(idx, idx - 1)
         }
     }
 
@@ -2694,6 +2747,8 @@ struct StudioScreen: View {
             step = 0
         } else if item.id == "extrude" {
             modelPanel = .extrude
+        } else if item.id.hasPrefix("step-") {
+            modelPanel = .steps
         } else {
             modelPanel = .tools
             showToastView("已选中 \(item.title)，参数在“建模工具”里")
@@ -2709,6 +2764,10 @@ struct StudioScreen: View {
                    let id = UUID(uuidString: item.id.replacingOccurrences(of: "feat-", with: "")) {
             pushUndo()
             spec.feats.removeAll { $0.id == id }
+        } else if item.id.hasPrefix("step-"),
+                   let id = UUID(uuidString: item.id.replacingOccurrences(of: "step-", with: "")) {
+            pushUndo()
+            spec.steps.removeAll { $0.id == id }
         }
         selectedTreeID = nil
     }
@@ -2739,6 +2798,136 @@ struct StudioScreen: View {
                         .foregroundStyle(.white)
                 }
                 .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 13)
+            .padding(.bottom, 14)
+        }
+    }
+
+    private var stepsPanel: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.stack.3d.up")
+                        .font(.system(size: 17))
+                        .foregroundStyle(studioBlue)
+                    Text("基础层 + \(spec.steps.count) 个台阶")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("基础层").font(.system(size: 12, weight: .semibold))
+                        Text("草图外形 · Z \(ncf(-spec.height)) ~ 0")
+                            .font(.system(size: 9)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text("当前草图").font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(studioBlue)
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(studioBlue.opacity(0.08)))
+
+                if spec.steps.isEmpty {
+                    Text("还没有台阶。下面的按钮会把当前草图复制成第一层，之后可单独改这一层的尺寸和 Z。")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+
+                ForEach($spec.steps) { $s in
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack {
+                            TextField("台阶名称", text: $s.name)
+                                .font(.system(size: 12, weight: .semibold))
+                                .textFieldStyle(.roundedBorder)
+                            Picker("", selection: $s.mode) {
+                                ForEach(PartStepMode.allCases) { m in Text(m.rawValue).tag(m) }
+                            }
+                            .labelsHidden()
+                            .frame(width: 70)
+                            Button {
+                                pushUndo()
+                                let id = s.id
+                                spec.steps.removeAll { $0.id == id }
+                            } label: {
+                                Image(systemName: "trash").foregroundStyle(.red)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        HStack(spacing: 6) {
+                            miniNum("底 Z", $s.z0)
+                            miniNum("厚", $s.height)
+                            Text("顶 Z \(ncf(s.z1))")
+                                .font(.system(size: 9)).foregroundStyle(.secondary)
+                        }
+                        Picker("轮廓", selection: $s.shape.template) {
+                            ForEach(ContourTemplate.allCases) { t in Text(t.rawValue).tag(t) }
+                        }
+                        .pickerStyle(.segmented)
+                        switch s.shape.template {
+                        case .rect:
+                            HStack(spacing: 6) {
+                                miniNum("长", $s.shape.rectL)
+                                miniNum("宽", $s.shape.rectW)
+                                miniNum("R", $s.shape.rectR)
+                            }
+                        case .circle:
+                            miniNum("Ø", $s.shape.circleD)
+                        case .slot:
+                            HStack(spacing: 6) {
+                                miniNum("总长", $s.shape.slotL)
+                                miniNum("槽宽", $s.shape.slotW)
+                            }
+                        case .free:
+                            Text("手画轮廓：\(s.shape.nodes.count) 段")
+                                .font(.system(size: 9)).foregroundStyle(.secondary)
+                        }
+                        HStack(spacing: 8) {
+                            Button("用当前草图更新") {
+                                pushUndo()
+                                if let idx = spec.steps.firstIndex(where: { $0.id == s.id }) {
+                                    spec.steps[idx].shape = PartShape(spec)
+                                }
+                            }
+                            .font(.system(size: 10, weight: .semibold))
+                            Button("复制到草图") {
+                                pushUndo()
+                                spec.template = s.shape.template
+                                spec.rectL = s.shape.rectL
+                                spec.rectW = s.shape.rectW
+                                spec.rectR = s.shape.rectR
+                                spec.circleD = s.shape.circleD
+                                spec.slotL = s.shape.slotL
+                                spec.slotW = s.shape.slotW
+                                spec.nodes = s.shape.nodes
+                                step = 0
+                                showToastView("台阶轮廓已复制到草图，可继续编辑")
+                            }
+                            .font(.system(size: 10, weight: .semibold))
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(9)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color(.secondarySystemBackground)))
+                }
+
+                Button {
+                    pushUndo()
+                    var s = PartStep(from: spec)
+                    s.name = "台阶 \(spec.steps.count + 1)"
+                    s.z0 = max(0, spec.steps.map(\.z1).max() ?? 0)
+                    s.height = 5
+                    spec.steps.append(s)
+                    showToastView("已加台阶：默认在当前最高面往上 5 mm")
+                } label: {
+                    Label("新增台阶（复制当前草图）", systemImage: "plus.square.on.square")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                }
+                .buttonStyle(.borderedProminent)
+
+                Text("说明：每层按自己的 Z 出轮廓程序；台阶周围的毛坯粗加工要按实际毛坯补工步。除料层目前只参与建模显示，不自动出刀路。")
+                    .font(.system(size: 9)).foregroundStyle(.orange)
             }
             .padding(.horizontal, 13)
             .padding(.bottom, 14)
@@ -3226,6 +3415,37 @@ struct StudioScreen: View {
             return path
         }
 
+        func ringPath(_ ring: [CGPoint], _ z: Double) -> Path {
+            var path = Path()
+            guard let f = ring.first else { return path }
+            path.move(to: cam.p(Double(f.x), Double(f.y), z))
+            for q in ring.dropFirst() { path.addLine(to: cam.p(Double(q.x), Double(q.y), z)) }
+            return path
+        }
+
+        func prism(_ ring: [CGPoint], zTop: Double, zBottom: Double,
+                   tint: Color, alpha: Double, dashed: Bool = false) {
+            guard ring.count > 2 else { return }
+            let top = ringPath(ring, zTop)
+            let bottom = ringPath(ring, zBottom)
+            ctx.fill(bottom, with: .color(tint.opacity(alpha * 0.45)))
+            ctx.stroke(bottom, with: .color(tint.opacity(alpha + 0.25)), lineWidth: 1)
+            for i in ring.indices {
+                let a = ring[i], b = ring[(i + 1) % ring.count]
+                var side = Path()
+                side.move(to: cam.p(Double(a.x), Double(a.y), zTop))
+                side.addLine(to: cam.p(Double(b.x), Double(b.y), zTop))
+                side.addLine(to: cam.p(Double(b.x), Double(b.y), zBottom))
+                side.addLine(to: cam.p(Double(a.x), Double(a.y), zBottom))
+                side.closeSubpath()
+                ctx.fill(side, with: .color(tint.opacity(alpha * 0.55)))
+            }
+            ctx.fill(top, with: .color(tint.opacity(alpha)))
+            ctx.stroke(top, with: .color(tint),
+                       style: StrokeStyle(lineWidth: dashed ? 1.4 : 2,
+                                          dash: dashed ? [4, 3] : []))
+        }
+
         func selectedMarker(_ f: PartFeat, radius: Double) {
             let r = max(radius, 1)
             ctx.stroke(circle(f.x, f.y, 0, r), with: .color(studioBlue), lineWidth: 2)
@@ -3305,6 +3525,27 @@ struct StudioScreen: View {
         if showZCut {
             ctx.fill(ringPath(-visibleDepth), with: .color(Color.orange.opacity(0.42)))
             ctx.stroke(ringPath(-visibleDepth), with: .color(.orange), lineWidth: 2)
+        }
+
+        // 多台阶：基础体之上按各自的 Z 画独立棱柱；除料层用红色虚线
+        for s in spec.steps.sorted(by: { $0.z0 < $1.z0 })
+            where !hiddenTreeIDs.contains("step-\(s.id.uuidString)") {
+            let sp = PartProg.pts(s, spec)
+            guard sp.count > 2 else { continue }
+            if s.mode == .add {
+                prism(sp, zTop: s.z1, zBottom: s.z0,
+                      tint: bodyTint, alpha: 0.20)
+            } else {
+                prism(sp, zTop: s.z1, zBottom: s.z0,
+                      tint: Color.red, alpha: 0.13, dashed: true)
+            }
+            let cx = sp.reduce(0.0) { $0 + Double($1.x) } / Double(sp.count)
+            let cy = sp.reduce(0.0) { $0 + Double($1.y) } / Double(sp.count)
+            let q = cam.p(cx, cy, s.z1)
+            ctx.draw(Text("\(s.name)  Z\(ncf(s.z0))~\(ncf(s.z1))")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(s.mode == .add ? bodyTint : .red),
+                     at: CGPoint(x: q.x, y: q.y - 11))
         }
 
         for l in spec.innerLoops where !hiddenTreeIDs.contains("inner-\(l.id.uuidString)") {
@@ -3768,8 +4009,180 @@ struct StudioScreen: View {
         else if text.contains("钻") { openOp("钻孔") }
     }
 
+    // MARK: - 2D 刀路检查
+
+    private var cam2DPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Canvas { context, size in
+                drawCam2D(context: context, size: size)
+            }
+            .frame(height: 300)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(.separator).opacity(0.5), lineWidth: 0.6))
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    chip("毛坯", cam2DStock) { cam2DStock.toggle() }
+                    chip("零件", cam2DPart) { cam2DPart.toggle() }
+                    chip("草图", cam2DSketch) { cam2DSketch.toggle() }
+                    chip("刀路", cam2DToolpath) { cam2DToolpath.toggle() }
+                    chip("快移", cam2DRapid) { cam2DRapid.toggle() }
+                }
+            }
+            Text("俯视示意：青色是切削中心线，灰色虚线是快移。用于快速检查过切/漏切；最终以 3D 仿真和程序为准。")
+                .font(.system(size: 9)).foregroundStyle(.secondary)
+        }
+    }
+
+    private func drawCam2D(context: GraphicsContext, size: CGSize) {
+        guard size.width > 10, size.height > 10 else { return }
+        let b = PartProg.bbox(spec)
+        let w = Double(size.width), h = Double(size.height)
+        let bw = Double(b.width), bh = Double(b.height)
+        guard bw > 0.1, bh > 0.1 else {
+            context.draw(Text("还没有可检查的轮廓").font(.system(size: 11)).foregroundColor(.secondary),
+                         at: CGPoint(x: size.width / 2, y: size.height / 2))
+            return
+        }
+        let margin = max(12.0, max(bw, bh) * 0.08)
+        let scale = min((w - 2 * margin) / bw, (h - 2 * margin) / bh)
+        let ox = (w - bw * scale) / 2 - Double(b.minX) * scale
+        let oy = (h - bh * scale) / 2 + Double(b.maxY) * scale
+        let cx = ox + Double(b.midX) * scale
+        let cy = oy - Double(b.midY) * scale
+
+        func p(_ x: Double, _ y: Double) -> CGPoint {
+            CGPoint(x: CGFloat(ox + x * scale), y: CGFloat(oy - y * scale))
+        }
+        func path(_ pts: [CGPoint]) -> Path {
+            var pth = Path()
+            guard let f = pts.first else { return pth }
+            pth.move(to: p(Double(f.x), Double(f.y)))
+            for q in pts.dropFirst() { pth.addLine(to: p(Double(q.x), Double(q.y))) }
+            return pth
+        }
+        func closed(_ pts: [CGPoint]) -> Path {
+            var pth = path(pts)
+            if pts.count > 2 { pth.closeSubpath() }
+            return pth
+        }
+        func circle(_ x: Double, _ y: Double, _ dia: Double) -> Path {
+            let r = CGFloat(max(0.7, dia * scale / 2))
+            let q = p(x, y)
+            return Path(ellipseIn: CGRect(x: q.x - r, y: q.y - r, width: r * 2, height: r * 2))
+        }
+
+        if cam2DStock {
+            let r = CGRect(x: p(Double(b.minX), Double(b.maxY)).x,
+                           y: p(Double(b.minX), Double(b.maxY)).y,
+                           width: CGFloat(bw * scale), height: CGFloat(bh * scale))
+            let stockPath = Path { pth in pth.addRect(r) }
+            context.fill(stockPath, with: .color(Color(white: 0.80).opacity(0.16)))
+            context.stroke(stockPath, with: .color(Color(white: 0.45)), lineWidth: 1)
+            context.draw(Text("毛坯 \(ncf(bw))×\(ncf(bh))")
+                            .font(.system(size: 8)).foregroundColor(.secondary),
+                         at: CGPoint(x: r.minX + 4, y: r.minY - 6))
+        }
+
+        if cam2DPart {
+            context.fill(closed(PartProg.pts(spec)), with: .color(studioBlue.opacity(0.15)))
+            context.stroke(closed(PartProg.pts(spec)), with: .color(studioBlue), lineWidth: 1.6)
+            for s in spec.steps {
+                let sp = PartProg.pts(s, spec)
+                guard sp.count > 2 else { continue }
+                let tint = s.mode == .add ? Color.green : Color.red
+                context.fill(closed(sp), with: .color(tint.opacity(0.13)))
+                context.stroke(closed(sp), with: .color(tint.opacity(0.85)),
+                               style: StrokeStyle(lineWidth: 1.2, dash: s.mode == .cut ? [3, 2] : []))
+                let q = p(sp.reduce(0.0) { $0 + Double($1.x) } / Double(sp.count),
+                          sp.reduce(0.0) { $0 + Double($1.y) } / Double(sp.count))
+                context.draw(Text("\(s.name) Z\(ncf(s.z0))~\(ncf(s.z1))")
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundColor(tint),
+                             at: CGPoint(x: q.x, y: q.y - 9))
+            }
+            for f in spec.feats {
+                if f.kind == .hole {
+                    context.fill(circle(f.x, f.y, f.dia), with: .color(Color(white: 0.2).opacity(0.55)))
+                    context.stroke(circle(f.x, f.y, f.dia), with: .color(Color(white: 0.3)), lineWidth: 1)
+                } else if f.kind == .rectPocket {
+                    let r = CGRect(x: p(f.x - f.w / 2, f.y + f.h / 2).x,
+                                   y: p(f.x - f.w / 2, f.y + f.h / 2).y,
+                                   width: CGFloat(f.w * scale), height: CGFloat(f.h * scale))
+                    context.stroke(Path { pth in pth.addRect(r) }, with: .color(.orange), lineWidth: 1.2)
+                } else {
+                    context.stroke(circle(f.x, f.y, f.dia), with: .color(.orange), lineWidth: 1.2)
+                }
+            }
+            for l in spec.innerLoops {
+                let lp = PartProg.loopPoints(l).map {
+                    CGPoint(x: $0.x + CGFloat(l.cx), y: $0.y + CGFloat(l.cy))
+                }
+                context.stroke(closed(lp), with: .color(.red.opacity(0.8)), lineWidth: 1.1)
+            }
+        }
+
+        if cam2DSketch {
+            context.stroke(closed(PartProg.pts(spec)), with: .color(.orange),
+                           style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            for l in spec.innerLoops {
+                let lp = PartProg.loopPoints(l).map {
+                    CGPoint(x: $0.x + CGFloat(l.cx), y: $0.y + CGFloat(l.cy))
+                }
+                context.stroke(closed(lp), with: .color(.orange.opacity(0.8)),
+                               style: StrokeStyle(lineWidth: 0.9, dash: [3, 3]))
+            }
+        }
+
+        if cam2DToolpath || cam2DRapid {
+            for seg in PartProg.toolpaths2D(spec) {
+                if seg.cut && !cam2DToolpath { continue }
+                if !seg.cut && !cam2DRapid { continue }
+                let sp = seg.pts.map { p(Double($0.x), Double($0.y)) }
+                if sp.count == 1 {
+                    let q = sp[0]
+                    context.fill(Path(ellipseIn: CGRect(x: q.x - 1.5, y: q.y - 1.5, width: 3, height: 3)),
+                                 with: .color(seg.cut ? Color.cyan : Color.gray.opacity(0.6)))
+                    continue
+                }
+                if seg.cut {
+                    context.stroke(path(seg.pts), with: .color(.cyan), lineWidth: 1.1)
+                } else {
+                    context.stroke(path(seg.pts), with: .color(Color.gray.opacity(0.55)),
+                                   style: StrokeStyle(lineWidth: 0.8, dash: [3, 2]))
+                }
+            }
+        }
+
+        context.draw(Text("Z0").font(.system(size: 8, weight: .bold)).foregroundColor(.secondary),
+                     at: CGPoint(x: cx, y: cy + 12))
+    }
+
+    private func opStatusText(_ op: PartOpInfo) -> String {
+        switch op.status {
+        case .disabled: return "已禁用"
+        case .modelOnly: return "仅建模"
+        case .stale: return "需重算"
+        case .ready: return opGenerated ? "已生成" : "可生成"
+        }
+    }
+
+    private func opStatusColor(_ op: PartOpInfo) -> Color {
+        switch op.status {
+        case .disabled: return .gray
+        case .modelOnly: return .orange
+        case .stale: return .red
+        case .ready: return opGenerated ? .green : studioBlue
+        }
+    }
+
     private var camPage: some View {
         Group {
+            Section("2D 刀路检查") {
+                cam2DPanel
+            }
+
             Section("工件坐标系") {
                 Picker("坐标系", selection: $spec.coord) {
                     ForEach([54, 55, 56, 57, 58, 59], id: \.self) { n in Text("G\(n)").tag(n) }
@@ -3869,26 +4282,76 @@ struct StudioScreen: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            Section("本次程序包含") {
-                let ops = PartProg.opList(spec)
+            Section("工序清单") {
+                let ops = PartProg.ops(spec)
                 if ops.isEmpty {
                     Text("没有工序：检查上面的开关和模型").font(.caption).foregroundStyle(.secondary)
                 } else {
-                    ForEach(ops.indices, id: \.self) { i in
-                        Button { openOp(for: ops[i]) } label: {
-                        HStack(spacing: 8) {
-                            Text("\(i + 1)")
-                                .font(.system(size: 11, weight: .semibold)).foregroundStyle(.white)
-                                .frame(width: 19, height: 19)
-                                .background(Circle().fill(Color(red: 1.0, green: 0.42, blue: 0.10)))
-                            Text(ops[i]).font(.system(size: 13))
-                            Spacer()
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.secondary)
+                    ForEach(ops) { op in
+                        let i = (ops.firstIndex(where: { $0.id == op.id }) ?? 0) + 1
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack(spacing: 7) {
+                                Text("\(i)")
+                                    .font(.system(size: 10, weight: .semibold)).foregroundStyle(.white)
+                                    .frame(width: 18, height: 18)
+                                    .background(Circle().fill(Color(red: 1.0, green: 0.42, blue: 0.10)))
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(op.title).font(.system(size: 13, weight: .semibold))
+                                    Text(op.kind).font(.system(size: 9)).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(opStatusText(op))
+                                    .font(.system(size: 9, weight: .bold))
+                                    .padding(.horizontal, 6).padding(.vertical, 3)
+                                    .background(Capsule().fill(opStatusColor(op).opacity(0.14)))
+                                    .foregroundStyle(opStatusColor(op))
+                            }
+                            Text(op.geometry)
+                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                                .lineLimit(2)
+                            HStack(spacing: 8) {
+                                Text("T\(op.tool) D\(ncf(op.dia))")
+                                Text("S\(op.spindle) F\(op.feed)")
+                                Text(op.zRange)
+                            }
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            HStack(spacing: 6) {
+                                Button(op.status == .disabled ? "启用" : "禁用") {
+                                    pushUndo()
+                                    if spec.disabledOps.contains(op.id) {
+                                        spec.disabledOps.remove(op.id)
+                                    } else {
+                                        spec.disabledOps.insert(op.id)
+                                    }
+                                }
+                                .font(.system(size: 10, weight: .semibold))
+                                .buttonStyle(.bordered)
+                                Button("单独重算") {
+                                    guard op.status != .modelOnly else {
+                                        showToastView("\(op.title) 仅参与建模，不生成刀路")
+                                        return
+                                    }
+                                    opCodeTitle = op.title
+                                    opCodeText = PartProg.build(spec, only: [op.id])
+                                    showOpCode = true
+                                }
+                                .font(.system(size: 10, weight: .semibold))
+                                .buttonStyle(.bordered)
+                                if op.status == .modelOnly {
+                                    Text("不生成刀路").font(.system(size: 9)).foregroundStyle(.orange)
+                                }
+                            }
                         }
-                        }
-                        .buttonStyle(.plain)
+                        .padding(.vertical, 4)
                     }
+                }
+                if opGenerated {
+                    Text("已按当前参数生成；改动参数后会自动回到“可生成”。")
+                        .font(.system(size: 9)).foregroundStyle(.green)
+                } else if !ops.isEmpty {
+                    Text("点“生成程序”后为已生成；每道工序可单独重算预览。")
+                        .font(.system(size: 9)).foregroundStyle(.secondary)
                 }
             }
 
@@ -3924,6 +4387,7 @@ struct StudioScreen: View {
             Section {
                 Button {
                     code = PartProg.build(spec)
+                    opGenerated = true
                     showResult = true
                 } label: {
                     HStack {

@@ -43,7 +43,7 @@ struct PartFeat: Identifiable, Equatable {
     }
 }
 
-struct SketchLoop: Identifiable {
+struct SketchLoop: Identifiable, Equatable {
     var id = UUID()
     var name: String = "内轮廓"
     var template: ContourTemplate = .circle
@@ -60,7 +60,69 @@ struct SketchLoop: Identifiable {
     var depth: Double = 5
 }
 
-struct PartSpec {
+// MARK: - 多台阶（同一零件上的独立 Z 层）
+
+/// 一层台阶的外形。保留模板字段，手画轮廓直接用 nodes。
+struct PartShape: Equatable {
+    var template: ContourTemplate = .rect
+    var rectL: Double = 120
+    var rectW: Double = 80
+    var rectR: Double = 0
+    var circleD: Double = 100
+    var slotL: Double = 120
+    var slotW: Double = 30
+    var nodes: [ContourNode] = []
+
+    init() {}
+
+    init(_ p: PartSpec) {
+        template = p.template
+        rectL = p.rectL
+        rectW = p.rectW
+        rectR = p.rectR
+        circleD = p.circleD
+        slotL = p.slotL
+        slotW = p.slotW
+        nodes = p.nodes
+    }
+
+    var summary: String {
+        switch template {
+        case .rect: return "\(ncf(rectL))×\(ncf(rectW))"
+        case .circle: return "Ø\(ncf(circleD))"
+        case .slot: return "\(ncf(slotL))×\(ncf(slotW))"
+        case .free: return "\(nodes.count) 段"
+        }
+    }
+}
+
+enum PartStepMode: String, CaseIterable, Identifiable {
+    case add = "增料"
+    case cut = "除料"
+    var id: String { rawValue }
+}
+
+struct PartStep: Identifiable, Equatable {
+    var id = UUID()
+    var name: String = "台阶"
+    var shape: PartShape = PartShape()
+    var z0: Double = 0          // 台阶底面 Z（基础顶面 = 0）
+    var height: Double = 5      // 台阶厚度
+    var mode: PartStepMode = .add
+    var colorIndex: Int = 1
+    var z1: Double { z0 + height }
+
+    init() {}
+
+    init(from p: PartSpec) {
+        name = "台阶"
+        shape = PartShape(p)
+        z0 = 0
+        height = 5
+    }
+}
+
+struct PartSpec: Equatable {
     // 外形草图
     var template: ContourTemplate = .rect
     var rectL: Double = 120
@@ -77,6 +139,11 @@ struct PartSpec {
     var feats: [PartFeat] = []
     /// 同一张草图上的内轮廓：内圆/内方/异形，建模时自动当挖孔或型腔
     var innerLoops: [SketchLoop] = []
+
+    /// 基础拉伸之上的独立台阶；空数组就是旧的单实体 2.5D
+    var steps: [PartStep] = []
+    /// 工序禁用：id 由 PartProg.opInfo 统一生成
+    var disabledOps: Set<String> = []
 
     // 切削
     var spindle: Int = 2000
@@ -113,6 +180,34 @@ struct PartSpec {
     var originY: Double = 0
 }
 
+// MARK: - 工序清单
+
+enum PartOpStatus: String {
+    case ready = "可生成"
+    case disabled = "已禁用"
+    case modelOnly = "仅建模"
+    case stale = "需重算"
+}
+
+struct PartOpInfo: Identifiable {
+    var id: String
+    var title: String
+    var kind: String
+    var geometry: String
+    var tool: Int
+    var dia: Double
+    var spindle: Int
+    var feed: Int
+    var zRange: String
+    var status: PartOpStatus
+
+    var enabled: Bool { status == .ready || status == .stale }
+
+    var summary: String {
+        "\(title) · \(kind)　T\(tool) D\(ncf(dia))　S\(spindle) F\(feed)"
+    }
+}
+
 // MARK: - 多工序程序
 
 enum PartProg {
@@ -124,15 +219,24 @@ enum PartProg {
 
     static func asDraw(_ p: PartSpec, outward: Bool, template: ContourTemplate? = nil,
                        circleD: Double? = nil, dia: Double, depth: Double, hNo: Int) -> DrawSpec {
+        var shape = PartShape(p)
+        if let template { shape.template = template }
+        if let circleD { shape.circleD = circleD }
+        return asDraw(shape, p, outward: outward, dia: dia, depth: depth, hNo: hNo)
+    }
+
+    /// 任意一层外形（基础草图或台阶）转成可画/可出程序的轮廓
+    static func asDraw(_ shape: PartShape, _ p: PartSpec, outward: Bool,
+                       dia: Double, depth: Double, hNo: Int, zTop: Double = 0) -> DrawSpec {
         var d = DrawSpec()
-        d.template = template ?? p.template
-        d.rectL = p.rectL
-        d.rectW = p.rectW
-        d.rectR = p.rectR
-        d.circleD = circleD ?? p.circleD
-        d.slotL = p.slotL
-        d.slotW = p.slotW
-        d.nodes = p.nodes
+        d.template = shape.template
+        d.rectL = shape.rectL
+        d.rectW = shape.rectW
+        d.rectR = shape.rectR
+        d.circleD = shape.circleD
+        d.slotL = shape.slotL
+        d.slotW = shape.slotW
+        d.nodes = shape.nodes
         d.toolDia = dia
         d.depth = depth
         d.stepDown = p.stepDown
@@ -141,6 +245,7 @@ enum PartProg {
         d.safeZ = p.safeZ
         d.hNo = hNo
         d.outward = outward
+        d.zTop = zTop
         return d
     }
 
@@ -178,6 +283,22 @@ enum PartProg {
         )
     }
 
+    static func pts(_ step: PartStep, _ p: PartSpec) -> [CGPoint] {
+        let d = asDraw(step.shape, p, outward: true, dia: p.contourDia,
+                       depth: max(step.height, 0.1), hNo: p.contourTool, zTop: step.z1)
+        return ContourGeo.flatten(ContourGeo.segments(ContourGeo.buildNodes(d)))
+    }
+
+    /// 台阶最高点（基础顶面是 0）
+    static func maxZ(_ p: PartSpec) -> Double {
+        max(0, p.steps.map(\.z1).max() ?? 0)
+    }
+
+    /// 零件最低点（基础底面是 -height）
+    static func minZ(_ p: PartSpec) -> Double {
+        min(-p.height, p.steps.map(\.z0).min() ?? -p.height)
+    }
+
     /// 按工件原点平移整件：让设定的 X0Y0 点变成程序里的 0,0
     static func shifted(_ p: PartSpec, dx: Double, dy: Double) -> PartSpec {
         var q = p
@@ -193,11 +314,17 @@ enum PartProg {
             m.nodes = l.nodes.map { n in var k = n; k.x += dx; k.y += dy; return k }
             return m
         }
+        q.steps = p.steps.map { s in
+            var m = s
+            m.shape.nodes = s.shape.nodes.map { n in var k = n; k.x += dx; k.y += dy; return k }
+            return m
+        }
         return q
     }
 
     static func bbox(_ p: PartSpec) -> CGRect {
-        let ps = pts(p)
+        var ps = pts(p)
+        for s in p.steps { ps.append(contentsOf: pts(s, p)) }
         guard let f = ps.first else { return CGRect(x: -50, y: -30, width: 100, height: 60) }
         var mnx = f.x, mxx = f.x, mny = f.y, mxy = f.y
         for q in ps {
@@ -207,44 +334,262 @@ enum PartProg {
         return CGRect(x: mnx, y: mny, width: mxx - mnx, height: mxy - mny)
     }
 
-    /// 工序清单（界面显示用）
-    static func opList(_ p: PartSpec) -> [String] {
-        var out: [String] = []
-        if p.doFace && p.topStock > 0 {
-            out.append("顶面 · 平面铣　T\(p.faceTool) D\(ncf(p.faceDia))")
+    /// 结构化工序清单：界面显示 T/D/S/F、几何和状态
+    static func ops(_ p: PartSpec) -> [PartOpInfo] {
+        var out: [PartOpInfo] = []
+        let b = bbox(p)
+        let maxZv = maxZ(p), minZv = minZ(p)
+
+        func status(_ id: String, fallback: PartOpStatus = .ready) -> PartOpStatus {
+            p.disabledOps.contains(id) ? .disabled : fallback
+        }
+
+        if p.doFace && p.topStock > 0 && p.steps.isEmpty {
+            out.append(PartOpInfo(
+                id: "face", title: "顶面", kind: "平面铣",
+                geometry: "毛坯 \(ncf(Double(b.width)))×\(ncf(Double(b.height)))",
+                tool: p.faceTool, dia: p.faceDia, spindle: p.spindle, feed: p.feed,
+                zRange: "Z\(ncf(maxZv)) → Z\(ncf(maxZv - p.topStock))",
+                status: status("face")))
         }
         if p.doContour {
-            out.append("外形轮廓 · 轮廓铣　T\(p.contourTool) D\(ncf(p.contourDia))")
+            out.append(PartOpInfo(
+                id: "contour", title: "外形轮廓", kind: "轮廓铣",
+                geometry: "外形 \(PartShape(p).summary)",
+                tool: p.contourTool, dia: p.contourDia, spindle: p.spindle, feed: p.feed,
+                zRange: "Z0 → Z\(ncf(-p.height))",
+                status: status("contour")))
+        }
+        for s in p.steps {
+            let id = "step-\(s.id.uuidString)"
+            out.append(PartOpInfo(
+                id: id, title: s.name, kind: s.mode == .add ? "台阶轮廓铣" : "除料台阶",
+                geometry: "\(s.mode.rawValue) \(s.shape.summary)",
+                tool: p.contourTool, dia: p.contourDia, spindle: p.spindle, feed: p.feed,
+                zRange: "Z\(ncf(s.z1)) → Z\(ncf(s.z0))",
+                status: status(id, fallback: s.mode == .add ? .ready : .modelOnly)))
         }
         for f in p.feats {
+            let id = "feat-\(f.id.uuidString)"
             if f.kind == .hole {
                 guard p.doHole else { continue }
                 switch p.holeMode {
                 case .spiral:
-                    out.append("\(f.name.isEmpty ? "孔" : f.name) Ø\(ncf(f.dia)) · 螺旋铣　T\(p.holeTool) D\(ncf(p.holeDia))")
-                case .g81:
-                    out.append("\(f.name.isEmpty ? "孔" : f.name) Ø\(ncf(f.dia)) · 钻孔 G81　T\(p.holeTool) D\(ncf(f.dia))")
-                case .g83:
-                    out.append("\(f.name.isEmpty ? "孔" : f.name) Ø\(ncf(f.dia)) · 钻孔 G83　T\(p.holeTool) D\(ncf(f.dia))")
+                    out.append(PartOpInfo(
+                        id: id, title: f.name.isEmpty ? "孔" : f.name, kind: "螺旋铣",
+                        geometry: "Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y))",
+                        tool: p.holeTool, dia: p.holeDia, spindle: p.spindle, feed: p.feed,
+                        zRange: "Z\(ncf(maxZv)) → Z\(ncf(minZv - 1))",
+                        status: status(id)))
+                case .g81, .g83:
+                    out.append(PartOpInfo(
+                        id: id, title: f.name.isEmpty ? "孔" : f.name,
+                        kind: p.holeMode == .g81 ? "钻孔 G81" : "钻孔 G83",
+                        geometry: "Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y))",
+                        tool: p.holeTool, dia: f.dia, spindle: p.spindle, feed: p.feed,
+                        zRange: "Z\(ncf(maxZv)) → Z\(ncf(minZv - 1))",
+                        status: status(id)))
                 case .tap:
-                    out.append("\(f.name.isEmpty ? "孔" : f.name) Ø\(ncf(f.dia)) · 攻丝 G84　T\(p.tapTool) P\(ncf(p.tapPitch))")
+                    out.append(PartOpInfo(
+                        id: id, title: f.name.isEmpty ? "孔" : f.name, kind: "攻丝 G84",
+                        geometry: "Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) P\(ncf(p.tapPitch))",
+                        tool: p.tapTool, dia: p.tapDia, spindle: p.tapRpm, feed: p.feed,
+                        zRange: "Z\(ncf(maxZv)) → Z\(ncf(minZv - 1))",
+                        status: status(id)))
                 }
             } else if p.doPocket && f.kind == .rectPocket {
-                out.append("方腔 \(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth)) · 型腔铣　T\(p.pocketTool) D\(ncf(p.pocketDia))")
+                out.append(PartOpInfo(
+                    id: id, title: f.name.isEmpty ? "方腔" : f.name, kind: "型腔铣",
+                    geometry: "\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth)) @X\(ncf(f.x)) Y\(ncf(f.y))",
+                    tool: p.pocketTool, dia: p.pocketDia, spindle: p.spindle, feed: p.feed,
+                    zRange: "Z0 → Z\(ncf(-f.depth))",
+                    status: status(id)))
             } else if p.doPocket {
-                out.append("沉台 Ø\(ncf(f.dia)) 深\(ncf(f.depth)) · 型腔铣　T\(p.pocketTool) D\(ncf(p.pocketDia))")
+                out.append(PartOpInfo(
+                    id: id, title: f.name.isEmpty ? "圆腔" : f.name, kind: "型腔铣",
+                    geometry: "Ø\(ncf(f.dia)) 深\(ncf(f.depth)) @X\(ncf(f.x)) Y\(ncf(f.y))",
+                    tool: p.pocketTool, dia: p.pocketDia, spindle: p.spindle, feed: p.feed,
+                    zRange: "Z0 → Z\(ncf(-f.depth))",
+                    status: status(id)))
             }
         }
         for l in p.innerLoops {
-            if l.template == .circle && l.through && !p.doHole { continue }
-            if !(l.template == .circle && l.through) && !p.doPocket { continue }
-            let depth = l.through ? p.height + 1 : min(l.depth, p.height)
-            if l.template == .circle && l.through && p.holeMode != .spiral {
-                out.append("\(l.name) Ø\(ncf(l.circleD)) · \(p.holeMode.rawValue)　T\(p.holeTool)")
-            } else if l.template == .circle && l.through {
-                out.append("\(l.name) Ø\(ncf(l.circleD)) · 螺旋铣　T\(p.holeTool) D\(ncf(p.holeDia))")
+            let id = "loop-\(l.id.uuidString)"
+            if l.template == .circle && l.through {
+                guard p.doHole else { continue }
+                let depth = maxZv - minZv
+                if p.holeMode == .spiral {
+                    out.append(PartOpInfo(
+                        id: id, title: l.name, kind: "螺旋铣",
+                        geometry: "Ø\(ncf(l.circleD)) @X\(ncf(l.cx)) Y\(ncf(l.cy))",
+                        tool: p.holeTool, dia: p.holeDia, spindle: p.spindle, feed: p.feed,
+                        zRange: "Z\(ncf(maxZv)) → Z\(ncf(minZv - 1))",
+                        status: status(id)))
+                } else {
+                    out.append(PartOpInfo(
+                        id: id, title: l.name, kind: p.holeMode.rawValue,
+                        geometry: "Ø\(ncf(l.circleD)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 深\(ncf(depth))",
+                        tool: p.holeTool, dia: l.circleD, spindle: p.spindle, feed: p.feed,
+                        zRange: "Z\(ncf(maxZv)) → Z\(ncf(minZv - 1))",
+                        status: status(id)))
+                }
             } else {
-                out.append("\(l.name) \(l.template.rawValue) 深\(ncf(depth)) · 型腔铣　T\(p.pocketTool) D\(ncf(p.pocketDia))")
+                guard p.doPocket else { continue }
+                let depth = l.through ? p.height : min(l.depth, p.height)
+                out.append(PartOpInfo(
+                    id: id, title: l.name, kind: "型腔铣",
+                    geometry: "\(l.template.rawValue) \(ncf(depth)) 深 @X\(ncf(l.cx)) Y\(ncf(l.cy))",
+                    tool: p.pocketTool, dia: p.pocketDia, spindle: p.spindle, feed: p.feed,
+                    zRange: "Z0 → Z\(ncf(-depth))",
+                    status: status(id)))
+            }
+        }
+        return out
+    }
+
+    /// 兼容旧界面的字符串工序清单
+    static func opList(_ p: PartSpec) -> [String] {
+        ops(p).filter { $0.status != .disabled && $0.status != .modelOnly }.map(\.summary)
+    }
+
+    // MARK: - 2D 刀路检查
+
+    /// 闭合折线按法向外/内偏置；只用于 2D 检查示意，G 代码仍走 G41/G42
+    static func offsetClosed(_ src: [CGPoint], by d: Double) -> [CGPoint] {
+        guard src.count > 2, abs(d) > 1e-9 else { return src }
+        let area = ContourGeo.signedArea(src)
+        let outwardSign: CGFloat = area >= 0 ? 1 : -1
+        var out: [CGPoint] = []
+        out.reserveCapacity(src.count)
+        for i in src.indices {
+            let prev = src[(i + src.count - 1) % src.count]
+            let cur = src[i]
+            let next = src[(i + 1) % src.count]
+            func normal(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
+                let dx = b.x - a.x, dy = b.y - a.y
+                let l = max(0.0001, hypot(dx, dy))
+                return CGPoint(x: outwardSign * dy / l, y: -outwardSign * dx / l)
+            }
+            let n1 = normal(prev, cur)
+            let n2 = normal(cur, next)
+            var nx = n1.x + n2.x, ny = n1.y + n2.y
+            let l = max(0.0001, hypot(nx, ny))
+            nx /= l; ny /= l
+            out.append(CGPoint(x: cur.x + nx * CGFloat(d), y: cur.y + ny * CGFloat(d)))
+        }
+        return out
+    }
+
+    static func pathLen(_ pts: [CGPoint]) -> Double {
+        guard pts.count > 1 else { return 0 }
+        var total = 0.0
+        for i in 1..<pts.count {
+            total += hypot(Double(pts[i].x - pts[i - 1].x), Double(pts[i].y - pts[i - 1].y))
+        }
+        return total
+    }
+
+    static func shapePoints(_ shape: PartShape, _ p: PartSpec, depth: Double = 1) -> [CGPoint] {
+        let d = asDraw(shape, p, outward: true, dia: max(p.contourDia, 0.1),
+                       depth: max(depth, 0.1), hNo: p.contourTool)
+        return ContourGeo.flatten(ContourGeo.segments(ContourGeo.buildNodes(d)))
+    }
+
+    static func shiftedSegs(_ segs: [TPSeg], dx: Double, dy: Double) -> [TPSeg] {
+        segs.map { s in
+            var m = s
+            m.pts = s.pts.map { CGPoint(x: $0.x + CGFloat(dx), y: $0.y + CGFloat(dy)) }
+            return m
+        }
+    }
+
+    /// 加工页 2D 俯视检查用：按当前启用的工序生成示意刀路（切削/快移分开）
+    static func toolpaths2D(_ p: PartSpec) -> [TPSeg] {
+        var out: [TPSeg] = []
+        func enabled(_ id: String) -> Bool { !p.disabledOps.contains(id) }
+        func line(_ pts: [CGPoint], z: Double, cut: Bool) {
+            guard pts.count > 1 else { return }
+            out.append(TPSeg(cut: cut, z: z, pts: pts, len: pathLen(pts)))
+        }
+        func addSegs(_ segs: [TPSeg], dx: Double = 0, dy: Double = 0) {
+            out.append(contentsOf: shiftedSegs(segs, dx: dx, dy: dy))
+        }
+
+        if p.doFace && p.topStock > 0 && p.steps.isEmpty && enabled("face") {
+            let b = bbox(p)
+            var s = PocketSpec()
+            s.mode = .face
+            s.length = Double(b.width); s.width = Double(b.height)
+            s.depth = p.topStock
+            s.stepDown = min(p.topStock, max(0.3, p.stepDown))
+            s.stepOver = p.stepOver
+            s.toolDia = p.faceDia
+            s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ
+            s.hNo = p.faceTool
+            addSegs(ToolpathEngine.build(s), dx: Double(b.midX), dy: Double(b.midY))
+        }
+
+        for s in p.steps.filter({ $0.mode == .add && enabled("step-\($0.id.uuidString)") }) {
+            let pts = shapePoints(s.shape, p, depth: max(s.height, 0.1))
+            let path = offsetClosed(pts, by: p.contourDia / 2)
+            line(path, z: s.z1, cut: true)
+        }
+
+        if p.doContour && enabled("contour") {
+            let pts = offsetClosed(pts(p), by: p.contourDia / 2)
+            line(pts, z: 0, cut: true)
+        }
+
+        for f in p.feats {
+            let id = "feat-\(f.id.uuidString)"
+            guard enabled(id) else { continue }
+            if f.kind == .hole && p.doHole {
+                var s = PocketSpec()
+                s.mode = .spiral
+                s.spiralDia = f.dia
+                s.toolDia = p.holeDia
+                s.depth = maxZ(p) - minZ(p) + 1
+                s.stepDown = p.stepDown
+                s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = maxZ(p)
+                s.hNo = p.holeTool
+                addSegs(ToolpathEngine.build(s), dx: f.x, dy: f.y)
+            } else if f.kind == .rectPocket && p.doPocket {
+                var s = PocketSpec()
+                s.mode = .pocket
+                s.length = f.w; s.width = f.h
+                s.depth = f.depth; s.stepDown = p.stepDown; s.stepOver = p.stepOver
+                s.toolDia = p.pocketDia
+                s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ
+                s.hNo = p.pocketTool
+                addSegs(ToolpathEngine.build(s), dx: f.x, dy: f.y)
+            } else if p.doPocket {
+                var s = PocketSpec()
+                s.mode = .spiral
+                s.spiralDia = f.dia
+                s.toolDia = p.pocketDia
+                s.depth = f.depth; s.stepDown = p.stepDown
+                s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ
+                s.hNo = p.pocketTool
+                addSegs(ToolpathEngine.build(s), dx: f.x, dy: f.y)
+            }
+        }
+
+        for l in p.innerLoops {
+            let id = "loop-\(l.id.uuidString)"
+            guard enabled(id) else { continue }
+            if l.template == .circle && l.through && p.doHole {
+                var s = PocketSpec()
+                s.mode = .spiral
+                s.spiralDia = l.circleD
+                s.toolDia = p.holeDia
+                s.depth = maxZ(p) - minZ(p) + 1
+                s.stepDown = p.stepDown
+                s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = maxZ(p)
+                s.hNo = p.holeTool
+                addSegs(ToolpathEngine.build(s), dx: l.cx, dy: l.cy)
+            } else if p.doPocket {
+                let pts = loopPoints(l).map { CGPoint(x: $0.x + CGFloat(l.cx), y: $0.y + CGFloat(l.cy)) }
+                line(offsetClosed(pts, by: -p.pocketDia / 2), z: 0, cut: true)
             }
         }
         return out
@@ -256,6 +601,19 @@ enum PartProg {
         out.append(contentsOf: base)
         if p.height <= 0 { out.append("零件厚度要大于 0") }
         if p.contourDia <= 0 { out.append("外形刀径要大于 0") }
+        for (i, s) in p.steps.enumerated() {
+            if s.height <= 0 { out.append("台阶 \(i + 1)：厚度要大于 0") }
+            if s.z1 <= s.z0 { out.append("台阶 \(i + 1)：顶面 Z 必须高于底面 Z") }
+            let d = asDraw(s.shape, p, outward: true, dia: p.contourDia,
+                          depth: max(s.height, 0.1), hNo: p.contourTool, zTop: s.z1)
+            out.append(contentsOf: ContourProg.issues(d).map { "台阶 \(i + 1)：\($0)" })
+            if s.mode == .cut {
+                out.append("台阶 \(i + 1)：除料层只参与建模显示，不生成轮廓刀路")
+            }
+        }
+        if !p.steps.isEmpty {
+            out.append("多台阶轮廓按各层 Z 分别出程序；台阶周围的毛坯粗加工需要按实际毛坯补工步，不能直接当成品程序")
+        }
         let b = bbox(p)
         for (i, f) in p.feats.enumerated() {
             let r = f.dia / 2
@@ -284,7 +642,7 @@ enum PartProg {
     }
 
     /// 把所有工序串成一个程序：共用一段抬头，每段自己带换刀后要用的 G43 H、S、F
-    static func build(_ spec: PartSpec) -> String {
+    static func build(_ spec: PartSpec, only: Set<String>? = nil) -> String {
         var p = spec
         let ox = spec.originX, oy = spec.originY
         if abs(ox) > 1e-9 || abs(oy) > 1e-9 {
@@ -293,6 +651,11 @@ enum PartProg {
         var blocks: [String] = []
         var seq = 0
         var lastTool = -1
+
+        func wanted(_ id: String) -> Bool {
+            if let only { return only.contains(id) }
+            return !p.disabledOps.contains(id)
+        }
 
         func add(_ title: String, _ tool: Int, _ code: String) {
             seq += 1
@@ -305,7 +668,8 @@ enum PartProg {
             blocks.append(seg)
         }
 
-        if p.doFace && p.topStock > 0 {
+        // 有台阶时不敢自动飞顶面：毛坯高度和台阶顶面不是同一个 Z，贸然飞面会切到台阶
+        if p.doFace && p.topStock > 0 && p.steps.isEmpty && wanted("face") {
             let b = bbox(p)
             var s = PocketSpec()
             s.mode = .face
@@ -324,11 +688,23 @@ enum PartProg {
             add("顶面 平面铣 T\(p.faceTool) D\(ncf(p.faceDia))", p.faceTool, GCodeGenerator.generate(s))
         }
 
-        if p.doContour {
+        // 先高后低：台阶层从各自顶面往下切，最后再切基础外形
+        for s in p.steps.filter({ $0.mode == .add }).sorted(by: { $0.z1 > $1.z1 }) {
+            let id = "step-\(s.id.uuidString)"
+            guard wanted(id) else { continue }
+            let d = asDraw(s.shape, p, outward: true, dia: p.contourDia,
+                          depth: max(s.height, 0.1), hNo: p.contourTool, zTop: s.z1)
+            add("台阶 \(s.name) \(s.shape.summary)  Z\(ncf(s.z0))~Z\(ncf(s.z1)) 轮廓铣 T\(p.contourTool) D\(ncf(p.contourDia))",
+                p.contourTool, ContourProg.generate(d))
+        }
+
+        if p.doContour && wanted("contour") {
             add("外形轮廓铣 T\(p.contourTool) D\(ncf(p.contourDia))", p.contourTool, ContourProg.generate(outline(p)))
         }
 
         for f in p.feats {
+            let id = "feat-\(f.id.uuidString)"
+            guard wanted(id) else { continue }
             if f.kind == .hole {
                 guard p.doHole else { continue }
                 switch p.holeMode {
@@ -337,11 +713,11 @@ enum PartProg {
                     s.mode = .spiral
                     s.spiralDia = f.dia
                     s.toolDia = p.holeDia
-                    s.depth = p.height + 1          // 钻穿
+                    s.depth = maxZ(p) - minZ(p) + 1          // 贯通所有台阶
                     s.stepDown = p.stepDown
                     s.spindle = p.spindle
                     s.feed = p.feed
-                    s.safeZ = p.safeZ
+                    s.safeZ = p.safeZ; s.zTop = maxZ(p)
                     s.hNo = p.holeTool
                     s.cx = f.x
                     s.cy = f.y
@@ -375,9 +751,11 @@ enum PartProg {
         }
 
         for l in p.innerLoops {
+            let id = "loop-\(l.id.uuidString)"
+            guard wanted(id) else { continue }
             if l.template == .circle && l.through && !p.doHole { continue }
             if !(l.template == .circle && l.through) && !p.doPocket { continue }
-            let depth = l.through ? p.height + 1 : min(l.depth, p.height)
+            let depth = l.through ? maxZ(p) - minZ(p) + 1 : min(l.depth, p.height)
             if l.template == .circle && l.through {
                 switch p.holeMode {
                 case .spiral:
@@ -389,7 +767,7 @@ enum PartProg {
                     s.stepDown = p.stepDown
                     s.spindle = p.spindle
                     s.feed = p.feed
-                    s.safeZ = p.safeZ
+                    s.safeZ = p.safeZ; s.zTop = maxZ(p)
                     s.hNo = p.holeTool
                     s.cx = l.cx
                     s.cy = l.cy
@@ -417,13 +795,14 @@ enum PartProg {
         L.append("%")
         L.append("O1010 (绘图编程 · 多工序)")
         let b = bbox(p)
-        L.append("( 外形 \(ncf(Double(b.width))) × \(ncf(Double(b.height)))  厚\(ncf(p.height))  顶面余量\(ncf(p.topStock)) )")
-        L.append("( 工件坐标系 G\(p.coord)  X0=\(ncf(ox)) Y0=\(ncf(oy)) (草图坐标)  Z0=工件顶面 )")
+        let stepNote = p.steps.isEmpty ? "" : "  台阶\(p.steps.count)层"
+        L.append("( 外形 \(ncf(Double(b.width))) × \(ncf(Double(b.height)))  厚\(ncf(p.height))\(stepNote)  顶面余量\(ncf(p.topStock)) )")
+        L.append("( 工件坐标系 G\(p.coord)  X0=\(ncf(ox)) Y0=\(ncf(oy)) (草图坐标)  Z0=基础顶面；台阶顶面为正值 )")
         L.append("( 共 \(blocks.count) 道工序，每段前面注明了用哪把刀，换刀后从该段重新启动 )")
         L.append("G17 G21 G40 G49 G80 G90 G\(p.coord)")
         L.append("( X0 Y0 为 G\(p.coord) 零点；已按上面基准平移，程序坐标为工件坐标 )")
         L.append(blocks.joined(separator: "\n"))
-        L.append("G0 Z\(ncf(p.safeZ, 1))")
+        L.append("G0 Z\(ncf(p.safeZ + maxZ(p), 1))")
         L.append("M5")
         L.append("M9")
         L.append("G28 G91 Z0")
@@ -453,11 +832,11 @@ enum PartProg {
 
     /// G81 / G83 钻孔
     static func drillBlock(_ p: PartSpec, _ f: PartFeat) -> String {
-        let z = -(p.height + 1)
+        let z = minZ(p) - 1
         var L: [String] = []
-        L.append("G0 Z\(ncf(p.safeZ, 1))")
+        L.append("G0 Z\(ncf(p.safeZ + maxZ(p), 1))")
         L.append("( 孔 Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) )")
-        var line = "G98 G\(p.holeMode == .g81 ? "81" : "83") X\(ncf(f.x)) Y\(ncf(f.y)) Z\(ncf(z, 1)) R2. F\(p.feed)"
+        var line = "G98 G\(p.holeMode == .g81 ? "81" : "83") X\(ncf(f.x)) Y\(ncf(f.y)) Z\(ncf(z, 1)) R\(ncf(maxZ(p) + 2, 1)) F\(p.feed)"
         if p.holeMode == .g83 { line += " Q\(ncf(p.peck))" }
         L.append(line)
         L.append("G80")
@@ -467,10 +846,10 @@ enum PartProg {
     /// G84 攻丝：M29 刚性攻丝，F = 螺距 × 转速
     static func tapBlock(_ p: PartSpec, _ f: PartFeat) -> String {
         var L: [String] = []
-        L.append("G0 Z\(ncf(p.safeZ, 1))")
+        L.append("G0 Z\(ncf(p.safeZ + maxZ(p), 1))")
         L.append("( 攻丝 Ø\(ncf(f.dia)) P\(ncf(p.tapPitch)) @X\(ncf(f.x)) Y\(ncf(f.y)) )")
         L.append("M29 S\(p.tapRpm)")
-        L.append("G98 G84 X\(ncf(f.x)) Y\(ncf(f.y)) Z\(ncf(-(p.height + 1), 1)) R2. F\(ncf(Double(p.tapRpm) * p.tapPitch))")
+        L.append("G98 G84 X\(ncf(f.x)) Y\(ncf(f.y)) Z\(ncf(minZ(p) - 1, 1)) R\(ncf(maxZ(p) + 2, 1)) F\(ncf(Double(p.tapRpm) * p.tapPitch))")
         L.append("G80")
         return L.joined(separator: "\n")
     }

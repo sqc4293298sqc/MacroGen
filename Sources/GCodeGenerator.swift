@@ -66,6 +66,7 @@ struct PocketSpec {
     var coord: Int = 54
     var cx: Double = 0
     var cy: Double = 0
+    var zTop: Double = 0             // 加工起始 Z；多台阶时是台阶顶面
 
     var toolRadius: Double { toolDia / 2 }
     var halfAngle: Double { atan((taperDia - taperDiaSmall) / (2 * taperDepth)) * 180 / .pi }
@@ -493,13 +494,13 @@ enum GCodeGenerator {
         L.append("O1004 (螺旋铣宏程序)")
         L.append("G17 G21 G40 G49 G80 G90 G\(s.coord)")
         L.append("G52 X\(fmt(s.cx)) Y\(fmt(s.cy)) (平移到圆心)")
-        L.append("G43 H\(s.hNo) Z\(fmt(s.safeZ, 1))")
+        L.append("G43 H\(s.hNo) Z\(fmt(s.safeZ + s.zTop, 1))")
         L.append("M3 S\(s.spindle)")
         L.append("M8")
         L.append("#1=\(fmt(s.spiralDia, 1)) (圆直径)")
         L.append("#2=\(fmt(s.toolDia, 1)) (刀具直径)")
-        L.append("#3=0 (工件表面Z)")
-        L.append("#4=\(fmt(-s.depth, 3)) (终点Z)")
+        L.append("#3=\(fmt(s.zTop, 1)) (工件表面Z)")
+        L.append("#4=\(fmt(s.zTop - s.depth, 3)) (终点Z)")
         L.append("#5=\(fmt(s.stepDown, 2)) (每圈下刀)")
         L.append("#6=[#1/2.-#2/2.] (刀心圆半径)")
         L.append("IF[#6LT0.01]THEN#6=0.01 (防半径算成 0 或负数)")
@@ -511,7 +512,7 @@ enum GCodeGenerator {
         L.append("IF[#7LT#4]THEN#7=#4")
         L.append("G3 I#6 Z#7 F\(s.feed)")
         L.append("END1")
-        L.append("G0 Z\(fmt(s.safeZ, 1))")
+        L.append("G0 Z\(fmt(s.safeZ + s.zTop, 1))")
         L.append("G52 X0 Y0")
         L.append("M5")
         L.append("M9")
