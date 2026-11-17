@@ -7631,14 +7631,16 @@ struct StudioScreen: View {
 
             Section("工序树（按刀具）") {
                 let ops = PartProg.ops(spec)
-                let groups = Dictionary(grouping: ops, by: { $0.tool }).sorted { $0.key < $1.key }
+                let groups = Dictionary(grouping: ops, by: { $0.tool })
+                    .map { ToolOpGroup(id: $0.key, ops: $0.value) }
+                    .sorted { $0.id < $1.id }
                 if ops.isEmpty {
                     Text("没有工序：先在上面打开加工方式，或在建模页加孔/型腔。")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
-                    ForEach(groups.indices, id: \.self) { i in
-                        let key = groups[i].key
-                        let list = groups[i].value
+                    ForEach(groups) { group in
+                        let key = group.id
+                        let list = group.ops
                         DisclosureGroup {
                             ForEach(list, id: \.id) { op in
                                 HStack(spacing: 8) {
@@ -7892,6 +7894,11 @@ struct StudioScreen: View {
         ToolLibraryStore.save(toolLibrary)
         showToastView("已把当前工序刀具同步到刀具库")
     }
+}
+
+private struct ToolOpGroup: Identifiable {
+    let id: Int
+    let ops: [PartOpInfo]
 }
 
 // MARK: - 3D 相机
