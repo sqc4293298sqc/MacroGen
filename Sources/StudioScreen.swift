@@ -2219,9 +2219,11 @@ struct StudioScreen: View {
                     guard tapOnModel else { return }
                     let xy = modelXY(at: v.location, size: geo.size)
                     ptrX = xy.0; ptrY = xy.1; hasPtr = true
+                    showToastView("取点 X\(ncf(xy.0)) Y\(ncf(xy.1))")
                 })
                 .onTapGesture(count: 2) {
                     yaw = 0.78; pitch = 0.62; zoom = 1; zoomBase = 1
+                    modelViewName = "等轴"
                 }
                 .background(Color.white)
             }
@@ -2815,13 +2817,33 @@ struct StudioScreen: View {
                 HStack {
                     Text("网格").font(.system(size: 12, weight: .semibold))
                     Spacer()
-                    Picker("", selection: $gridStep) {
+                    Picker("", selection: Binding(
+                        get: { gridStep },
+                        set: { v in
+                            gridStep = v
+                            modelPanel = .none
+                            showToastView("参考网格已改为 \(Int(v)) mm")
+                        })) {
                         Text("5").tag(5.0); Text("10").tag(10.0); Text("20").tag(20.0); Text("50").tag(50.0)
                     }
                     .labelsHidden().frame(width: 80)
                 }
-                Toggle("显示网格", isOn: $showModelGrid)
-                Toggle("点顶面取 XY", isOn: $tapOnModel)
+                Toggle("显示网格", isOn: Binding(
+                    get: { showModelGrid },
+                    set: { v in
+                        showModelGrid = v
+                        modelPanel = .none
+                        showToastView(v ? "参考网格已打开" : "参考网格已关闭")
+                    }))
+                Toggle("点顶面取 XY", isOn: Binding(
+                    get: { tapOnModel },
+                    set: { v in
+                        tapOnModel = v
+                        if v {
+                            modelPanel = .none
+                            showToastView("点顶面取XY已开：在模型顶面点一下")
+                        }
+                    }))
                 if tapOnModel {
                     Text(hasPtr ? "指针 X\(ncf(ptrX)) Y\(ncf(ptrY))" : "已开启：在模型顶面点一下即可取点")
                         .font(.system(size: 10)).foregroundStyle(studioBlue)
