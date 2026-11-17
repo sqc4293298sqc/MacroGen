@@ -254,16 +254,6 @@ struct StudioScreen: View {
         .sheet(isPresented: $showOpSheet) {
             OpParamsSheet(spec: $spec, op: opSheetName)
         }
-        .confirmationDialog("执行\(pendingEditTool ?? "编辑")？", isPresented: $showEditConfirm, titleVisibility: .visible) {
-            Button("执行") {
-                let t = pendingEditTool
-                pendingEditTool = nil
-                if let t = t { executeEditTool(t) }
-            }
-            Button("取消", role: .cancel) { pendingEditTool = nil }
-        } message: {
-            Text("当前草图 \(spec.nodes.count) 个点/段。确认后执行，可在左上角撤销。")
-        }
         .confirmationDialog("拍照图纸", isPresented: $showPhotoMenu, titleVisibility: .visible) {
             Button("拍照") { openCamera() }
             Button("从相册选") { showPhotoPicker = true }
@@ -508,8 +498,12 @@ struct StudioScreen: View {
             .padding(.horizontal, 8)
             .padding(.top, 8)
 
-            VStack {
+            VStack(spacing: 6) {
                 Spacer()
+                if editPreviewSpec != nil {
+                    sketchEditPreviewBar
+                        .padding(.horizontal, 8)
+                }
                 sketchBottomBar
             }
 
@@ -598,6 +592,46 @@ struct StudioScreen: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 132))
         .overlay(RoundedRectangle(cornerRadius: 132).stroke(Color.white.opacity(0.85), lineWidth: 1))
         .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
+    }
+
+    private var sketchEditPreviewBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "eye")
+                .foregroundStyle(.blue)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("预览：\(pendingEditTool ?? "编辑")")
+                    .font(.system(size: 12, weight: .bold))
+                Text("\(editPreviewInfo) · 蓝虚线是应用后的轮廓")
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("取消") { cancelEditPreview() }
+                .font(.system(size: 11, weight: .semibold))
+                .buttonStyle(.bordered)
+            Button("应用") { confirmEditPreview() }
+                .font(.system(size: 11, weight: .bold))
+                .buttonStyle(.borderedProminent)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.8), lineWidth: 1))
+    }
+
+    private var editPreviewInfo: String {
+        switch pendingEditTool ?? "" {
+        case "圆角": return "R \(ncf(filletR))"
+        case "倒角": return "C \(ncf(chamferC))"
+        case "偏置": return "距离 \(ncf(offsetD))"
+        case "移动": return "DX \(ncf(moveDX))  DY \(ncf(moveDY))"
+        case "延伸": return "延伸 10 mm"
+        case "水平约束": return "所有点同一 Y"
+        case "修剪": return "去掉末尾点/段"
+        case "围栏修剪", "区域修剪": return "按框选区域保留"
+        case "镜像": return "左右镜像"
+        case "打断": return "末段中点打断"
+        default: return "确认后替换当前草图"
+        }
     }
 
     private var sketchBottomBar: some View {
@@ -1168,7 +1202,7 @@ struct StudioScreen: View {
     @State private var sketchTool: String = ""
     @State private var refPoints: [CGPoint] = []
     @State private var pendingEditTool: String? = nil
-    @State private var showEditConfirm = false
+    @State private var editPreviewSpec: PartSpec? = nil
     @State private var filletR = 5.0
     @State private var chamferC = 3.0
     @State private var trimX0 = -20.0
@@ -1234,8 +1268,7 @@ struct StudioScreen: View {
             return
         }
         if isEditTool(name) {
-            pendingEditTool = name
-            showEditConfirm = true
+            beginEditPreview(name)
             return
         }
         pushUndo()
@@ -1561,6 +1594,24 @@ struct StudioScreen: View {
                 }
             }
         }
+
+        if let preview = editPreviewSpec {
+            let segs = ContourGeo.segments(ContourGeo.buildNodes(sketchDrawSpec(preview)))
+            var pp = Path()
+            if let f = segs.first { pp.move(to: P(f.p0.x, f.p0.y)) }
+            for sg in segs {
+                if sg.isArc {
+                    let flat = ContourGeo.flatten([sg], arcStep: 24)
+                    for q in flat.dropFirst() { pp.addLine(to: P(q.x, q.y)) }
+                } else {
+                    pp.addLine(to: P(sg.p1.x, sg.p1.y))
+                }
+            }
+            ctx.stroke(pp, with: .color(Color.blue.opacity(0.95)),
+                       style: StrokeStyle(lineWidth: 2, dash: [5, 3]))
+            ctx.draw(Text("预览").font(.system(size: 9, weight: .bold)).foregroundColor(.blue),
+                     at: CGPoint(x: size.width - 34, y: 18))
+        }
     }
 
     private func drawDim(_ ctx: GraphicsContext, from: CGPoint, to: CGPoint, text: String) {
@@ -1682,16 +1733,17 @@ struct StudioScreen: View {
         }
     }
 
-    private func sketchDrawSpec() -> DrawSpec {
+    private func sketchDrawSpec(_ source: PartSpec? = nil) -> DrawSpec {
+        let s = source ?? spec
         var d = DrawSpec()
-        d.template = spec.template
-        d.rectL = spec.rectL
-        d.rectW = spec.rectW
-        d.rectR = spec.rectR
-        d.circleD = spec.circleD
-        d.slotL = spec.slotL
-        d.slotW = spec.slotW
-        d.nodes = spec.nodes
+        d.template = s.template
+        d.rectL = s.rectL
+        d.rectW = s.rectW
+        d.rectR = s.rectR
+        d.circleD = s.circleD
+        d.slotL = s.slotL
+        d.slotW = s.slotW
+        d.nodes = s.nodes
         return d
     }
 
@@ -1849,12 +1901,38 @@ struct StudioScreen: View {
     }
 
     private func requestEditTool(_ name: String) {
-        pendingEditTool = name
-        showEditConfirm = true
+        beginEditPreview(name)
     }
 
-    private func executeEditTool(_ name: String) {
+    private func beginEditPreview(_ name: String) {
+        guard isEditTool(name) else { return }
+        let saved = spec
+        applyEditOperation(name)
+        let candidate = spec
+        spec = saved
+        pendingEditTool = name
+        editPreviewSpec = candidate
+        sketchTool = name
+    }
+
+    private func cancelEditPreview() {
+        editPreviewSpec = nil
+        pendingEditTool = nil
+        sketchTool = ""
+    }
+
+    private func confirmEditPreview() {
+        guard let candidate = editPreviewSpec else { return }
+        let name = pendingEditTool ?? "编辑"
         pushUndo()
+        spec = candidate
+        editPreviewSpec = nil
+        pendingEditTool = nil
+        sketchTool = ""
+        showToastView("已应用\(name)")
+    }
+
+    private func applyEditOperation(_ name: String) {
         switch name {
         case "修剪": trimLast()
         case "围栏修剪", "区域修剪": regionTrim()
