@@ -78,6 +78,9 @@ struct StudioScreen: View {
     @State private var hiddenTreeIDs: Set<String> = []
     @State private var treeFeatOnly = false
     @State private var selectedNode: Int? = nil
+    @State private var selectedSegIndex: Int? = nil
+    @State private var selectedSegB: Int? = nil
+    @State private var constraintPickMode = false
     @State private var continuousDraw = true
     @State private var gridAuto = true
     @State private var sketchFixed = false
@@ -102,6 +105,7 @@ struct StudioScreen: View {
     @State private var calibrationSample: PickCalibration? = nil
     @State private var bodyHighlight = false
     @State private var drawingExportURL: URL?
+    @State private var dxfExportURL: URL?
     @State private var material: StudioMaterial = .abs
     @State private var toastText: String = ""
     @State private var showToast = false
@@ -143,13 +147,14 @@ struct StudioScreen: View {
     }
 
     private enum MeasureTarget: String, CaseIterable, Identifiable {
-        case point = "点", edge = "边", face = "面", body = "体", compound = "复合"
+        case point = "点", edge = "边", face = "面", angle = "角", body = "体", compound = "复合"
         var id: String { rawValue }
         var icon: String {
             switch self {
             case .point: return "smallcircle.filled.circle"
             case .edge: return "line.diagonal"
             case .face: return "square.on.square"
+            case .angle: return "angle"
             case .body: return "cube"
             case .compound: return "circle.grid.2x2"
             }
@@ -239,13 +244,17 @@ struct StudioScreen: View {
     }
 
     init() {
-        var s = PartSpec()
-        // 打开草图先是一张空白网格，不预放圆/矩形
-        s.template = .free
-        s.nodes = []
-        s.innerLoops = []
-        s.feats = []
-        _spec = State(initialValue: s)
+        if let saved = ProjectStore.load() {
+            _spec = State(initialValue: saved)
+        } else {
+            var s = PartSpec()
+            // 第一次打开是空白网格，不预放圆/矩形
+            s.template = .free
+            s.nodes = []
+            s.innerLoops = []
+            s.feats = []
+            _spec = State(initialValue: s)
+        }
     }
 
     var body: some View {
@@ -272,6 +281,7 @@ struct StudioScreen: View {
         .onChange(of: spec) { _ in
             opGenerated = false
             cam2DPaths = PartProg.toolpaths2D(spec)
+            ProjectStore.save(spec)
         }
         .onAppear {
             cam2DPaths = PartProg.toolpaths2D(spec)
@@ -469,6 +479,10 @@ struct StudioScreen: View {
                 Button { showPhotoMenu = true } label: {
                     Label("拍照图纸", systemImage: "camera.viewfinder")
                 }
+                Button("保存工程") {
+                    ProjectStore.save(spec)
+                    showToastView("工程已保存，下次打开自动恢复")
+                }
                 Button("适合窗口") { setView(0.78, 0.62) }
                 Button("完成草图") { step = 1 }
                 Button("清空草图", role: .destructive) { clearSketch() }
@@ -629,6 +643,18 @@ struct StudioScreen: View {
     private var sketchConstraintRail: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 3) {
+                railButton("选段", "cursorarrow.rays", active: constraintPickMode) {
+                    constraintPickMode.toggle()
+                    if constraintPickMode {
+                        sketchTool = ""
+                        refPoints.removeAll()
+                        showToastView("选段模式：点第一段 A，再点第二段 B；约束按钮按选段计算")
+                    } else {
+                        selectedSegIndex = nil
+                        selectedSegB = nil
+                        showToastView("已退出选段模式")
+                    }
+                }
                 railButton("尺寸", "ruler", active: sketchSidePanel == .dim) {
                     sketchSidePanel = sketchSidePanel == .dim ? .none : .dim
                 }
@@ -700,6 +726,15 @@ struct StudioScreen: View {
         }
     }
 
+    private var selectionHint: String {
+        if let a = selectedSegIndex {
+            let b = selectedSegB.map { "；B 段 \($0 + 1)" } ?? ""
+            return "已选 A 段 \(a + 1)\(b) · 编辑/约束只作用于选段"
+        }
+        return isTemplateTool(sketchTool) ? "点画布放置 · 连续点继续放"
+             : (isDrawTool(sketchTool) || drawInner ? "连续落点 · 点画布添加" : "点线段选段 · 双击改尺寸")
+    }
+
     private var sketchBottomBar: some View {
         HStack(spacing: 8) {
             Menu {
@@ -728,10 +763,9 @@ struct StudioScreen: View {
 
             Spacer()
 
-            Text(isTemplateTool(sketchTool) ? "点画布放置 · 连续点继续放"
-                 : (isDrawTool(sketchTool) || drawInner ? "连续落点 · 点画布添加" : "点线选点 · 双击改尺寸"))
+            Text(selectionHint)
                 .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+                .foregroundColor(selectedSegIndex == nil ? Color.secondary : studioBlue)
 
             Button { step = 1 } label: {
                 Label("完成", systemImage: "checkmark")
@@ -1445,6 +1479,10 @@ struct StudioScreen: View {
     }
 
     private func selectSketchTool(_ name: String) {
+        if !isEditTool(name) && name != "多段线" {
+            selectedSegIndex = nil
+            selectedSegB = nil
+        }
         switch name {
         case "三点圆":
             sketchTool = "三点圆"; refPoints.removeAll(); return
@@ -1598,19 +1636,59 @@ struct StudioScreen: View {
         }
         let b = sketchBBox()
         let k = sketchScale(b: b, size: size)
-        var best = 30.0
-        var bestIndex: Int? = nil
-        for (i, n) in spec.nodes.enumerated() {
-            let sx = size.width / 2 + (n.x - b.midX) * k
-            let sy = size.height / 2 - (n.y - b.midY) * k
-            let d = hypot(Double(loc.x) - sx, Double(loc.y) - sy)
-            if d < best { best = d; bestIndex = i }
+        func screen(_ n: ContourNode) -> CGPoint {
+            CGPoint(x: size.width / 2 + (n.x - b.midX) * k,
+                    y: size.height / 2 - (n.y - b.midY) * k)
         }
-        if let i = bestIndex {
+        var bestNode = 26.0
+        var nodeIndex: Int? = nil
+        for (i, n) in spec.nodes.enumerated() {
+            let q = screen(n)
+            let d = hypot(Double(loc.x) - Double(q.x), Double(loc.y) - Double(q.y))
+            if d < bestNode { bestNode = d; nodeIndex = i }
+        }
+        var bestSeg = 14.0
+        var segIndex: Int? = nil
+        let count = spec.nodes.count
+        if count > 1 {
+            for i in 0..<count {
+                let a = screen(spec.nodes[i])
+                let c = screen(spec.nodes[(i + 1) % count])
+                let d = distanceToSegment(loc, a, c)
+                if d < bestSeg { bestSeg = d; segIndex = i }
+            }
+        }
+        // 靠近线段时优先选段；靠近端点时选点。UG 里选边和选点是两个过滤级别。
+        if let s = segIndex, bestNode > 18 || bestSeg < 8 {
+            if constraintPickMode {
+                if selectedSegIndex == nil {
+                    selectedSegIndex = s
+                    showToastView("已选 A 段 \(s + 1)；再点一段作为 B")
+                } else if selectedSegB == nil, s != selectedSegIndex {
+                    selectedSegB = s
+                    showToastView("已选 B 段 \(s + 1)；点约束按钮")
+                } else {
+                    selectedSegIndex = s
+                    selectedSegB = nil
+                    showToastView("已重选 A 段 \(s + 1)")
+                }
+            } else {
+                selectedSegIndex = s
+                selectedNode = nil
+                selectedSegB = nil
+                showToastView("已选中第 \(s + 1) 段")
+            }
+            return
+        }
+        if let i = nodeIndex {
             selectedNode = i
+            selectedSegIndex = nil
+            selectedSegB = nil
             showToastView("已选中点 \(i + 1)")
         } else {
             selectedNode = nil
+            selectedSegIndex = nil
+            selectedSegB = nil
         }
     }
 
@@ -1663,6 +1741,32 @@ struct StudioScreen: View {
                 }
             }
             ctx.stroke(path, with: .color(.orange), lineWidth: 2)
+        }
+
+        // 选中的草图段：A 绿色，B 蓝色；编辑/约束优先作用于它们
+        if spec.template == .free, spec.nodes.count > 1 {
+            func segPath(_ i: Int) -> Path {
+                let a = spec.nodes[i], b = spec.nodes[(i + 1) % spec.nodes.count]
+                var pth = Path()
+                pth.move(to: P(a.x, a.y))
+                if b.kind != .line {
+                    let seg = ContourSeg(p0: CGPoint(x: a.x, y: a.y),
+                                         p1: CGPoint(x: b.x, y: b.y),
+                                         kind: b.kind, r: b.r, full: false)
+                    for q in ContourGeo.flatten([seg], arcStep: 24).dropFirst() {
+                        pth.addLine(to: P(Double(q.x), Double(q.y)))
+                    }
+                } else {
+                    pth.addLine(to: P(b.x, b.y))
+                }
+                return pth
+            }
+            if let a = selectedSegIndex {
+                ctx.stroke(segPath(a), with: .color(.green), lineWidth: 4)
+            }
+            if let b = selectedSegB, b != selectedSegIndex {
+                ctx.stroke(segPath(b), with: .color(studioBlue), lineWidth: 4)
+            }
         }
 
         // 同一张草图上的内轮廓（挖孔 / 型腔）
@@ -2191,23 +2295,168 @@ struct StudioScreen: View {
         editPreviewSpec = nil
         pendingEditTool = nil
         sketchTool = ""
+        selectedNode = nil
+        selectedSegIndex = nil
+        selectedSegB = nil
         showToastView("已应用\(name)")
     }
 
     private func applyEditOperation(_ name: String) {
         switch name {
-        case "修剪": trimLast()
+        case "修剪": trimSelected()
         case "围栏修剪", "区域修剪": regionTrim()
-        case "圆角": filletOuter(filletR)
-        case "倒角": chamferOuter(chamferC)
-        case "偏置": offsetOuter(offsetD)
-        case "镜像": mirrorOuter()
+        case "圆角": filletSelected(filletR)
+        case "倒角": chamferSelected(chamferC)
+        case "偏置": offsetSelected(offsetD)
+        case "镜像": mirrorSelected()
         case "水平约束": constrain(horizontal: true)
-        case "移动": moveOuter()
-        case "延伸": extendLast(10)
-        case "打断": breakLast()
+        case "移动": moveSelected()
+        case "延伸": extendSelected(10)
+        case "打断": breakSelected()
         default: break
         }
+    }
+
+    /// 当前选段；没有选段时返回 nil，让旧算法按整条轮廓处理
+    private func targetSegment() -> Int? {
+        guard spec.template == .free, spec.nodes.count > 2,
+              let i = selectedSegIndex, i >= 0, i < spec.nodes.count else { return nil }
+        return i
+    }
+
+    private func trimSelected() {
+        guard let i = targetSegment() else {
+            if let node = selectedNode, spec.nodes.count > 2 {
+                spec.nodes.remove(at: node)
+                selectedNode = nil
+                return
+            }
+            trimLast()
+            return
+        }
+        // 闭合轮廓删掉选中段的终点，前后段自动接起来；相当于 UG 的单段修剪近似
+        let remove = (i + 1) % spec.nodes.count
+        spec.nodes.remove(at: remove)
+        selectedSegIndex = nil
+        selectedSegB = nil
+    }
+
+    private func extendSelected(_ d: Double) {
+        guard let i = targetSegment() else { extendLast(d); return }
+        let n = spec.nodes.count
+        let a = spec.nodes[i], b = spec.nodes[(i + 1) % n]
+        let dx = b.x - a.x, dy = b.y - a.y
+        let len = hypot(dx, dy)
+        guard len > 1e-6 else { return }
+        let idx = (i + 1) % n
+        spec.nodes[idx].x = b.x + dx / len * d
+        spec.nodes[idx].y = b.y + dy / len * d
+    }
+
+    private func breakSelected() {
+        guard let i = targetSegment() else { breakLast(); return }
+        let n = spec.nodes.count
+        let a = spec.nodes[i], b = spec.nodes[(i + 1) % n]
+        let mid = ContourNode(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2,
+                              kind: .line, r: b.r)
+        spec.nodes.insert(mid, at: min(i + 1, spec.nodes.count))
+        selectedSegIndex = nil
+        selectedSegB = nil
+    }
+
+    private func offsetSelected(_ d: Double) {
+        guard let i = targetSegment() else { offsetOuter(d); return }
+        let n = spec.nodes.count
+        let a = spec.nodes[i], b = spec.nodes[(i + 1) % n]
+        let dx = b.x - a.x, dy = b.y - a.y
+        let len = hypot(dx, dy)
+        guard len > 1e-6 else { return }
+        let nx = dy / len, ny = -dx / len
+        spec.nodes[i].x += nx * d; spec.nodes[i].y += ny * d
+        let bi = (i + 1) % n
+        spec.nodes[bi].x += nx * d; spec.nodes[bi].y += ny * d
+        spec.constraints.removeAll()
+    }
+
+    private func moveSelected() {
+        guard let i = targetSegment() else { moveOuter(); return }
+        let n = spec.nodes.count
+        spec.nodes[i].x += moveDX; spec.nodes[i].y += moveDY
+        let bi = (i + 1) % n
+        spec.nodes[bi].x += moveDX; spec.nodes[bi].y += moveDY
+        spec.constraints.removeAll()
+    }
+
+    private func mirrorSelected() {
+        guard let i = targetSegment() else { mirrorOuter(); return }
+        let b = sketchBBox()
+        let midX = Double(b.midX)
+        let n = spec.nodes.count
+        spec.nodes[i].x = midX * 2 - spec.nodes[i].x
+        let bi = (i + 1) % n
+        spec.nodes[bi].x = midX * 2 - spec.nodes[bi].x
+        spec.constraints.removeAll()
+    }
+
+    private func filletSelected(_ r: Double) {
+        guard let node = selectedNode, spec.nodes.count > 2, r > 0.01 else {
+            filletOuter(r)
+            return
+        }
+        let n = spec.nodes.count
+        let curr = spec.nodes[node]
+        let prev = spec.nodes[(node - 1 + n) % n]
+        let next = spec.nodes[(node + 1) % n]
+        guard curr.kind == .line, prev.kind == .line, next.kind == .line else {
+            filletOuter(r)
+            return
+        }
+        let u1x = prev.x - curr.x, u1y = prev.y - curr.y
+        let u2x = next.x - curr.x, u2y = next.y - curr.y
+        let l1 = hypot(u1x, u1y), l2 = hypot(u2x, u2y)
+        guard l1 > 1e-6, l2 > 1e-6 else { return }
+        let dot = max(-1, min(1, (u1x * u2x + u1y * u2y) / (l1 * l2)))
+        let theta = acos(dot)
+        guard theta > 0.05, theta < 3.09 else { return }
+        let tangent = r / tan(theta / 2)
+        guard tangent < l1 * 0.95, tangent < l2 * 0.95 else { return }
+        let p1 = ContourNode(x: curr.x + u1x / l1 * tangent,
+                             y: curr.y + u1y / l1 * tangent, kind: .line)
+        let p2 = ContourNode(x: curr.x + u2x / l2 * tangent,
+                             y: curr.y + u2y / l2 * tangent, kind: .cw, r: r)
+        spec.nodes[node] = p1
+        spec.nodes.insert(p2, at: min(node + 1, spec.nodes.count))
+        selectedNode = node
+        selectedSegIndex = nil
+        spec.constraints.removeAll()
+    }
+
+    private func chamferSelected(_ c: Double) {
+        guard let node = selectedNode, spec.nodes.count > 2, c > 0.01 else {
+            chamferOuter(c)
+            return
+        }
+        let n = spec.nodes.count
+        let curr = spec.nodes[node]
+        let prev = spec.nodes[(node - 1 + n) % n]
+        let next = spec.nodes[(node + 1) % n]
+        guard curr.kind == .line, prev.kind == .line, next.kind == .line else {
+            chamferOuter(c)
+            return
+        }
+        let u1x = prev.x - curr.x, u1y = prev.y - curr.y
+        let u2x = next.x - curr.x, u2y = next.y - curr.y
+        let l1 = hypot(u1x, u1y), l2 = hypot(u2x, u2y)
+        guard l1 > 1e-6, l2 > 1e-6, c < l1 * 0.95, c < l2 * 0.95 else { return }
+        let p1 = ContourNode(x: curr.x + u1x / l1 * c,
+                             y: curr.y + u1y / l1 * c, kind: .line)
+        let p2 = ContourNode(x: curr.x + u2x / l2 * c,
+                             y: curr.y + u2y / l2 * c, kind: .line)
+        spec.nodes[node] = p1
+        spec.nodes.insert(p2, at: min(node + 1, spec.nodes.count))
+        selectedNode = node
+        selectedSegIndex = nil
+        spec.constraints.removeAll()
     }
 
     private func isTemplateTool(_ tool: String) -> Bool {
@@ -2216,6 +2465,8 @@ struct StudioScreen: View {
     }
 
     private func selectTemplateTool(_ name: String) {
+        selectedSegIndex = nil
+        selectedSegB = nil
         sketchTool = name
         lastShapeTool = name
         refPoints.removeAll()
@@ -2494,15 +2745,30 @@ struct StudioScreen: View {
             return
         }
         var c = SketchConstraint(kind: kind)
+        let segA = selectedSegIndex
+        let segB = selectedSegB
         switch kind {
         case .horizontal, .vertical:
-            c.a = 0; c.b = n - 1
+            if let a = segA {
+                c.a = a; c.b = (a + 1) % n
+            } else {
+                c.a = 0; c.b = n - 1
+            }
         case .coincident:
-            c.a = 0; c.b = n - 1
+            if let a = segA, let b = segB {
+                c.a = a; c.b = (b + 1) % n
+            } else {
+                c.a = 0; c.b = n - 1
+            }
         case .parallel, .perpendicular, .equal:
-            guard n >= 3 else { return }
-            c.a = max(0, n - 3); c.b = max(0, n - 2)
-            c.c = max(0, n - 2); c.d = n - 1
+            if let a = segA, let b = segB, a != b {
+                c.a = a; c.b = (a + 1) % n
+                c.c = b; c.d = (b + 1) % n
+            } else {
+                guard n >= 3 else { return }
+                c.a = max(0, n - 3); c.b = max(0, n - 2)
+                c.c = max(0, n - 2); c.d = n - 1
+            }
         case .midpoint:
             guard let i = selectedNode, i >= 0, i < n else {
                 showToastView("先选一个节点，再加中点约束")
@@ -2510,11 +2776,12 @@ struct StudioScreen: View {
             }
             c.a = i
         case .tangent:
-            guard spec.nodes[n - 1].kind != .line else {
-                showToastView("末段不是圆弧：先把末点类型改成圆弧")
+            let idx = segA ?? (n - 1)
+            guard spec.nodes[(idx + 1) % n].kind != .line else {
+                showToastView("选中段不是圆弧：先把该段终点类型改成圆弧")
                 return
             }
-            c.a = n - 1
+            c.a = idx
         case .concentric:
             guard !spec.innerLoops.isEmpty else {
                 showToastView("先加内圆/内方，再加同心约束")
@@ -2542,11 +2809,11 @@ struct StudioScreen: View {
         guard n >= 3 else { return }
         switch c.kind {
         case .horizontal:
-            guard let first = spec.nodes.first else { return }
-            for i in spec.nodes.indices { spec.nodes[i].y = first.y }
+            guard c.a < n, c.b < n else { return }
+            spec.nodes[c.b].y = spec.nodes[c.a].y
         case .vertical:
-            guard let first = spec.nodes.first else { return }
-            for i in spec.nodes.indices { spec.nodes[i].x = first.x }
+            guard c.a < n, c.b < n else { return }
+            spec.nodes[c.b].x = spec.nodes[c.a].x
         case .coincident:
             guard c.a < n, c.b < n else { return }
             spec.nodes[c.b].x = spec.nodes[c.a].x
@@ -2696,7 +2963,8 @@ struct StudioScreen: View {
         guard n >= 3 else { return nil }
         switch c.kind {
         case .horizontal, .vertical:
-            let a = spec.nodes[0], b = spec.nodes[1]
+            guard c.a < n, c.b < n, c.a != c.b else { return nil }
+            let a = spec.nodes[c.a], b = spec.nodes[c.b]
             return ((a.x + b.x) / 2, (a.y + b.y) / 2)
         case .coincident:
             guard c.b < n else { return nil }
@@ -3460,6 +3728,11 @@ struct StudioScreen: View {
 
     private var modelTreePanel: some View {
         VStack(spacing: 0) {
+            TextField("工程名", text: $spec.projectName)
+                .font(.system(size: 11, weight: .semibold))
+                .textFieldStyle(.roundedBorder)
+                .padding(.horizontal, 10)
+                .padding(.top, 6)
             HStack {
                 Text("\(treeItems.count) 项")
                     .font(.system(size: 10, weight: .semibold))
@@ -3517,6 +3790,15 @@ struct StudioScreen: View {
                             .opacity(item.canMove ? 1 : 0.25)
                             .disabled(!item.canMove)
 
+                            Button { moveTreeItemDown(item) } label: {
+                                Image(systemName: "arrow.down")
+                                    .font(.system(size: 10))
+                                    .frame(width: 20, height: 26)
+                            }
+                            .buttonStyle(.plain)
+                            .opacity(item.canMove ? 1 : 0.25)
+                            .disabled(!item.canMove)
+
                             Button { editTreeItem(item) } label: {
                                 Image(systemName: "pencil")
                                     .font(.system(size: 10))
@@ -3543,8 +3825,55 @@ struct StudioScreen: View {
                     }
                 }
             }
+            if selectedTreeID?.hasPrefix("feat-") == true {
+                HStack(spacing: 6) {
+                    Button("复制特征") { duplicateSelectedFeature() }
+                    Button("线阵 \(arrayRows)×\(arrayCols)") { patternSelectedFeature() }
+                }
+                .font(.system(size: 10, weight: .semibold))
+                .buttonStyle(.bordered)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+            }
         }
         .frame(maxHeight: 500)
+    }
+
+    private func duplicateSelectedFeature() {
+        guard let id = selectedTreeID, id.hasPrefix("feat-"),
+              let f = spec.feats.first(where: { "feat-\($0.id.uuidString)" == id }) else {
+            showToastView("先在树里选一个孔/腔特征")
+            return
+        }
+        pushUndo()
+        var n = f
+        n.id = UUID()
+        n.name = f.name.isEmpty ? "复制特征" : f.name + " 复制"
+        n.x += 10
+        spec.feats.append(n)
+        showToastView("已复制特征，向右偏 10 mm")
+    }
+
+    private func patternSelectedFeature() {
+        guard let id = selectedTreeID, id.hasPrefix("feat-"),
+              let f = spec.feats.first(where: { "feat-\($0.id.uuidString)" == id }) else {
+            showToastView("先在树里选一个孔/腔特征")
+            return
+        }
+        let rows = max(1, arrayRows), cols = max(1, arrayCols)
+        guard rows * cols > 1 else { showToastView("阵列行列数都为 1，没有可复制的特征"); return }
+        pushUndo()
+        for r in 0..<rows {
+            for c in 0..<cols where !(r == 0 && c == 0) {
+                var n = f
+                n.id = UUID()
+                n.name = (f.name.isEmpty ? "特征" : f.name) + " 阵列\(r + 1)-\(c + 1)"
+                n.x += arrayDX * Double(c)
+                n.y += arrayDY * Double(r)
+                spec.feats.append(n)
+            }
+        }
+        showToastView("已按 \(rows)×\(cols) 阵列特征")
     }
 
     private func toggleTreeItem(_ item: StudioTreeItem) {
@@ -3571,6 +3900,25 @@ struct StudioScreen: View {
                   idx > 0 else { return }
             pushUndo()
             spec.steps.swapAt(idx, idx - 1)
+        }
+    }
+
+    private func moveTreeItemDown(_ item: StudioTreeItem) {
+        if item.id.hasPrefix("inner-") {
+            guard let idx = spec.innerLoops.firstIndex(where: { "inner-\($0.id.uuidString)" == item.id }),
+                  idx < spec.innerLoops.count - 1 else { return }
+            pushUndo()
+            spec.innerLoops.swapAt(idx, idx + 1)
+        } else if item.id.hasPrefix("feat-") {
+            guard let idx = spec.feats.firstIndex(where: { "feat-\($0.id.uuidString)" == item.id }),
+                  idx < spec.feats.count - 1 else { return }
+            pushUndo()
+            spec.feats.swapAt(idx, idx + 1)
+        } else if item.id.hasPrefix("step-") {
+            guard let idx = spec.steps.firstIndex(where: { "step-\($0.id.uuidString)" == item.id }),
+                  idx < spec.steps.count - 1 else { return }
+            pushUndo()
+            spec.steps.swapAt(idx, idx + 1)
         }
     }
 
@@ -4244,6 +4592,16 @@ struct StudioScreen: View {
                 ? "点1 已拾取 X\(ncf(p.x)) Y\(ncf(p.y)) Z\(ncf(p.z))；再点第二个点"
                 : "两点已拾取；上面显示距离"
             showToastView("已拾取点")
+        case .angle:
+            let p = nearestModelPoint(cam, at: loc, basePts: basePts)
+                    ?? ModelPickPoint(x: xy.0, y: xy.1, z: z)
+            if pickedPoints.count >= 3 { pickedPoints = [] }
+            pickedPoints.append(p)
+            pickedEdges = []; pickedFaces = []; pickedHole = nil
+            measurePickHint = pickedPoints.count < 3
+                ? "角点\(pickedPoints.count) 已拾取；再点\(3 - pickedPoints.count)个点（建议按顶点→拐点→顶点）"
+                : "三点已拾取；上面显示夹角"
+            showToastView("已拾取角点")
         case .body, .compound:
             if let hole {
                 pickedHole = hole
@@ -4349,6 +4707,7 @@ struct StudioScreen: View {
         switch target {
         case .point: return 18
         case .edge: return 16
+        case .angle: return 18
         case .face, .body, .compound: return 22
         }
     }
@@ -4509,6 +4868,18 @@ struct StudioScreen: View {
                 }
 
                 Section("结果") {
+                    if measureTarget == .angle, pickedPoints.count >= 3 {
+                        let a = pickedPoints[0], b = pickedPoints[1], c = pickedPoints[2]
+                        let u = (a.x - b.x, a.y - b.y, a.z - b.z)
+                        let v = (c.x - b.x, c.y - b.y, c.z - b.z)
+                        let lu = sqrt(u.0 * u.0 + u.1 * u.1 + u.2 * u.2)
+                        let lv = sqrt(v.0 * v.0 + v.1 * v.1 + v.2 * v.2)
+                        if lu > 1e-9, lv > 1e-9 {
+                            let cosA = max(-1, min(1, (u.0 * v.0 + u.1 * v.1 + u.2 * v.2) / (lu * lv)))
+                            LabeledContent("三点夹角", value: "\(ncf(acos(cosA) * 180 / .pi))°")
+                            LabeledContent("两边长度", value: "\(ncf(lu)) / \(ncf(lv)) mm")
+                        }
+                    }
                     if !pickedPoints.isEmpty {
                         ForEach(Array(pickedPoints.enumerated()), id: \.offset) { pair in
                             LabeledContent("点\(pair.offset + 1)",
@@ -4568,7 +4939,7 @@ struct StudioScreen: View {
                 }
 
                 Section("说明") {
-                    Text("点/边/面：第一次点对象1，第二次点对象2，结果算两点、两边或两面距离。体/复合：查看体积、重量、包容尺寸。")
+                    Text("点/边/面：第一次点对象1，第二次点对象2，结果算两点、两边或两面距离。角：连续点三个点，算中间点的夹角。体/复合：查看体积、重量、包容尺寸。")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                     Text("点目标会优先吸附模型顶点和孔中心；面目标支持顶面和侧面；孔/腔底面也可单独拾取。")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
@@ -5058,6 +5429,22 @@ struct StudioScreen: View {
             }
         }
 
+        if spec.showStock {
+            let sb = PartProg.stockBBox(spec)
+            let sz = PartProg.stockZRange(spec)
+            let ring = [CGPoint(x: sb.minX, y: sb.minY), CGPoint(x: sb.maxX, y: sb.minY),
+                        CGPoint(x: sb.maxX, y: sb.maxY), CGPoint(x: sb.minX, y: sb.maxY)]
+            if let (st, sbot) = clipZ(sz.top, sz.bottom) {
+                prism(ring, zTop: st, zBottom: sbot,
+                      tint: Color(white: 0.45), alpha: 0.035, dashed: true)
+                let q = cam.p(Double(sb.minX), Double(sb.maxY), st)
+                ctx.draw(Text("毛坯 \(ncf(Double(sb.width)))×\(ncf(Double(sb.height)))")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.secondary),
+                         at: CGPoint(x: q.x + 6, y: q.y - 8))
+            }
+        }
+
         if let (baseTop, baseBottom) = clipZ(0, -depth) {
             let bottom = ringPath(baseBottom)
             ctx.stroke(bottom, with: .color(bodyTint.opacity(0.55)), lineWidth: 1)
@@ -5442,6 +5829,23 @@ struct StudioScreen: View {
                         .font(.system(size: 10, weight: .semibold)).foregroundColor(.orange),
                      at: CGPoint(x: q.x, y: q.y - 26))
 
+        case .angle:
+            for (i, p) in pickedPoints.enumerated() {
+                let q = cam.p(p.x, p.y, p.z)
+                ctx.fill(Path(ellipseIn: CGRect(x: q.x - 4, y: q.y - 4, width: 8, height: 8)),
+                         with: .color(i == 1 ? .orange : .blue))
+                ctx.draw(Text("\(i + 1)").font(.system(size: 8, weight: .bold)).foregroundColor(.secondary),
+                         at: CGPoint(x: q.x + 7, y: q.y - 7))
+            }
+            if pickedPoints.count >= 2 {
+                var line = Path()
+                guard let f = pickedPoints.first else { break }
+                let a = cam.p(f.x, f.y, f.z)
+                line.move(to: a)
+                for pp in pickedPoints.dropFirst() { line.addLine(to: cam.p(pp.x, pp.y, pp.z)) }
+                ctx.stroke(line, with: .color(.orange), lineWidth: 1.8)
+            }
+
         case .body, .compound:
             if measureTarget == .compound {
                 ctx.fill(topPath(), with: .color(Color.yellow.opacity(0.10)))
@@ -5600,7 +6004,23 @@ struct StudioScreen: View {
                         .font(.system(size: 13, weight: .semibold))
                 }
                 .buttonStyle(.bordered)
-                Text("导出的是 1200×900 PNG，可直接发给现场；尺寸清单是文字，方便贴到程序单。")
+                HStack(spacing: 10) {
+                    Button {
+                        exportDXF()
+                    } label: {
+                        Label("导出 DXF 轮廓", systemImage: "square.and.arrow.down")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    if let url = dxfExportURL {
+                        ShareLink(item: url) {
+                            Label("分享 DXF", systemImage: "square.and.arrow.up")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+                Text("DXF 是 2D 轮廓（外形/内轮廓/孔），可导入 UG、CAD、CAM；不冒充 3D STEP。")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }
@@ -5611,6 +6031,74 @@ struct StudioScreen: View {
             drawDrawing(context: context, size: size)
         }
         .background(Color.white)
+    }
+
+    private func exportDXF() {
+        let b = PartProg.bbox(spec)
+        var lines: [String] = []
+        func pair(_ code: Int, _ value: String) {
+            lines.append(String(format: "%3d", code))
+            lines.append(value)
+        }
+        func point(_ x: Double, _ y: Double, _ z: Double = 0) {
+            pair(10, String(format: "%.4f", x))
+            pair(20, String(format: "%.4f", y))
+            pair(30, String(format: "%.4f", z))
+        }
+        func line(_ a: CGPoint, _ c: CGPoint) {
+            pair(0, "LINE")
+            pair(8, "0")
+            point(Double(a.x), Double(a.y))
+            point(Double(c.x), Double(c.y))
+        }
+        func circle(_ x: Double, _ y: Double, _ r: Double) {
+            pair(0, "CIRCLE")
+            pair(8, "0")
+            point(x, y)
+            pair(40, String(format: "%.4f", r))
+        }
+        lines.append("0"); lines.append("SECTION"); lines.append("2"); lines.append("HEADER")
+        lines.append("9"); lines.append("$ACADVER"); lines.append("1"); lines.append("AC1009")
+        lines.append("0"); lines.append("ENDSEC")
+        lines.append("0"); lines.append("SECTION"); lines.append("2"); lines.append("ENTITIES")
+        let outer = PartProg.pts(spec)
+        if outer.count > 1 {
+            for i in 0..<outer.count { line(outer[i], outer[(i + 1) % outer.count]) }
+        }
+        for l in spec.innerLoops {
+            let p = PartProg.drawForLoop(l, spec,
+                                         depth: l.through ? spec.height : l.depth,
+                                         dia: max(spec.pocketDia, 1), hNo: spec.pocketTool)
+            let pts = ContourGeo.flatten(ContourGeo.segments(ContourGeo.buildNodes(p)))
+                .map { CGPoint(x: Double($0.x) + l.cx, y: Double($0.y) + l.cy) }
+            if pts.count > 1 {
+                for i in 0..<pts.count { line(pts[i], pts[(i + 1) % pts.count]) }
+            }
+        }
+        for f in spec.feats {
+            if f.kind == .hole {
+                circle(f.x, f.y, f.dia / 2)
+            } else if f.kind == .pocket {
+                circle(f.x, f.y, f.dia / 2)
+            } else {
+                let x0 = f.x - f.w / 2, x1 = f.x + f.w / 2
+                let y0 = f.y - f.h / 2, y1 = f.y + f.h / 2
+                line(CGPoint(x: x0, y: y0), CGPoint(x: x1, y: y0))
+                line(CGPoint(x: x1, y: y0), CGPoint(x: x1, y: y1))
+                line(CGPoint(x: x1, y: y1), CGPoint(x: x0, y: y1))
+                line(CGPoint(x: x0, y: y1), CGPoint(x: x0, y: y0))
+            }
+        }
+        lines.append("0"); lines.append("ENDSEC"); lines.append("0"); lines.append("EOF")
+        let name = "MacroGen-\(Int(Double(b.width)))x\(Int(Double(b.height))).dxf"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        do {
+            try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+            dxfExportURL = url
+            showToastView("已导出 DXF：\(name)")
+        } catch {
+            showToastView("DXF 导出失败：\(error.localizedDescription)")
+        }
     }
 
     private func exportDrawing() {
@@ -5844,7 +6332,7 @@ struct StudioScreen: View {
 
     private func drawCam2D(context: GraphicsContext, size: CGSize) {
         guard size.width > 10, size.height > 10 else { return }
-        let b = PartProg.bbox(spec)
+        let b = cam2DStock ? PartProg.stockBBox(spec) : PartProg.bbox(spec)
         let w = Double(size.width), h = Double(size.height)
         let bw = Double(b.width), bh = Double(b.height)
         guard bw > 0.1, bh > 0.1 else {
@@ -5888,7 +6376,8 @@ struct StudioScreen: View {
             let stockPath = Path { pth in pth.addRect(r) }
             context.fill(stockPath, with: .color(Color(white: 0.80).opacity(0.16)))
             context.stroke(stockPath, with: .color(Color(white: 0.45)), lineWidth: 1)
-            context.draw(Text("毛坯 \(ncf(bw))×\(ncf(bh))")
+            let sz = PartProg.stockZRange(spec)
+            context.draw(Text("毛坯 \(ncf(bw))×\(ncf(bh))  Z\(ncf(sz.bottom))~\(ncf(sz.top))")
                             .font(.system(size: 8)).foregroundColor(.secondary),
                          at: CGPoint(x: r.minX + 4, y: r.minY - 6))
         }
@@ -6002,10 +6491,64 @@ struct StudioScreen: View {
         }
     }
 
+    private func setupSheetText() -> String {
+        let ops = PartProg.ops(spec)
+        let sb = PartProg.stockBBox(spec)
+        let sz = PartProg.stockZRange(spec)
+        var lines: [String] = []
+        lines.append("MacroGen 工序单")
+        lines.append("工程：\(spec.projectName)")
+        lines.append("毛坯：\(ncf(Double(sb.width)))×\(ncf(Double(sb.height)))  Z\(ncf(sz.bottom))~\(ncf(sz.top))")
+        lines.append("工件坐标：G\(spec.coord)  X0=\(ncf(spec.originX)) Y0=\(ncf(spec.originY))  Z0=基础顶面")
+        lines.append("材料：请按现场填写；后处理：\(spec.postName)")
+        lines.append("")
+        lines.append("序号  T/D        工序                  Z范围                 状态")
+        for (i, op) in ops.enumerated() {
+            let td = "T\(op.tool)/D\(ncf(op.dia))"
+            let title = op.title + " " + op.kind
+            lines.append("\(String(format: "%2d", i + 1))  \(td)  \(title)  Z\(op.zRange)  \(opStatusText(op))")
+        }
+        lines.append("")
+        lines.append("检查：")
+        let issues = PartProg.issues(spec)
+        if issues.isEmpty { lines.append("无") }
+        for s in issues { lines.append("- " + s) }
+        return lines.joined(separator: "\n")
+    }
+
+    private func moveOp(_ id: String, _ delta: Int) {
+        var ids = PartProg.ops(spec).map(\.id)
+        guard let idx = ids.firstIndex(of: id) else { return }
+        let to = idx + delta
+        guard to >= 0, to < ids.count else { return }
+        pushUndo()
+        ids.swapAt(idx, to)
+        spec.opOrder = ids
+        showToastView("工序顺序已调整")
+    }
+
+    private func resetOpOrder() {
+        guard !spec.opOrder.isEmpty else { return }
+        pushUndo()
+        spec.opOrder = []
+        showToastView("工序已恢复自动顺序")
+    }
+
     private var camPage: some View {
         Group {
             Section("2D 刀路检查") {
                 cam2DPanel
+            }
+
+            Section("毛坯（独立于零件）") {
+                Toggle("显示毛坯", isOn: $spec.showStock)
+                numRow("XY 单边余量 (mm)", $spec.stockMarginXY)
+                numRow("顶面余量 (mm)", $spec.stockExtraTop)
+                numRow("底面余量 (mm)", $spec.stockExtraBottom)
+                let bb = PartProg.stockBBox(spec)
+                let sz = PartProg.stockZRange(spec)
+                Text("毛坯 \(ncf(Double(bb.width)))×\(ncf(Double(bb.height)))  Z\(ncf(sz.bottom))~\(ncf(sz.top))；毛坯外形按零件包围盒加余量。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("工件坐标系") {
@@ -6119,6 +6662,11 @@ struct StudioScreen: View {
                     Text("\(ops.count) 道")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
+                    if !spec.opOrder.isEmpty {
+                        Button("自动顺序") { resetOpOrder() }
+                            .font(.system(size: 9, weight: .semibold))
+                            .buttonStyle(.borderless)
+                    }
                 }
                 if ops.isEmpty {
                     Text("没有工序：检查上面的开关和模型").font(.caption).foregroundStyle(.secondary)
@@ -6164,6 +6712,16 @@ struct StudioScreen: View {
                             .foregroundStyle(.secondary)
                             HStack(spacing: 6) {
                                 if op.status != .modelOnly {
+                                    Button { moveOp(op.id, -1) } label: {
+                                        Image(systemName: "chevron.up").font(.system(size: 9))
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(i == 1)
+                                    Button { moveOp(op.id, 1) } label: {
+                                        Image(systemName: "chevron.down").font(.system(size: 9))
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(i == ops.count)
                                     Button(op.status == .disabled ? "启用" : "禁用") {
                                         pushUndo()
                                         if spec.disabledOps.contains(op.id) {
@@ -6204,6 +6762,16 @@ struct StudioScreen: View {
                     Text("点“生成程序”后为已生成；每道工序可单独重算，重算结果会优先合并进最终程序。")
                         .font(.system(size: 9)).foregroundStyle(.secondary)
                 }
+                Button {
+                    opCodeTitle = "工序单 / 刀具单"
+                    opCodeText = setupSheetText()
+                    showOpCode = true
+                } label: {
+                    Label("查看工序单 / 刀具单", systemImage: "list.clipboard")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+
                 if !opCodeCache.isEmpty {
                     let stale = opCodeCache.keys.filter { cacheIsStale($0) }.count
                     Text(stale > 0
@@ -6213,15 +6781,14 @@ struct StudioScreen: View {
                 }
             }
 
-            Section("刀具（T / D）") {
+            Section("刀具库（T / D）") {
                 toolRow("顶面", $spec.faceTool, $spec.faceDia)
                 toolRow("轮廓", $spec.contourTool, $spec.contourDia)
-                if spec.holeMode == .spiral {
-                    toolRow("孔", $spec.holeTool, $spec.holeDia)
-                }
-                if spec.doPocket {
-                    toolRow("型腔", $spec.pocketTool, $spec.pocketDia)
-                }
+                toolRow("孔", $spec.holeTool, $spec.holeDia)
+                toolRow("型腔", $spec.pocketTool, $spec.pocketDia)
+                toolRow("攻丝", $spec.tapTool, $spec.tapDia)
+                Text("同一 T 号必须对应同一直径；改了 D 会同步影响对应工序。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("切削") {

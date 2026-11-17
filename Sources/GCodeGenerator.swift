@@ -408,7 +408,7 @@ enum GCodeGenerator {
         L.append("#1=\(fmt(s.length, 1)) (长)")
         L.append("#2=\(fmt(s.width, 1)) (宽)")
         L.append("#3=\(fmt(s.toolDia, 1)) (刀具直径)")
-        L.append("#4=0 (起始Z)")
+        L.append("#4=\(fmt(s.zTop, 3)) (起始Z，含毛坯顶面余量)")
         L.append("#5=\(fmt(-s.depth, 3)) (终点Z)")
         L.append("#6=\(fmt(s.stepDown, 2)) (每层)")
         L.append("#7=[#1/2.+#3/2.] (半长+刀半径，刀心走出工件边缘)")

@@ -16,7 +16,8 @@ struct SimScreen: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            SimCanvas(path: path, progress: progress, iso: iso)
+            SimCanvas(path: path, progress: progress, iso: iso,
+                      toolDia: spec?.toolDia ?? 6)
 
             HStack(spacing: 0) {
                 dro("X", value: curPoint.x)
@@ -204,6 +205,7 @@ struct SimCanvas: View {
     let path: SimPath
     let progress: Double
     let iso: Bool
+    var toolDia: Double = 6
 
     // 双指缩放 + 拖动平移
     @State private var zoom: CGFloat = 1
@@ -256,6 +258,37 @@ struct SimCanvas: View {
 
             guard path.pts.count > 1 else { return }
             let depth = max(1, -path.minZ)
+
+            // 2.5D 材料去除：俯视图把已走过的切削点按刀径擦掉毛坯，
+            // 不是实体布尔仿真，但能直观看到哪些区域已经被掏空。
+            if !iso, toolDia > 0.2 {
+                let pad = CGFloat(toolDia) * 0.9
+                let sx = Double(s)
+                let stockRect = CGRect(x: CGFloat(path.minX * sx) + ox - pad,
+                                       y: CGFloat(-path.maxY * sx) + oy - pad,
+                                       width: CGFloat((path.maxX - path.minX) * sx) + pad * 2,
+                                       height: CGFloat((path.maxY - path.minY) * sx) + pad * 2)
+                ctx.fill(Path(stockRect), with: .color(Color(white: 0.86)))
+                ctx.stroke(Path(stockRect), with: .color(Color(white: 0.58)), lineWidth: 1)
+                let r = CGFloat(toolDia / 2) * s
+                for k in 1..<path.pts.count {
+                    let b = path.pts[k]
+                    let walkedYet = (path.dist[safe: k] ?? 0) <= progress
+                    guard walkedYet, !b.rapid else { continue }
+                    let q = project(b.x, b.y, b.z)
+                    if r <= 1 {
+                        ctx.fill(Path(ellipseIn: CGRect(x: q.x - 1, y: q.y - 1, width: 2, height: 2)),
+                                 with: .color(Color(white: 0.97)))
+                    } else {
+                        ctx.fill(Path(ellipseIn: CGRect(x: q.x - r, y: q.y - r, width: r * 2, height: r * 2)),
+                                 with: .color(Color(white: 0.97)))
+                    }
+                }
+                ctx.draw(Text("材料去除（2.5D 近似）")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.secondary),
+                         at: CGPoint(x: min(stockRect.minX + 58, stockRect.maxX - 58), y: stockRect.minY + 10))
+            }
 
             // 性能：分段合批 + 按屏幕距离抽稀，几千个点也只发十几次 stroke
             let bands = 6

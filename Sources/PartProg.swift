@@ -3,7 +3,7 @@ import CoreGraphics
 
 // MARK: - 零件模型（草图 + 特征）
 
-enum HoleMode: String, CaseIterable, Identifiable {
+enum HoleMode: String, CaseIterable, Identifiable, Codable {
     case spiral = "螺旋铣"
     case g81 = "钻孔 G81"
     case g83 = "钻孔 G83"
@@ -11,14 +11,14 @@ enum HoleMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-enum PartFeatKind: String, CaseIterable, Identifiable {
+enum PartFeatKind: String, CaseIterable, Identifiable, Codable {
     case hole = "孔（贯通）"
     case pocket = "圆型腔（盲腔）"
     case rectPocket = "方型腔（盲腔）"
     var id: String { rawValue }
 }
 
-struct PartFeat: Identifiable, Equatable {
+struct PartFeat: Identifiable, Equatable, Codable {
     var id = UUID()
     var name: String = ""
     var kind: PartFeatKind = .hole
@@ -43,7 +43,7 @@ struct PartFeat: Identifiable, Equatable {
     }
 }
 
-struct SketchLoop: Identifiable, Equatable {
+struct SketchLoop: Identifiable, Equatable, Codable {
     var id = UUID()
     var name: String = "内轮廓"
     var template: ContourTemplate = .circle
@@ -63,7 +63,7 @@ struct SketchLoop: Identifiable, Equatable {
 // MARK: - 多台阶（同一零件上的独立 Z 层）
 
 /// 一层台阶的外形。保留模板字段，手画轮廓直接用 nodes。
-struct PartShape: Equatable {
+struct PartShape: Equatable, Codable {
     var template: ContourTemplate = .rect
     var rectL: Double = 120
     var rectW: Double = 80
@@ -96,13 +96,13 @@ struct PartShape: Equatable {
     }
 }
 
-enum PartStepMode: String, CaseIterable, Identifiable {
+enum PartStepMode: String, CaseIterable, Identifiable, Codable {
     case add = "增料"
     case cut = "除料"
     var id: String { rawValue }
 }
 
-struct PartStep: Identifiable, Equatable {
+struct PartStep: Identifiable, Equatable, Codable {
     var id = UUID()
     var name: String = "台阶"
     var shape: PartShape = PartShape()
@@ -125,7 +125,7 @@ struct PartStep: Identifiable, Equatable {
     }
 }
 
-enum SketchConstraintKind: String, CaseIterable, Identifiable, Hashable {
+enum SketchConstraintKind: String, CaseIterable, Identifiable, Hashable, Codable {
     case horizontal = "水平（全部点）"
     case vertical = "竖直（全部点）"
     case coincident = "重合（首尾）"
@@ -138,7 +138,7 @@ enum SketchConstraintKind: String, CaseIterable, Identifiable, Hashable {
     var id: String { rawValue }
 }
 
-struct SketchConstraint: Identifiable, Equatable {
+struct SketchConstraint: Identifiable, Equatable, Codable {
     var id = UUID()
     var kind: SketchConstraintKind
     var a: Int = 0
@@ -161,7 +161,15 @@ struct SketchConstraint: Identifiable, Equatable {
     }
 }
 
-struct PartSpec: Equatable {
+struct PartSpec: Equatable, Codable {
+    // 工程
+    var projectName: String = "未命名工程"
+    var stockMarginXY: Double = 5       // 毛坯 XY 单边余量
+    var stockExtraTop: Double = 0       // 毛坯顶面余量（Z+）
+    var stockExtraBottom: Double = 0    // 毛坯底面余量（Z-）
+    var showStock: Bool = true          // 建模页显示毛坯
+    var postName: String = "FANUC"      // 后处理标识（当前只输出 FANUC 风格）
+
     // 外形草图
     var template: ContourTemplate = .rect
     var rectL: Double = 120
@@ -185,6 +193,8 @@ struct PartSpec: Equatable {
     var constraints: [SketchConstraint] = []
     /// 工序禁用：id 由 PartProg.opInfo 统一生成
     var disabledOps: Set<String> = []
+    /// 手工工序顺序（空 = 按自动顺序）
+    var opOrder: [String] = []
 
     // 切削
     var spindle: Int = 2000
@@ -536,7 +546,7 @@ enum PartProg {
                     status: status(id)))
             }
         }
-        return out
+        return ordered(out, p)
     }
 
     /// 兼容旧界面的字符串工序清单
@@ -613,7 +623,7 @@ enum PartProg {
             s.mode = .face
             s.length = Double(b.width); s.width = Double(b.height)
             s.depth = p.topStock
-            s.stepDown = min(p.topStock, max(0.3, p.stepDown))
+            s.stepDown = min(p.topStock + max(0, p.stockExtraTop), max(0.3, p.stepDown))
             s.stepOver = p.stepOver
             s.toolDia = p.faceDia
             s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ
@@ -704,7 +714,27 @@ enum PartProg {
     static func stockBBox(_ p: PartSpec) -> CGRect {
         var q = p
         q.steps = []
-        return bbox(q)
+        let part = bbox(q)
+        let m = max(0, p.stockMarginXY)
+        return part.insetBy(dx: -m, dy: -m)
+    }
+
+    /// 毛坯 Z 范围（用于显示和工序单）
+    static func stockZRange(_ p: PartSpec) -> (top: Double, bottom: Double) {
+        (maxZ(p) + max(0, p.stockExtraTop), minZ(p) - max(0, p.stockExtraBottom))
+    }
+
+    /// 工序按手工顺序重排；未列出的工序排在最后
+    static func ordered(_ ops: [PartOpInfo], _ p: PartSpec) -> [PartOpInfo] {
+        guard !p.opOrder.isEmpty else { return ops }
+        var rank: [String: Int] = [:]
+        for (i, id) in p.opOrder.enumerated() where rank[id] == nil { rank[id] = i }
+        return ops.sorted { a, b in
+            let ra = rank[a.id] ?? Int.max
+            let rb = rank[b.id] ?? Int.max
+            if ra == rb { return a.id < b.id }
+            return ra < rb
+        }
     }
 
     /// 台阶周边粗加工 / 除料台阶清腔的多刀轮廓（刀心轨迹，不含刀补）
@@ -831,6 +861,38 @@ enum PartProg {
                 if f.depth > available { out.append("特征 \(i + 1)：方腔深度超过该处可用厚度 \(ncf(available))") }
             }
         }
+        out.append(contentsOf: collisionIssues(p))
+        return out
+    }
+
+    /// 2.5D 近似碰撞检查：毛坯边界、安全高度、刀具号冲突。
+    /// 不做真实刀柄/夹具几何，只提示明显会撞的设置。
+    static func collisionIssues(_ p: PartSpec) -> [String] {
+        var out: [String] = []
+        let sb = stockBBox(p)
+        let sz = stockZRange(p)
+        if p.safeZ <= sz.top + 0.5 {
+            out.append("安全高度 Z\(ncf(p.safeZ)) 低于毛坯顶面 Z\(ncf(sz.top))：快移会撞毛坯")
+        }
+        let tools = [(p.faceTool, p.faceDia), (p.contourTool, p.contourDia),
+                     (p.holeTool, p.holeDia), (p.pocketTool, p.pocketDia),
+                     (p.tapTool, p.tapDia)]
+        var seen: [Int: Double] = [:]
+        for (t, d) in tools where t > 0 {
+            if let old = seen[t], abs(old - d) > 0.01 {
+                out.append("刀具号 T\(t) 同时被 \(ncf(old)) 和 \(ncf(d)) 使用：刀补会冲突")
+            } else {
+                seen[t] = d
+            }
+        }
+        for (i, f) in p.feats.enumerated() {
+            let r = max(p.holeDia, p.pocketDia) / 2
+            let margin = min(min(Double(f.x) - Double(sb.minX), Double(sb.maxX) - Double(f.x)),
+                             min(Double(f.y) - Double(sb.minY), Double(sb.maxY) - Double(f.y)))
+            if margin < r {
+                out.append("特征 \(i + 1)：距毛坯边 \(ncf(margin)) mm，小于刀半径 \(ncf(r))：注意夹具/边缘过切")
+            }
+        }
         return out
     }
 
@@ -875,12 +937,13 @@ enum PartProg {
 
         // 有台阶时不敢自动飞顶面：毛坯高度和台阶顶面不是同一个 Z，贸然飞面会切到台阶
         if p.doFace && p.topStock > 0 && p.steps.isEmpty && wanted("face") {
-            let b = bbox(p)
+            let b = stockBBox(p)
             var s = PocketSpec()
             s.mode = .face
             s.length = Double(b.width)
             s.width = Double(b.height)
-            s.depth = p.topStock
+            s.depth = p.topStock + max(0, p.stockExtraTop)
+            s.zTop = max(0, p.stockExtraTop)
             s.stepDown = min(p.topStock, max(0.3, p.stepDown))
             s.stepOver = p.stepOver
             s.toolDia = p.faceDia
@@ -1019,7 +1082,11 @@ enum PartProg {
         L.append("O1010 (绘图编程 · 多工序)")
         let b = bbox(p)
         let stepNote = p.steps.isEmpty ? "" : "  台阶\(p.steps.count)层"
+        let sb = stockBBox(p)
+        let sz = stockZRange(p)
+        L.append("( 工程 \(p.projectName)  后处理 \(p.postName) )")
         L.append("( 外形 \(ncf(Double(b.width))) × \(ncf(Double(b.height)))  厚\(ncf(p.height))\(stepNote)  顶面余量\(ncf(p.topStock)) )")
+        L.append("( 毛坯 \(ncf(Double(sb.width))) × \(ncf(Double(sb.height)))  Z\(ncf(sz.bottom))~\(ncf(sz.top))  XY余量\(ncf(p.stockMarginXY)) )")
         L.append("( 工件坐标系 G\(p.coord)  X0=\(ncf(ox)) Y0=\(ncf(oy)) (草图坐标)  Z0=基础顶面；台阶顶面为正值 )")
         L.append("( 共 \(blocks.count) 道工序，每段前面注明了用哪把刀，换刀后从该段重新启动 )")
         L.append("G17 G21 G40 G49 G80 G90 G\(p.coord)")

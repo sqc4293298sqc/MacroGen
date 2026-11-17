@@ -4,7 +4,7 @@ import CoreGraphics
 // MARK: - 轮廓数据模型
 
 /// 一段轮廓的类型（存在"终点节点"上）
-enum ContourKind: String, CaseIterable, Identifiable {
+enum ContourKind: String, CaseIterable, Identifiable, Codable {
     case line = "直线"
     case cw = "圆弧 顺 G2"
     case ccw = "圆弧 逆 G3"
@@ -12,7 +12,7 @@ enum ContourKind: String, CaseIterable, Identifiable {
 }
 
 /// 轮廓节点：kind 表示"从上一个点到本点"这一段用什么走
-struct ContourNode: Identifiable, Equatable {
+struct ContourNode: Identifiable, Equatable, Codable {
     var id = UUID()
     var x: Double = 0
     var y: Double = 0
@@ -20,7 +20,7 @@ struct ContourNode: Identifiable, Equatable {
     var r: Double = 10
 }
 
-enum ContourTemplate: String, CaseIterable, Identifiable {
+enum ContourTemplate: String, CaseIterable, Identifiable, Codable {
     case rect = "矩形"
     case circle = "圆"
     case slot = "腰形槽"
