@@ -32,6 +32,7 @@ struct StudioScreen: View {
     @State private var snapVertex = false
     @State private var showModelGrid = true
     @State private var modelViewName = "等轴"
+    @State private var lastTapAt: Date = .distantPast
     @State private var dragFeatID: UUID? = nil
     @State private var showDimEdit = false
     @State private var dimEditTitle = ""
@@ -2180,8 +2181,10 @@ struct StudioScreen: View {
                 }
                 .contentShape(Rectangle())
                 .highPriorityGesture(
-                    DragGesture(minimumDistance: 2)
+                    DragGesture(minimumDistance: 0)
                         .onChanged { g in
+                            let travel = hypot(Double(g.translation.width), Double(g.translation.height))
+                            guard travel > 3 else { return }
                             if tapOnModel {
                                 if dragFeatID == nil {
                                     let cam = modelCam(size: geo.size)
@@ -2209,22 +2212,29 @@ struct StudioScreen: View {
                             let np = pitch - dy * 0.010
                             pitch = atan2(sin(np), cos(np))
                         }
-                        .onEnded { _ in lastDrag = .zero; dragFeatID = nil }
+                        .onEnded { g in
+                            let travel = hypot(Double(g.translation.width), Double(g.translation.height))
+                            lastDrag = .zero
+                            dragFeatID = nil
+                            guard travel < 6 else { return }
+                            let now = Date()
+                            if now.timeIntervalSince(lastTapAt) < 0.35 {
+                                lastTapAt = .distantPast
+                                setView(0.78, 0.62)
+                                showToastView("已回到等轴视角")
+                                return
+                            }
+                            lastTapAt = now
+                            guard tapOnModel else { return }
+                            let xy = modelXY(at: g.location, size: geo.size)
+                            ptrX = xy.0; ptrY = xy.1; hasPtr = true
+                            showToastView("取点 X\(ncf(xy.0)) Y\(ncf(xy.1))")
+                        }
                 )
                 .simultaneousGesture(MagnificationGesture()
                     .onChanged { v in zoom = min(3.0, max(0.4, zoomBase * Double(v))) }
                     .onEnded { _ in zoomBase = zoom }
                 )
-                .simultaneousGesture(SpatialTapGesture().onEnded { v in
-                    guard tapOnModel else { return }
-                    let xy = modelXY(at: v.location, size: geo.size)
-                    ptrX = xy.0; ptrY = xy.1; hasPtr = true
-                    showToastView("取点 X\(ncf(xy.0)) Y\(ncf(xy.1))")
-                })
-                .onTapGesture(count: 2) {
-                    yaw = 0.78; pitch = 0.62; zoom = 1; zoomBase = 1
-                    modelViewName = "等轴"
-                }
                 .background(Color.white)
             }
 
