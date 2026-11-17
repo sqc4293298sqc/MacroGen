@@ -254,6 +254,16 @@ struct StudioScreen: View {
         .sheet(isPresented: $showOpSheet) {
             OpParamsSheet(spec: $spec, op: opSheetName)
         }
+        .confirmationDialog("执行\(pendingEditTool ?? "编辑")？", isPresented: $showEditConfirm, titleVisibility: .visible) {
+            Button("执行") {
+                let t = pendingEditTool
+                pendingEditTool = nil
+                if let t = t { executeEditTool(t) }
+            }
+            Button("取消", role: .cancel) { pendingEditTool = nil }
+        } message: {
+            Text("当前草图 \(spec.nodes.count) 个点/段。确认后执行，可在左上角撤销。")
+        }
         .confirmationDialog("拍照图纸", isPresented: $showPhotoMenu, titleVisibility: .visible) {
             Button("拍照") { openCamera() }
             Button("从相册选") { showPhotoPicker = true }
@@ -534,13 +544,13 @@ struct StudioScreen: View {
                 Divider().padding(.vertical, 2)
                 railButton("线阵", "square.grid.3x1.folder.badge.plus", active: false) { arrayInner() }
                 railButton("圆阵", "circle.grid.cross", active: false) { circularArrayInner() }
-                railButton("镜像", "arrow.left.and.right", active: false) { pushUndo(); mirrorOuter() }
+                railButton("镜像", "arrow.left.and.right", active: false) { requestEditTool("镜像") }
 
                 Divider().padding(.vertical, 2)
-                railButton("修剪", "scissors", active: false) { pushUndo(); trimLast() }
-                railButton("延伸", "arrow.up.right", active: false) { pushUndo(); extendLast(10) }
-                railButton("圆角", "square.bottomleft", active: false) { pushUndo(); filletOuter(filletR) }
-                railButton("倒角", "square.topright", active: false) { pushUndo(); chamferOuter(chamferC) }
+                railButton("修剪", "scissors", active: false) { requestEditTool("修剪") }
+                railButton("延伸", "arrow.up.right", active: false) { requestEditTool("延伸") }
+                railButton("圆角", "square.bottomleft", active: false) { requestEditTool("圆角") }
+                railButton("倒角", "square.topright", active: false) { requestEditTool("倒角") }
 
                 railButton("更多", "square.grid.2x2", active: sketchSidePanel == .tools) {
                     sketchSidePanel = sketchSidePanel == .tools ? .none : .tools
@@ -1157,6 +1167,8 @@ struct StudioScreen: View {
     @State private var dragNode: Int? = nil
     @State private var sketchTool: String = ""
     @State private var refPoints: [CGPoint] = []
+    @State private var pendingEditTool: String? = nil
+    @State private var showEditConfirm = false
     @State private var filletR = 5.0
     @State private var chamferC = 3.0
     @State private var trimX0 = -20.0
@@ -1219,6 +1231,11 @@ struct StudioScreen: View {
         }
         if isTemplateTool(name) {
             selectTemplateTool(name)
+            return
+        }
+        if isEditTool(name) {
+            pendingEditTool = name
+            showEditConfirm = true
             return
         }
         pushUndo()
@@ -1824,6 +1841,33 @@ struct StudioScreen: View {
         }
         selectedNode = spec.nodes.isEmpty ? nil : spec.nodes.count - 1
         if !continuousDraw { sketchTool = "" }
+    }
+
+    private func isEditTool(_ tool: String) -> Bool {
+        ["修剪", "围栏修剪", "区域修剪", "圆角", "倒角", "偏置", "镜像",
+         "水平约束", "移动", "延伸", "打断"].contains(tool)
+    }
+
+    private func requestEditTool(_ name: String) {
+        pendingEditTool = name
+        showEditConfirm = true
+    }
+
+    private func executeEditTool(_ name: String) {
+        pushUndo()
+        switch name {
+        case "修剪": trimLast()
+        case "围栏修剪", "区域修剪": regionTrim()
+        case "圆角": filletOuter(filletR)
+        case "倒角": chamferOuter(chamferC)
+        case "偏置": offsetOuter(offsetD)
+        case "镜像": mirrorOuter()
+        case "水平约束": constrain(horizontal: true)
+        case "移动": moveOuter()
+        case "延伸": extendLast(10)
+        case "打断": breakLast()
+        default: break
+        }
     }
 
     private func isTemplateTool(_ tool: String) -> Bool {
