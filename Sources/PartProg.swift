@@ -307,9 +307,10 @@ enum PartProg {
     /// 按工件原点平移整件：让设定的 X0Y0 点变成程序里的 0,0
     static func shifted(_ p: PartSpec, dx: Double, dy: Double) -> PartSpec {
         var q = p
-        q.nodes = p.nodes.map { n in
-            var m = n; m.x += dx; m.y += dy; return m
-        }
+        // 模板矩形/圆没有节点，直接平移 nodes 不会动。先展平成自由轮廓再整体平移。
+        let base = pts(p)
+        q.template = .free
+        q.nodes = base.map { ContourNode(x: Double($0.x) + dx, y: Double($0.y) + dy) }
         q.feats = p.feats.map { f in
             var m = f; m.x += dx; m.y += dy; return m
         }
@@ -321,7 +322,9 @@ enum PartProg {
         }
         q.steps = p.steps.map { s in
             var m = s
-            m.shape.nodes = s.shape.nodes.map { n in var k = n; k.x += dx; k.y += dy; return k }
+            let sp = pts(s, p)
+            m.shape.template = .free
+            m.shape.nodes = sp.map { ContourNode(x: Double($0.x) + dx, y: Double($0.y) + dy) }
             return m
         }
         return q
