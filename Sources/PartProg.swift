@@ -89,6 +89,39 @@ struct PartShape: Equatable, Codable {
         nodes = p.nodes
     }
 
+    // 旧工程没有 cx/cy 字段，解码时补 0，避免升级后工程读不出来
+    private enum CodingKeys: String, CodingKey {
+        case template, rectL, rectW, rectR, circleD, slotL, slotW, nodes, cx, cy
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        template = try c.decodeIfPresent(ContourTemplate.self, forKey: .template) ?? .rect
+        rectL = try c.decodeIfPresent(Double.self, forKey: .rectL) ?? 120
+        rectW = try c.decodeIfPresent(Double.self, forKey: .rectW) ?? 80
+        rectR = try c.decodeIfPresent(Double.self, forKey: .rectR) ?? 0
+        circleD = try c.decodeIfPresent(Double.self, forKey: .circleD) ?? 100
+        slotL = try c.decodeIfPresent(Double.self, forKey: .slotL) ?? 120
+        slotW = try c.decodeIfPresent(Double.self, forKey: .slotW) ?? 30
+        nodes = try c.decodeIfPresent([ContourNode].self, forKey: .nodes) ?? []
+        cx = try c.decodeIfPresent(Double.self, forKey: .cx) ?? 0
+        cy = try c.decodeIfPresent(Double.self, forKey: .cy) ?? 0
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(template, forKey: .template)
+        try c.encode(rectL, forKey: .rectL)
+        try c.encode(rectW, forKey: .rectW)
+        try c.encode(rectR, forKey: .rectR)
+        try c.encode(circleD, forKey: .circleD)
+        try c.encode(slotL, forKey: .slotL)
+        try c.encode(slotW, forKey: .slotW)
+        try c.encode(nodes, forKey: .nodes)
+        try c.encode(cx, forKey: .cx)
+        try c.encode(cy, forKey: .cy)
+    }
+
     var summary: String {
         switch template {
         case .rect: return "\(ncf(rectL))×\(ncf(rectW))"
