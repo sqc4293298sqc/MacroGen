@@ -7640,7 +7640,7 @@ struct StudioScreen: View {
                         let key = groups[i].key
                         let list = groups[i].value
                         DisclosureGroup {
-                            ForEach(list) { op in
+                            ForEach(list, id: \.id) { op in
                                 HStack(spacing: 8) {
                                     Text("└").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
                                     VStack(alignment: .leading, spacing: 1) {
@@ -7849,6 +7849,48 @@ struct StudioScreen: View {
             Spacer()
         }
         .font(.system(size: 14))
+    }
+
+    private func applyTool(_ tool: ToolRecord, to role: String) {
+        pushUndo()
+        switch role {
+        case "顶面":
+            spec.faceTool = tool.no; spec.faceDia = tool.dia
+        case "轮廓":
+            spec.contourTool = tool.no; spec.contourDia = tool.dia
+        case "孔":
+            spec.holeTool = tool.no; spec.holeDia = tool.dia
+        case "型腔":
+            spec.pocketTool = tool.no; spec.pocketDia = tool.dia
+        case "攻丝":
+            spec.tapTool = tool.no; spec.tapDia = tool.dia; spec.tapRpm = tool.rpm
+        default:
+            return
+        }
+        spec.spindle = tool.rpm
+        spec.feed = tool.feed
+        showToastView("\(tool.summary) 已套到\(role)工序")
+    }
+
+    private func syncToolLibraryFromSpec() {
+        let existing: [(String, Int, Double, ToolKind)] = [
+            ("顶面", spec.faceTool, spec.faceDia, .flat),
+            ("轮廓", spec.contourTool, spec.contourDia, .flat),
+            ("孔", spec.holeTool, spec.holeDia, .drill),
+            ("型腔", spec.pocketTool, spec.pocketDia, .flat),
+            ("攻丝", spec.tapTool, spec.tapDia, .tap)
+        ]
+        for (name, no, dia, kind) in existing {
+            if let i = toolLibrary.firstIndex(where: { $0.no == no && $0.dia == dia }) {
+                toolLibrary[i].name = name
+                toolLibrary[i].kind = kind
+            } else {
+                toolLibrary.append(ToolRecord(name: name, no: no, dia: dia, kind: kind,
+                                              rpm: spec.spindle, feed: spec.feed))
+            }
+        }
+        ToolLibraryStore.save(toolLibrary)
+        showToastView("已把当前工序刀具同步到刀具库")
     }
 }
 
