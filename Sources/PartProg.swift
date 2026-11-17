@@ -255,7 +255,7 @@ enum PartProg {
 
     /// 内轮廓转成可以画/出程序的轮廓
     static func drawForLoop(_ l: SketchLoop, _ p: PartSpec, depth: Double,
-                            dia: Double, hNo: Int) -> DrawSpec {
+                            dia: Double, hNo: Int, zTop: Double = 0) -> DrawSpec {
         var d = DrawSpec()
         d.template = l.template
         d.rectL = l.rectL
@@ -273,6 +273,7 @@ enum PartProg {
         d.safeZ = p.safeZ
         d.hNo = hNo
         d.coord = p.coord
+        d.zTop = zTop
         d.outward = false
         return d
     }
@@ -302,6 +303,34 @@ enum PartProg {
     /// 零件最低点（基础底面是 -height）
     static func minZ(_ p: PartSpec) -> Double {
         min(-p.height, p.steps.map(\.drawBottom).min() ?? -p.height)
+    }
+
+    /// 点是否在闭合轮廓内（射线法，支持凹多边形）
+    static func pointIn(_ pts: [CGPoint], _ x: Double, _ y: Double) -> Bool {
+        guard pts.count > 2 else { return false }
+        var inside = false
+        var j = pts.count - 1
+        for i in 0..<pts.count {
+            let xi = Double(pts[i].x), yi = Double(pts[i].y)
+            let xj = Double(pts[j].x), yj = Double(pts[j].y)
+            if (yi > y) != (yj > y) {
+                let xCross = (xj - xi) * (y - yi) / (yj - yi) + xi
+                if x < xCross { inside.toggle() }
+            }
+            j = i
+        }
+        return inside
+    }
+
+    /// 找 XY 所在最高的增料台阶；不在台阶上返回 nil（即基础顶面 Z0）
+    static func stepAt(_ p: PartSpec, _ x: Double, _ y: Double) -> PartStep? {
+        p.steps.filter { $0.mode == .add && pointIn(pts($0, p), x, y) }
+            .max(by: { $0.z1 < $1.z1 })
+    }
+
+    /// 孔/腔/内轮廓的起始顶面：落在台阶上取该台阶顶面，否则为基础顶面 0
+    static func hostZ(_ p: PartSpec, _ x: Double, _ y: Double) -> Double {
+        stepAt(p, x, y)?.z1 ?? 0
     }
 
     /// 按工件原点平移整件：让设定的 X0Y0 点变成程序里的 0,0
@@ -394,6 +423,7 @@ enum PartProg {
         }
         for f in p.feats {
             let id = "feat-\(f.id.uuidString)"
+            let host = hostZ(p, f.x, f.y)
             if f.kind == .hole {
                 guard p.doHole else { continue }
                 switch p.holeMode {
@@ -402,7 +432,7 @@ enum PartProg {
                         id: id, title: f.name.isEmpty ? "孔" : f.name, kind: "螺旋铣",
                         geometry: "Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y))",
                         tool: p.holeTool, dia: p.holeDia, spindle: p.spindle, feed: p.feed,
-                        zRange: "Z\(ncf(maxZv)) → Z\(ncf(minZv - 1))",
+                        zRange: "Z\(ncf(host)) → Z\(ncf(minZv - 1))",
                         status: status(id)))
                 case .g81, .g83:
                     out.append(PartOpInfo(
@@ -410,14 +440,14 @@ enum PartProg {
                         kind: p.holeMode == .g81 ? "钻孔 G81" : "钻孔 G83",
                         geometry: "Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y))",
                         tool: p.holeTool, dia: f.dia, spindle: p.spindle, feed: p.feed,
-                        zRange: "Z\(ncf(maxZv)) → Z\(ncf(minZv - 1))",
+                        zRange: "Z\(ncf(host)) → Z\(ncf(minZv - 1))",
                         status: status(id)))
                 case .tap:
                     out.append(PartOpInfo(
                         id: id, title: f.name.isEmpty ? "孔" : f.name, kind: "攻丝 G84",
                         geometry: "Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) P\(ncf(p.tapPitch))",
                         tool: p.tapTool, dia: p.tapDia, spindle: p.tapRpm, feed: p.feed,
-                        zRange: "Z\(ncf(maxZv)) → Z\(ncf(minZv - 1))",
+                        zRange: "Z\(ncf(host)) → Z\(ncf(minZv - 1))",
                         status: status(id)))
                 }
             } else if p.doPocket && f.kind == .rectPocket {
@@ -425,45 +455,46 @@ enum PartProg {
                     id: id, title: f.name.isEmpty ? "方腔" : f.name, kind: "型腔铣",
                     geometry: "\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth)) @X\(ncf(f.x)) Y\(ncf(f.y))",
                     tool: p.pocketTool, dia: p.pocketDia, spindle: p.spindle, feed: p.feed,
-                    zRange: "Z0 → Z\(ncf(-f.depth))",
+                    zRange: "Z\(ncf(host)) → Z\(ncf(host - f.depth))",
                     status: status(id)))
             } else if p.doPocket {
                 out.append(PartOpInfo(
                     id: id, title: f.name.isEmpty ? "圆腔" : f.name, kind: "型腔铣",
                     geometry: "Ø\(ncf(f.dia)) 深\(ncf(f.depth)) @X\(ncf(f.x)) Y\(ncf(f.y))",
                     tool: p.pocketTool, dia: p.pocketDia, spindle: p.spindle, feed: p.feed,
-                    zRange: "Z0 → Z\(ncf(-f.depth))",
+                    zRange: "Z\(ncf(host)) → Z\(ncf(host - f.depth))",
                     status: status(id)))
             }
         }
         for l in p.innerLoops {
             let id = "loop-\(l.id.uuidString)"
+            let host = hostZ(p, l.cx, l.cy)
             if l.template == .circle && l.through {
                 guard p.doHole else { continue }
-                let depth = maxZv - minZv
+                let depth = host - minZv + 1
                 if p.holeMode == .spiral {
                     out.append(PartOpInfo(
                         id: id, title: l.name, kind: "螺旋铣",
                         geometry: "Ø\(ncf(l.circleD)) @X\(ncf(l.cx)) Y\(ncf(l.cy))",
                         tool: p.holeTool, dia: p.holeDia, spindle: p.spindle, feed: p.feed,
-                        zRange: "Z\(ncf(maxZv)) → Z\(ncf(minZv - 1))",
+                        zRange: "Z\(ncf(host)) → Z\(ncf(minZv - 1))",
                         status: status(id)))
                 } else {
                     out.append(PartOpInfo(
                         id: id, title: l.name, kind: p.holeMode.rawValue,
                         geometry: "Ø\(ncf(l.circleD)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 深\(ncf(depth))",
                         tool: p.holeTool, dia: l.circleD, spindle: p.spindle, feed: p.feed,
-                        zRange: "Z\(ncf(maxZv)) → Z\(ncf(minZv - 1))",
+                        zRange: "Z\(ncf(host)) → Z\(ncf(minZv - 1))",
                         status: status(id)))
                 }
             } else {
                 guard p.doPocket else { continue }
-                let depth = l.through ? p.height : min(l.depth, p.height)
+                let depth = l.through ? host - minZv : min(l.depth, host - minZv)
                 out.append(PartOpInfo(
                     id: id, title: l.name, kind: "型腔铣",
                     geometry: "\(l.template.rawValue) \(ncf(depth)) 深 @X\(ncf(l.cx)) Y\(ncf(l.cy))",
                     tool: p.pocketTool, dia: p.pocketDia, spindle: p.spindle, feed: p.feed,
-                    zRange: "Z0 → Z\(ncf(-depth))",
+                    zRange: "Z\(ncf(host)) → Z\(ncf(host - depth))",
                     status: status(id)))
             }
         }
@@ -572,15 +603,16 @@ enum PartProg {
 
         for f in p.feats {
             let id = "feat-\(f.id.uuidString)"
+            let host = hostZ(p, f.x, f.y)
             guard enabled(id) else { continue }
             if f.kind == .hole && p.doHole {
                 var s = PocketSpec()
                 s.mode = .spiral
                 s.spiralDia = f.dia
                 s.toolDia = p.holeDia
-                s.depth = maxZ(p) - minZ(p) + 1
+                s.depth = host - minZ(p) + 1
                 s.stepDown = p.stepDown
-                s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = maxZ(p)
+                s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = host
                 s.hNo = p.holeTool
                 s.coord = p.coord
                 addSegs(ToolpathEngine.build(s), dx: f.x, dy: f.y)
@@ -590,7 +622,7 @@ enum PartProg {
                 s.length = f.w; s.width = f.h
                 s.depth = f.depth; s.stepDown = p.stepDown; s.stepOver = p.stepOver
                 s.toolDia = p.pocketDia
-                s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ
+                s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = host
                 s.hNo = p.pocketTool
                 s.coord = p.coord
                 addSegs(ToolpathEngine.build(s), dx: f.x, dy: f.y)
@@ -600,7 +632,7 @@ enum PartProg {
                 s.spiralDia = f.dia
                 s.toolDia = p.pocketDia
                 s.depth = f.depth; s.stepDown = p.stepDown
-                s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ
+                s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = host
                 s.hNo = p.pocketTool
                 s.coord = p.coord
                 addSegs(ToolpathEngine.build(s), dx: f.x, dy: f.y)
@@ -609,21 +641,22 @@ enum PartProg {
 
         for l in p.innerLoops {
             let id = "loop-\(l.id.uuidString)"
+            let host = hostZ(p, l.cx, l.cy)
             guard enabled(id) else { continue }
             if l.template == .circle && l.through && p.doHole {
                 var s = PocketSpec()
                 s.mode = .spiral
                 s.spiralDia = l.circleD
                 s.toolDia = p.holeDia
-                s.depth = maxZ(p) - minZ(p) + 1
+                s.depth = host - minZ(p) + 1
                 s.stepDown = p.stepDown
-                s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = maxZ(p)
+                s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = host
                 s.hNo = p.holeTool
                 s.coord = p.coord
                 addSegs(ToolpathEngine.build(s), dx: l.cx, dy: l.cy)
             } else if p.doPocket {
                 let pts = loopPoints(l).map { CGPoint(x: $0.x + CGFloat(l.cx), y: $0.y + CGFloat(l.cy)) }
-                line(offsetClosed(pts, by: -p.pocketDia / 2), z: 0, cut: true)
+                line(offsetClosed(pts, by: -p.pocketDia / 2), z: host, cut: true)
             }
         }
         return out
@@ -727,8 +760,17 @@ enum PartProg {
         if !p.steps.isEmpty {
             out.append("多台阶按各层 Z 分别出程序；增料台阶已加周边多刀粗加工，整面飞面和复杂清角仍需按实际毛坯补工步")
         }
+        for (i, l) in p.innerLoops.enumerated() {
+            let host = hostZ(p, l.cx, l.cy)
+            let available = host - minZ(p)
+            if !l.through && l.depth > available {
+                out.append("内轮廓 \(i + 1)：深度超过该处可用厚度 \(ncf(available))")
+            }
+        }
         let b = bbox(p)
         for (i, f) in p.feats.enumerated() {
+            let host = hostZ(p, f.x, f.y)
+            let available = host - minZ(p)
             let r = f.dia / 2
             let inside = f.x - r >= b.minX + 0.5 && f.x + r <= b.maxX - 0.5
                 && f.y - r >= b.minY + 0.5 && f.y + r <= b.maxY - 0.5
@@ -742,13 +784,13 @@ enum PartProg {
                 if p.pocketDia / 2 >= f.dia / 2 {
                     out.append("特征 \(i + 1)：沉台 Ø\(ncf(f.dia))，刀径不能超过半径")
                 }
-                if f.depth > p.height { out.append("特征 \(i + 1)：沉台深度超过零件厚度") }
+                if f.depth > available { out.append("特征 \(i + 1)：沉台深度超过该处可用厚度 \(ncf(available))") }
             }
             if f.kind == .rectPocket {
                 if f.w <= p.pocketDia || f.h <= p.pocketDia {
                     out.append("特征 \(i + 1)：方腔 \(ncf(f.w))×\(ncf(f.h)) 比刀径小")
                 }
-                if f.depth > p.height { out.append("特征 \(i + 1)：方腔深度超过零件厚度") }
+                if f.depth > available { out.append("特征 \(i + 1)：方腔深度超过该处可用厚度 \(ncf(available))") }
             }
         }
         return out
@@ -841,6 +883,7 @@ enum PartProg {
 
         for f in p.feats {
             let id = "feat-\(f.id.uuidString)"
+            let host = hostZ(p, f.x, f.y)
             guard wanted(id) else { continue }
             if f.kind == .hole {
                 guard p.doHole else { continue }
@@ -850,11 +893,11 @@ enum PartProg {
                     s.mode = .spiral
                     s.spiralDia = f.dia
                     s.toolDia = p.holeDia
-                    s.depth = maxZ(p) - minZ(p) + 1          // 贯通所有台阶
+                    s.depth = host - minZ(p) + 1          // 从所在台阶顶面贯通到底
                     s.stepDown = p.stepDown
                     s.spindle = p.spindle
                     s.feed = p.feed
-                    s.safeZ = p.safeZ; s.zTop = maxZ(p)
+                    s.safeZ = p.safeZ; s.zTop = host
                     s.hNo = p.holeTool
                 s.coord = p.coord
                     s.cx = f.x
@@ -863,10 +906,10 @@ enum PartProg {
                         p.holeTool, GCodeGenerator.generate(s), id: id)
                 case .g81, .g83:
                     add("孔 Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) 钻孔 \(p.holeMode == .g81 ? "G81" : "G83")",
-                        p.holeTool, drillBlock(p, f), id: id)
+                        p.holeTool, drillBlock(p, f, zTop: host), id: id)
                 case .tap:
                     add("孔 Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) 攻丝 G84 P\(ncf(p.tapPitch))",
-                        p.tapTool, tapBlock(p, f), id: id)
+                        p.tapTool, tapBlock(p, f, zTop: host), id: id)
                 }
             } else if p.doPocket && f.kind == .rectPocket {
                 var d = asDraw(p, outward: false, template: .rect,
@@ -874,13 +917,15 @@ enum PartProg {
                 d.rectL = f.w
                 d.rectW = f.h
                 d.rectR = 0
+                d.zTop = host
                 var code = ContourProg.generate(d)
                 code = shift(code, dx: f.x, dy: f.y)
                 add("方腔 \(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth)) @X\(ncf(f.x)) Y\(ncf(f.y)) 型腔铣 T\(p.pocketTool) D\(ncf(p.pocketDia))",
                     p.pocketTool, code, id: id)
             } else if p.doPocket {
-                let d = asDraw(p, outward: false, template: .circle, circleD: f.dia,
+                var d = asDraw(p, outward: false, template: .circle, circleD: f.dia,
                                dia: p.pocketDia, depth: f.depth, hNo: p.pocketTool)
+                d.zTop = host
                 var code = ContourProg.generate(d)
                 code = shift(code, dx: f.x, dy: f.y)
                 add("沉台 Ø\(ncf(f.dia)) 深\(ncf(f.depth)) @X\(ncf(f.x)) Y\(ncf(f.y)) 型腔铣 T\(p.pocketTool) D\(ncf(p.pocketDia))",
@@ -890,10 +935,11 @@ enum PartProg {
 
         for l in p.innerLoops {
             let id = "loop-\(l.id.uuidString)"
+            let host = hostZ(p, l.cx, l.cy)
             guard wanted(id) else { continue }
             if l.template == .circle && l.through && !p.doHole { continue }
             if !(l.template == .circle && l.through) && !p.doPocket { continue }
-            let depth = l.through ? maxZ(p) - minZ(p) + 1 : min(l.depth, p.height)
+            let depth = l.through ? host - minZ(p) + 1 : min(l.depth, host - minZ(p))
             if l.template == .circle && l.through {
                 switch p.holeMode {
                 case .spiral:
@@ -915,14 +961,14 @@ enum PartProg {
                 case .g81, .g83:
                     let f = PartFeat(kind: .hole, x: l.cx, y: l.cy, dia: l.circleD, depth: depth)
                     add("\(l.name) Ø\(ncf(l.circleD)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 钻孔 \(p.holeMode == .g81 ? "G81" : "G83")",
-                        p.holeTool, drillBlock(p, f), id: id)
+                        p.holeTool, drillBlock(p, f, zTop: host), id: id)
                 case .tap:
                     let f = PartFeat(kind: .hole, x: l.cx, y: l.cy, dia: l.circleD, depth: depth)
                     add("\(l.name) Ø\(ncf(l.circleD)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 攻丝 G84 P\(ncf(p.tapPitch))",
-                        p.tapTool, tapBlock(p, f), id: id)
+                        p.tapTool, tapBlock(p, f, zTop: host), id: id)
                 }
             } else {
-                let d = drawForLoop(l, p, depth: depth, dia: p.pocketDia, hNo: p.pocketTool)
+                let d = drawForLoop(l, p, depth: depth, dia: p.pocketDia, hNo: p.pocketTool, zTop: host)
                 var code = ContourProg.generate(d)
                 code = shift(code, dx: l.cx, dy: l.cy)
                 add("\(l.name) \(l.template.rawValue) 深\(ncf(depth)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 型腔铣 T\(p.pocketTool) D\(ncf(p.pocketDia))",
@@ -970,12 +1016,12 @@ enum PartProg {
     }
 
     /// G81 / G83 钻孔
-    static func drillBlock(_ p: PartSpec, _ f: PartFeat) -> String {
+    static func drillBlock(_ p: PartSpec, _ f: PartFeat, zTop: Double) -> String {
         let z = minZ(p) - 1
         var L: [String] = []
         L.append("G0 Z\(ncf(p.safeZ + maxZ(p), 1))")
         L.append("( 孔 Ø\(ncf(f.dia)) @X\(ncf(f.x)) Y\(ncf(f.y)) )")
-        var line = "G98 G\(p.holeMode == .g81 ? "81" : "83") X\(ncf(f.x)) Y\(ncf(f.y)) Z\(ncf(z, 1)) R\(ncf(maxZ(p) + 2, 1)) F\(p.feed)"
+        var line = "G98 G\(p.holeMode == .g81 ? "81" : "83") X\(ncf(f.x)) Y\(ncf(f.y)) Z\(ncf(z, 1)) R\(ncf(zTop + 2, 1)) F\(p.feed)"
         if p.holeMode == .g83 { line += " Q\(ncf(p.peck))" }
         L.append(line)
         L.append("G80")
@@ -983,12 +1029,12 @@ enum PartProg {
     }
 
     /// G84 攻丝：M29 刚性攻丝，F = 螺距 × 转速
-    static func tapBlock(_ p: PartSpec, _ f: PartFeat) -> String {
+    static func tapBlock(_ p: PartSpec, _ f: PartFeat, zTop: Double) -> String {
         var L: [String] = []
         L.append("G0 Z\(ncf(p.safeZ + maxZ(p), 1))")
         L.append("( 攻丝 Ø\(ncf(f.dia)) P\(ncf(p.tapPitch)) @X\(ncf(f.x)) Y\(ncf(f.y)) )")
         L.append("M29 S\(p.tapRpm)")
-        L.append("G98 G84 X\(ncf(f.x)) Y\(ncf(f.y)) Z\(ncf(minZ(p) - 1, 1)) R\(ncf(maxZ(p) + 2, 1)) F\(ncf(Double(p.tapRpm) * p.tapPitch))")
+        L.append("G98 G84 X\(ncf(f.x)) Y\(ncf(f.y)) Z\(ncf(minZ(p) - 1, 1)) R\(ncf(zTop + 2, 1)) F\(ncf(Double(p.tapRpm) * p.tapPitch))")
         L.append("G80")
         return L.joined(separator: "\n")
     }

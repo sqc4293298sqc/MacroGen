@@ -3565,12 +3565,13 @@ struct StudioScreen: View {
         }
 
         for l in spec.innerLoops where !hiddenTreeIDs.contains("inner-\(l.id.uuidString)") {
-            let d = PartProg.drawForLoop(l, spec, depth: l.through ? spec.height + 1 : l.depth,
-                                         dia: max(spec.pocketDia, 1), hNo: spec.pocketTool)
+            let host = PartProg.hostZ(spec, l.cx, l.cy)
+            let d = PartProg.drawForLoop(l, spec, depth: l.through ? spec.height + host + 1 : l.depth,
+                                         dia: max(spec.pocketDia, 1), hNo: spec.pocketTool, zTop: host)
             let segs = ContourGeo.segments(ContourGeo.buildNodes(d))
             let flat = ContourGeo.flatten(segs, arcStep: 24)
-            let cut = l.through ? spec.height : min(l.depth, spec.height)
-            let loopCut = min(cut, visibleDepth)
+            let cut = l.through ? spec.height : min(l.depth, spec.height + host)
+            let loopCut = l.through ? min(cut, visibleDepth) : min(cut, visibleDepth)
             func loopPath(_ z: Double) -> Path {
                 var p = Path()
                 guard let f = flat.first else { return p }
@@ -3578,12 +3579,13 @@ struct StudioScreen: View {
                 for q in flat.dropFirst() { p.addLine(to: cam.p(q.x + l.cx, q.y + l.cy, z)) }
                 return p
             }
-            let topLoop = loopPath(0)
+            let topLoop = loopPath(host)
             ctx.fill(topLoop, with: .color(Color.red.opacity(0.12)))
             ctx.stroke(topLoop, with: .color(.red),
                        style: StrokeStyle(lineWidth: 1.4, dash: [4, 3]))
-            ctx.stroke(loopPath(-loopCut), with: .color(Color.red.opacity(0.55)), lineWidth: 0.9)
-            let c = cam.p(l.cx, l.cy, 0)
+            let bottomLoopZ = l.through ? -loopCut : host - loopCut
+            ctx.stroke(loopPath(bottomLoopZ), with: .color(Color.red.opacity(0.55)), lineWidth: 0.9)
+            let c = cam.p(l.cx, l.cy, host)
             let text: String
             switch l.template {
             case .circle: text = "Ø" + ncf(l.circleD)
@@ -3597,44 +3599,45 @@ struct StudioScreen: View {
 
         for f in spec.feats where !hiddenTreeIDs.contains("feat-\(f.id.uuidString)") {
             let isSelected = selectedTreeID == "feat-\(f.id.uuidString)"
+            let host = PartProg.hostZ(spec, f.x, f.y)
             if f.kind == .rectPocket {
-                let d = min(f.depth, spec.height)
+                let d = min(f.depth, spec.height + host)
                 var top = Path()
                 let x0 = f.x - f.w / 2, x1 = f.x + f.w / 2
                 let y0 = f.y - f.h / 2, y1 = f.y + f.h / 2
-                top.move(to: cam.p(x0, y0, 0))
-                top.addLine(to: cam.p(x1, y0, 0))
-                top.addLine(to: cam.p(x1, y1, 0))
-                top.addLine(to: cam.p(x0, y1, 0))
+                top.move(to: cam.p(x0, y0, host))
+                top.addLine(to: cam.p(x1, y0, host))
+                top.addLine(to: cam.p(x1, y1, host))
+                top.addLine(to: cam.p(x0, y1, host))
                 top.closeSubpath()
                 ctx.fill(top, with: .color(Color(red: 1.0, green: 0.42, blue: 0.10).opacity(0.18)))
                 ctx.stroke(top, with: .color(Color(red: 0.95, green: 0.55, blue: 0.20)), lineWidth: 1.4)
                 var bot = Path()
-                bot.move(to: cam.p(x0, y0, -d))
-                bot.addLine(to: cam.p(x1, y0, -d))
-                bot.addLine(to: cam.p(x1, y1, -d))
-                bot.addLine(to: cam.p(x0, y1, -d))
+                bot.move(to: cam.p(x0, y0, host - d))
+                bot.addLine(to: cam.p(x1, y0, host - d))
+                bot.addLine(to: cam.p(x1, y1, host - d))
+                bot.addLine(to: cam.p(x0, y1, host - d))
                 bot.closeSubpath()
                 ctx.stroke(bot, with: .color(Color(red: 0.95, green: 0.55, blue: 0.20).opacity(0.75)), lineWidth: 1)
-                label(ctx, cam, f, "\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth))")
+                label(ctx, cam, f, "\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth))", z: host)
                 if isSelected { selectedMarker(f, radius: max(f.w, f.h) / 2 + 4) }
                 continue
             }
             let r = f.dia / 2
             if f.kind == .hole {
-                let c = circle(f.x, f.y, 0, r)
+                let c = circle(f.x, f.y, host, r)
                 ctx.fill(c, with: .color(Color(white: 0.28).opacity(0.55)))
                 ctx.stroke(c, with: .color(Color(white: 0.35)), lineWidth: 1.4)
                 ctx.stroke(circle(f.x, f.y, -min(depth, visibleDepth), r), with: .color(Color(white: 0.45)), lineWidth: 0.9)
-                label(ctx, cam, f, "Ø\(ncf(f.dia))")
+                label(ctx, cam, f, "Ø\(ncf(f.dia))", z: host)
                 if isSelected { selectedMarker(f, radius: r + 4) }
             } else {
-                let d = min(f.depth, spec.height)
-                let c = circle(f.x, f.y, 0, r)
+                let d = min(f.depth, spec.height + host)
+                let c = circle(f.x, f.y, host, r)
                 ctx.fill(c, with: .color(Color(red: 1.0, green: 0.42, blue: 0.10).opacity(0.18)))
                 ctx.stroke(c, with: .color(Color(red: 0.95, green: 0.55, blue: 0.20)), lineWidth: 1.4)
-                ctx.stroke(circle(f.x, f.y, -d, r), with: .color(Color(red: 0.95, green: 0.55, blue: 0.20).opacity(0.75)), lineWidth: 1)
-                label(ctx, cam, f, "Ø\(ncf(f.dia)) 深\(ncf(f.depth))")
+                ctx.stroke(circle(f.x, f.y, host - d, r), with: .color(Color(red: 0.95, green: 0.55, blue: 0.20).opacity(0.75)), lineWidth: 1)
+                label(ctx, cam, f, "Ø\(ncf(f.dia)) 深\(ncf(f.depth))", z: host)
                 if isSelected { selectedMarker(f, radius: r + 4) }
             }
         }
@@ -3825,8 +3828,8 @@ struct StudioScreen: View {
         }
     }
 
-    private func label(_ ctx: GraphicsContext, _ cam: Cam, _ f: PartFeat, _ text: String) {
-        let q = cam.p(f.x, f.y, 0)
+    private func label(_ ctx: GraphicsContext, _ cam: Cam, _ f: PartFeat, _ text: String, z: Double = 0) {
+        let q = cam.p(f.x, f.y, z)
         ctx.draw(Text(text).font(.system(size: 9, weight: .semibold)).foregroundColor(.black),
                  at: CGPoint(x: q.x, y: q.y - 10))
     }
