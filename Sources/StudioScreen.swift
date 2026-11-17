@@ -88,12 +88,12 @@ struct StudioScreen: View {
     @State private var sectionHandles = true
     @State private var sectionLines = true
     @State private var measureOn = false
-    @State private var measureTarget: MeasureTarget = .body
-    @State private var pickedPoint: ModelPickPoint? = nil
+    @State private var measureTarget: MeasureTarget = .point
+    @State private var pickedPoints: [ModelPickPoint] = []
     @State private var pickedEdges: [ModelPickEdge] = []
-    @State private var pickedFace: ModelPickFace? = nil
+    @State private var pickedFaces: [ModelPickFace] = []
     @State private var pickedHole: ModelPickHole? = nil
-    @State private var measurePickHint = "点模型上的边、面或孔进行拾取"
+    @State private var measurePickHint = "点/边/面：连点两个对象测距；体/复合：看属性"
     @State private var pickTolerance = 22.0
     @State private var pickToleranceByTarget: [String: Double] = [:]
     @State private var measureHost: UIHostingController<AnyView>? = nil
@@ -172,6 +172,9 @@ struct StudioScreen: View {
         var z: Double
         var area: Double
         var center: CGPoint
+        var nx: Double = 0
+        var ny: Double = 0
+        var nz: Double = 1
     }
 
     private struct ModelPickHole: Identifiable, Equatable {
@@ -3404,7 +3407,7 @@ struct StudioScreen: View {
         case .extrude: return "由草图向下拉伸"
         case .steps: return "\(spec.steps.count) 层 · 独立 Z / 轮廓"
         case .section: return "X/Y/Z · 实时预览"
-        case .measure: return "体积/重量/尺寸/面积"
+        case .measure: return "两点/两面距离 · 对象属性"
         case .display: return "视角与网格"
         case .tools: return "参数化特征"
         case .none: return ""
@@ -4038,6 +4041,19 @@ struct StudioScreen: View {
         return best
     }
 
+    private func baseBottomFaceAt(_ cam: Cam, at loc: CGPoint) -> ModelPickFace? {
+        let cutZ = activeSectionCutZ()
+        let bottom = max(-spec.height, cutZ ?? -Double.greatestFiniteMagnitude)
+        guard bottom <= 0.0001, -spec.height <= bottom + 0.0001 else { return nil }
+        // 基础底面按外轮廓投影判断，不用圆近似。
+        let poly = PartProg.pts(spec).map { cam.p(Double($0.x), Double($0.y), bottom) }
+        guard pointInScreenPolygon(loc, poly) else { return nil }
+        return ModelPickFace(id: "base-bottom", name: "基础底面", z: bottom,
+                             area: abs(ContourGeo.signedArea(PartProg.pts(spec))),
+                             center: centroid(PartProg.pts(spec)),
+                             nx: 0, ny: 0, nz: -1)
+    }
+
     private func sideFaceAt(_ cam: Cam, at loc: CGPoint) -> ModelPickFace? {
         let cutZ = activeSectionCutZ()
         var best: (ModelPickFace, Double)? = nil
@@ -4055,11 +4071,14 @@ struct StudioScreen: View {
                 let my = (Double(a.y) + Double(b.y)) / 2
                 let q = cam.p(mx, my, (top + bottom) / 2)
                 let d = hypot(Double(loc.x) - Double(q.x), Double(loc.y) - Double(q.y))
-                let len = hypot(Double(b.x - a.x), Double(b.y - a.y))
+                let len = max(hypot(Double(b.x - a.x), Double(b.y - a.y)), 1e-6)
+                let nx = Double(b.y - a.y) / len
+                let ny = -Double(b.x - a.x) / len
                 let f = ModelPickFace(id: "\(prefix)-side\(i)", name: "\(name) \(i + 1)",
                                       z: (top + bottom) / 2,
                                       area: len * (top - bottom),
-                                      center: CGPoint(x: mx, y: my))
+                                      center: CGPoint(x: mx, y: my),
+                                      nx: nx, ny: ny, nz: 0)
                 if best == nil || d < best!.1 { best = (f, d) }
             }
         }
@@ -4090,12 +4109,66 @@ struct StudioScreen: View {
         return da <= db ? a : b
     }
 
+    /// 点测量：优先吸附到模型顶点/孔中心；没吸附到才用屏幕点反算。
+    private func nearestModelPoint(_ cam: Cam, at loc: CGPoint, basePts: [CGPoint]) -> ModelPickPoint? {
+        var best: (ModelPickPoint, Double)? = nil
+        func consider(_ x: Double, _ y: Double, _ z: Double) {
+            let q = cam.p(x, y, z)
+            let d = hypot(Double(loc.x) - Double(q.x), Double(loc.y) - Double(q.y))
+            if best == nil || d < best!.1 { best = (ModelPickPoint(x: x, y: y, z: z), d) }
+        }
+        for p in basePts {
+            consider(Double(p.x), Double(p.y), 0)
+            consider(Double(p.x), Double(p.y), -spec.height)
+        }
+        for s in spec.steps {
+            let pts = PartProg.pts(s, spec)
+            let top = s.mode == .add ? s.z1 : s.drawTop
+            let bottom = s.mode == .add ? s.z0 : s.drawBottom
+            for p in pts {
+                consider(Double(p.x), Double(p.y), top)
+                consider(Double(p.x), Double(p.y), bottom)
+            }
+        }
+        for f in spec.feats {
+            let host = PartProg.hostZ(spec, f.x, f.y)
+            consider(f.x, f.y, host)
+            consider(f.x, f.y, f.kind == .hole ? PartProg.minZ(spec) : host - f.depth)
+        }
+        for l in spec.innerLoops where l.template == .circle {
+            let host = PartProg.hostZ(spec, l.cx, l.cy)
+            consider(l.cx, l.cy, host)
+            consider(l.cx, l.cy, l.through ? PartProg.minZ(spec) : host - l.depth)
+        }
+        guard let best, best.1 <= max(pickTolerance, 14) else { return nil }
+        return best.0
+    }
+
+    private func faceMeasure(_ a: ModelPickFace, _ b: ModelPickFace)
+        -> (distance: Double, center: Double, parallel: Bool,
+            dx: Double, dy: Double, dz: Double) {
+        func unit(_ x: Double, _ y: Double, _ z: Double) -> (Double, Double, Double) {
+            let l = max(sqrt(x * x + y * y + z * z), 1e-9)
+            return (x / l, y / l, z / l)
+        }
+        let n1 = unit(a.nx, a.ny, a.nz)
+        let n2 = unit(b.nx, b.ny, b.nz)
+        let dot = n1.0 * n2.0 + n1.1 * n2.1 + n1.2 * n2.2
+        let dx = Double(b.center.x - a.center.x)
+        let dy = Double(b.center.y - a.center.y)
+        let dz = b.z - a.z
+        let center = sqrt(dx * dx + dy * dy + dz * dz)
+        let plane = abs(dx * n1.0 + dy * n1.1 + dz * n1.2)
+        let parallel = abs(abs(dot) - 1) < 0.02
+        return (parallel ? plane : center, center, parallel, dx, dy, dz)
+    }
+
     private func clearMeasurePicks() {
-        pickedPoint = nil
+        pickedPoints = []
         pickedEdges = []
-        pickedFace = nil
+        pickedFaces = []
         pickedHole = nil
-        measurePickHint = "点模型上的边、面或孔进行拾取"
+        measurePickHint = "点/边/面：连续点两个对象测距离；体/复合：看属性"
     }
 
     private func handleMeasureTap(at loc: CGPoint, size: CGSize) {
@@ -4105,8 +4178,10 @@ struct StudioScreen: View {
         let candidates = edgeCandidates(cam, at: loc)
         let edge = candidates.first(where: { $0.1 <= pickTolerance })?.0
         let topFace = faceAt(xy, basePts: basePts)
+        let bottomFace = baseBottomFaceAt(cam, at: loc)
         let sideFace = sideFaceAt(cam, at: loc)
-        var face = closerFace(sideFace, topFace, cam: cam, at: loc)
+        var face = closerFace(sideFace, closerFace(topFace, bottomFace, cam: cam, at: loc),
+                              cam: cam, at: loc)
         let hole = nearestHole(cam, at: loc)
         if measureTarget == .face, let h = hole, h.onBottom {
             let area = h.isPocket && h.w > 0 ? h.w * h.h : Double.pi * pow(h.dia / 2, 2)
@@ -4132,8 +4207,6 @@ struct StudioScreen: View {
             }
             return
         }
-        pickedPoint = ModelPickPoint(x: xy.0, y: xy.1, z: z)
-
         switch measureTarget {
         case .edge:
             guard let edge else {
@@ -4143,9 +4216,9 @@ struct StudioScreen: View {
             }
             if pickedEdges.count >= 2 { pickedEdges = [] }
             pickedEdges.append(edge)
-            pickedFace = nil; pickedHole = nil
+            pickedFaces = []; pickedHole = nil
             let nearOther = edgeIsAmbiguous(cam, at: loc)
-            measurePickHint = pickedEdges.count == 1 ? "边1 已拾取；再点一条边可测间距" : "两条边已拾取"
+            measurePickHint = pickedEdges.count == 1 ? "边1 已拾取；再点第二条边测最短距离" : "两条边已拾取"
             if nearOther { measurePickHint += "；附近边较近，放大后再点更稳" }
             showToastView("已拾取边")
         case .face:
@@ -4154,29 +4227,38 @@ struct StudioScreen: View {
                 showToastView("未拾取到面")
                 return
             }
-            pickedFace = face
+            if pickedFaces.count >= 2 { pickedFaces = [] }
+            pickedFaces.append(face)
             pickedEdges = []; pickedHole = nil
-            measurePickHint = "面已拾取：\(face.name)"
+            measurePickHint = pickedFaces.count == 1
+                ? "面1 已拾取：\(face.name)；再点第二个面测距"
+                : "两面已拾取；上面显示距离"
             showToastView("已拾取面")
         case .point:
-            pickedEdges = []; pickedFace = nil; pickedHole = nil
-            measurePickHint = "点已拾取 X\(ncf(xy.0)) Y\(ncf(xy.1)) Z\(ncf(z))"
+            let p = nearestModelPoint(cam, at: loc, basePts: basePts)
+                    ?? ModelPickPoint(x: xy.0, y: xy.1, z: z)
+            if pickedPoints.count >= 2 { pickedPoints = [] }
+            pickedPoints.append(p)
+            pickedEdges = []; pickedFaces = []; pickedHole = nil
+            measurePickHint = pickedPoints.count == 1
+                ? "点1 已拾取 X\(ncf(p.x)) Y\(ncf(p.y)) Z\(ncf(p.z))；再点第二个点"
+                : "两点已拾取；上面显示距离"
             showToastView("已拾取点")
         case .body, .compound:
             if let hole {
                 pickedHole = hole
-                pickedEdges = []; pickedFace = nil
+                pickedEdges = []; pickedFaces = []
                 measurePickHint = "孔/腔已拾取：\(hole.name)"
                 showToastView("已拾取孔/腔")
             } else if let face {
-                pickedFace = face
+                pickedFaces = [face]
                 pickedEdges = []; pickedHole = nil
                 measurePickHint = "面已拾取：\(face.name)"
                 showToastView("已拾取面")
             } else if let edge {
                 if pickedEdges.count >= 2 { pickedEdges = [] }
                 pickedEdges.append(edge)
-                pickedFace = nil; pickedHole = nil
+                pickedFaces = []; pickedHole = nil
                 let nearOther = edgeIsAmbiguous(cam, at: loc)
                 measurePickHint = nearOther ? "边已拾取；附近边较近，放大后再点更稳" : "边已拾取"
                 showToastView("已拾取边")
@@ -4292,6 +4374,7 @@ struct StudioScreen: View {
                 pickToleranceByTarget[measureTarget.rawValue] = pickTolerance
                 storeTolerance(pickTolerance, for: measureTarget)
                 measureTarget = newTarget
+                clearMeasurePicks()
                 let saved = pickToleranceByTarget[newTarget.rawValue] ?? storedTolerance(for: newTarget)
                 pickTolerance = min(max(saved, 12), 40)
             })
@@ -4426,22 +4509,40 @@ struct StudioScreen: View {
                 }
 
                 Section("结果") {
-                    if let p = pickedPoint {
-                        LabeledContent("拾取点", value: "X\(ncf(p.x)) Y\(ncf(p.y)) Z\(ncf(p.z))")
-                        LabeledContent("到原点", value: "\(ncf(hypot(hypot(p.x, p.y), p.z))) mm")
+                    if !pickedPoints.isEmpty {
+                        ForEach(Array(pickedPoints.enumerated()), id: \.offset) { pair in
+                            LabeledContent("点\(pair.offset + 1)",
+                                           value: "X\(ncf(pair.element.x)) Y\(ncf(pair.element.y)) Z\(ncf(pair.element.z))")
+                        }
+                        if pickedPoints.count > 1 {
+                            let a = pickedPoints[0], b = pickedPoints[1]
+                            let dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z
+                            LabeledContent("两点距离（3D）", value: "\(ncf(sqrt(dx * dx + dy * dy + dz * dz))) mm")
+                            LabeledContent("ΔX / ΔY / ΔZ", value: "\(ncf(dx)) / \(ncf(dy)) / \(ncf(dz)) mm")
+                        } else {
+                            LabeledContent("到原点", value: "\(ncf(hypot(hypot(pickedPoints[0].x, pickedPoints[0].y), pickedPoints[0].z))) mm")
+                        }
                     }
                     if let e = pickedEdges.first {
                         LabeledContent("边1 长度", value: "\(ncf(edgeLength(e))) mm")
-                        LabeledContent("边1 端点", value: "(\(ncf(Double(e.a.x))),\(ncf(Double(e.a.y))),\(ncf(e.z))) → (\(ncf(Double(e.b.x))),\(ncf(Double(e.b.y))),\(ncf(e.z)))")
+                        LabeledContent("边1 端点", value: "(\(ncf(Double(e.a.x))),\(ncf(Double(e.a.y))),\(ncf(e.z))) → (\(ncf(Double(e.b.x))),\(ncf(Double(e.b.y))),\(ncf(e.zEnd)))")
                     }
                     if pickedEdges.count > 1 {
                         LabeledContent("边2 长度", value: "\(ncf(edgeLength(pickedEdges[1]))) mm")
                         LabeledContent("两边最短距离（3D）", value: "\(ncf(edgeGap(pickedEdges[0], pickedEdges[1]))) mm")
                     }
-                    if let f = pickedFace {
-                        LabeledContent("拾取面", value: f.name)
-                        LabeledContent("所在 Z", value: "Z\(ncf(f.z))")
-                        LabeledContent("该面面积", value: "\(ncf(f.area)) mm²")
+                    if !pickedFaces.isEmpty {
+                        ForEach(Array(pickedFaces.enumerated()), id: \.offset) { pair in
+                            LabeledContent("面\(pair.offset + 1)", value: "\(pair.element.name) · Z\(ncf(pair.element.z))")
+                        }
+                        if pickedFaces.count > 1 {
+                            let m = faceMeasure(pickedFaces[0], pickedFaces[1])
+                            LabeledContent(m.parallel ? "两面法向距离" : "两面中心距（不平行）", value: "\(ncf(m.distance)) mm")
+                            LabeledContent("ΔX / ΔY / ΔZ", value: "\(ncf(m.dx)) / \(ncf(m.dy)) / \(ncf(m.dz)) mm")
+                            LabeledContent("中心距", value: "\(ncf(m.center)) mm")
+                        } else if let f = pickedFaces.first {
+                            LabeledContent("该面面积", value: "\(ncf(f.area)) mm²")
+                        }
                     }
                     if let h = pickedHole {
                         LabeledContent(h.onBottom ? "拾取孔/腔底面" : "拾取孔/腔", value: h.name)
@@ -4451,23 +4552,25 @@ struct StudioScreen: View {
                         LabeledContent("深度", value: h.through ? "通孔 / 通腔" : "\(ncf(h.depth)) mm")
                         LabeledContent("底 Z", value: "Z\(ncf(h.bottomZ))")
                     }
-                    LabeledContent("体积", value: "\(ncf(partVolume)) mm³")
-                    LabeledContent("重量", value: "\(ncf(partWeight)) g（\(material.rawValue)）")
-                    LabeledContent("价格", value: "¥\(ncf(partPrice))")
-                    LabeledContent("包容体积", value: "\(ncf(partBBoxVolume)) mm³")
-                    LabeledContent("外形尺寸", value: "\(ncf(Double(partBBox.width))) × \(ncf(Double(partBBox.height))) × \(ncf(PartProg.maxZ(spec) - PartProg.minZ(spec))) mm")
-                    LabeledContent("顶面面积", value: "\(ncf(partProjectedArea)) mm²")
-                    LabeledContent("外形面积", value: "\(ncf(outerSurfaceArea)) mm²")
-                    if !spec.steps.isEmpty {
-                        LabeledContent("台阶层数", value: "\(spec.steps.count) 层")
-                        LabeledContent("总 Z 范围", value: "Z\(ncf(PartProg.minZ(spec))) → Z\(ncf(PartProg.maxZ(spec)))")
+                    if measureTarget == .body || measureTarget == .compound {
+                        LabeledContent("体积", value: "\(ncf(partVolume)) mm³")
+                        LabeledContent("重量", value: "\(ncf(partWeight)) g（\(material.rawValue)）")
+                        LabeledContent("价格", value: "¥\(ncf(partPrice))")
+                        LabeledContent("包容体积", value: "\(ncf(partBBoxVolume)) mm³")
+                        LabeledContent("外形尺寸", value: "\(ncf(Double(partBBox.width))) × \(ncf(Double(partBBox.height))) × \(ncf(PartProg.maxZ(spec) - PartProg.minZ(spec))) mm")
+                        LabeledContent("顶面面积", value: "\(ncf(partProjectedArea)) mm²")
+                        LabeledContent("外形面积", value: "\(ncf(outerSurfaceArea)) mm²")
+                        if !spec.steps.isEmpty {
+                            LabeledContent("台阶层数", value: "\(spec.steps.count) 层")
+                            LabeledContent("总 Z 范围", value: "Z\(ncf(PartProg.minZ(spec))) → Z\(ncf(PartProg.maxZ(spec)))")
+                        }
                     }
                 }
 
                 Section("说明") {
-                    Text("点=当前指针；边=外轮廓/台阶边/垂直侧边；面=顶面或侧面；体=整个实体；复合=体积+包容+面积。")
+                    Text("点/边/面：第一次点对象1，第二次点对象2，结果算两点、两边或两面距离。体/复合：查看体积、重量、包容尺寸。")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
-                    Text("体积按外形面积×厚度，再加上/减去台阶，并按孔/型腔所在台阶的真实 Z 扣减；孔/腔底面也可单独拾取。重量按材料密度换算，价格为参考估价。")
+                    Text("点目标会优先吸附模型顶点和孔中心；面目标支持顶面和侧面；孔/腔底面也可单独拾取。")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
             }
@@ -5359,7 +5462,7 @@ struct StudioScreen: View {
                      at: CGPoint(x: q.x, y: q.y - 13))
         }
 
-        for e in pickedEdges {
+        for (i, e) in pickedEdges.enumerated() {
             let a = cam.p(Double(e.a.x), Double(e.a.y), e.z)
             let b = cam.p(Double(e.b.x), Double(e.b.y), e.zEnd)
             ctx.stroke(Path { p in p.move(to: a); p.addLine(to: b) },
@@ -5368,15 +5471,34 @@ struct StudioScreen: View {
                 ctx.fill(Path(ellipseIn: CGRect(x: q.x - 4, y: q.y - 4, width: 8, height: 8)),
                          with: .color(.blue))
             }
-            ctx.draw(Text("边 \(ncf(edgeLength(e)))").font(.system(size: 9, weight: .semibold)).foregroundColor(.blue),
+            ctx.draw(Text("边\(i + 1) \(ncf(edgeLength(e)))").font(.system(size: 9, weight: .semibold)).foregroundColor(.blue),
                      at: CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 12))
         }
-        if let f = pickedFace {
+        if pickedEdges.count > 1 {
+            let m1 = midpoint(pickedEdges[0]), m2 = midpoint(pickedEdges[1])
+            let q1 = cam.p(m1.0, m1.1, m1.2), q2 = cam.p(m2.0, m2.1, m2.2)
+            ctx.stroke(Path { p in p.move(to: q1); p.addLine(to: q2) },
+                       with: .color(.blue.opacity(0.65)), lineWidth: 1.4)
+            ctx.draw(Text("边距 \(ncf(edgeGap(pickedEdges[0], pickedEdges[1])))")
+                        .font(.system(size: 9, weight: .semibold)).foregroundColor(.blue),
+                     at: CGPoint(x: (q1.x + q2.x) / 2, y: (q1.y + q2.y) / 2 - 18))
+        }
+        for (i, f) in pickedFaces.enumerated() {
             let q = cam.p(Double(f.center.x), Double(f.center.y), f.z)
             ctx.stroke(Path(ellipseIn: CGRect(x: q.x - 9, y: q.y - 9, width: 18, height: 18)),
                        with: .color(.blue), lineWidth: 2)
-            ctx.draw(Text(f.name).font(.system(size: 9, weight: .semibold)).foregroundColor(.blue),
+            ctx.draw(Text("面\(i + 1) \(f.name)").font(.system(size: 9, weight: .semibold)).foregroundColor(.blue),
                      at: CGPoint(x: q.x, y: q.y - 20))
+        }
+        if pickedFaces.count > 1 {
+            let a = pickedFaces[0], b = pickedFaces[1]
+            let q1 = cam.p(Double(a.center.x), Double(a.center.y), a.z)
+            let q2 = cam.p(Double(b.center.x), Double(b.center.y), b.z)
+            let m = faceMeasure(a, b)
+            ctx.stroke(Path { p in p.move(to: q1); p.addLine(to: q2) },
+                       with: .color(.blue.opacity(0.65)), lineWidth: 1.4)
+            ctx.draw(Text("面距 \(ncf(m.distance))").font(.system(size: 9, weight: .semibold)).foregroundColor(.blue),
+                     at: CGPoint(x: (q1.x + q2.x) / 2, y: (q1.y + q2.y) / 2 - 20))
         }
         if let h = pickedHole {
             let hz = h.onBottom ? h.bottomZ : h.z
@@ -5389,10 +5511,21 @@ struct StudioScreen: View {
                         .font(.system(size: 9, weight: .semibold)).foregroundColor(.blue),
                      at: CGPoint(x: q.x, y: q.y - 18))
         }
-        if let p = pickedPoint {
+        for (i, p) in pickedPoints.enumerated() {
             let q = cam.p(p.x, p.y, p.z)
-            ctx.fill(Path(ellipseIn: CGRect(x: q.x - 4, y: q.y - 4, width: 8, height: 8)),
+            ctx.fill(Path(ellipseIn: CGRect(x: q.x - 5, y: q.y - 5, width: 10, height: 10)),
                      with: .color(.blue))
+            ctx.draw(Text("点\(i + 1)").font(.system(size: 9, weight: .semibold)).foregroundColor(.blue),
+                     at: CGPoint(x: q.x, y: q.y - 14))
+        }
+        if pickedPoints.count > 1 {
+            let a = pickedPoints[0], b = pickedPoints[1]
+            let q1 = cam.p(a.x, a.y, a.z), q2 = cam.p(b.x, b.y, b.z)
+            let d = sqrt(pow(b.x - a.x, 2) + pow(b.y - a.y, 2) + pow(b.z - a.z, 2))
+            ctx.stroke(Path { p in p.move(to: q1); p.addLine(to: q2) },
+                       with: .color(.blue.opacity(0.7)), lineWidth: 1.6)
+            ctx.draw(Text("点距 \(ncf(d))").font(.system(size: 9, weight: .semibold)).foregroundColor(.blue),
+                     at: CGPoint(x: (q1.x + q2.x) / 2, y: (q1.y + q2.y) / 2 - 20))
         }
 
         if calibratingPick, let sample = calibrationSample {
