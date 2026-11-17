@@ -768,18 +768,20 @@ struct StudioScreen: View {
             Group {
                 switch sketchSidePanel {
                 case .tools:
-                    sketchToolGridPanel
+                    AnyView(sketchToolGridPanel)
                 case .params:
-                    Form { sketchControls }
-                        .listStyle(.plain)
-                        .scrollContentBackground(.hidden)
-                        .background(Color.white)
+                    AnyView(
+                        Form { sketchControls }
+                            .listStyle(.plain)
+                            .scrollContentBackground(.hidden)
+                            .background(Color.white)
+                    )
                 case .dim:
-                    sketchDimPanel
+                    AnyView(sketchDimPanel)
                 case .angle:
-                    sketchAnglePanel
+                    AnyView(sketchAnglePanel)
                 case .none:
-                    EmptyView()
+                    AnyView(EmptyView())
                 }
             }
         }
