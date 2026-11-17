@@ -40,6 +40,9 @@ struct StudioScreen: View {
     @State private var showScale = false
     @State private var showOpSheet = false
     @State private var opSheetName = ""
+    @State private var showFeatCommand = false
+    @State private var featDraft: PartFeat? = nil
+    @State private var featEditID: UUID? = nil
     @State private var gridStep = 10.0
     @State private var snapGrid = false
     @State private var snapVertex = false
@@ -221,6 +224,18 @@ struct StudioScreen: View {
         }
         .sheet(isPresented: $showScale) {
             TransformSheet(spec: $spec, rotate: false, onUndo: { pushUndo() })
+        }
+        .sheet(isPresented: $showFeatCommand) {
+            if let draft = featDraft {
+                FeatCommandSheet(
+                    feat: Binding(get: { featDraft ?? draft }, set: { featDraft = $0 }),
+                    hostZ: PartProg.hostZ(spec, draft.x, draft.y),
+                    isNew: featEditID == nil,
+                    onApply: { applyFeatDraft(close: false) },
+                    onConfirm: { applyFeatDraft(close: true) },
+                    onCancel: { cancelFeatCommand() }
+                )
+            }
         }
         .sheet(isPresented: $showOpSheet) {
             OpParamsSheet(spec: $spec, op: opSheetName)
@@ -1410,7 +1425,8 @@ struct StudioScreen: View {
         }
 
         // 识别/新增的孔、圆腔、方腔也叠在草图上，方便先核对位置和尺寸
-        for f in spec.feats where !hiddenTreeIDs.contains("feat-\(f.id.uuidString)") {
+        for f in spec.feats where !hiddenTreeIDs.contains("feat-\(f.id.uuidString)")
+            && !(showFeatCommand && featEditID == f.id) {
             let c = P(f.x, f.y)
             if f.kind == .hole {
                 let r = max(2, f.dia / 2 * k)
@@ -2381,22 +2397,13 @@ struct StudioScreen: View {
                     modelPanel = modelPanel == .steps ? .none : .steps
                 }
                 railButton("孔", "circle.circle", active: false) {
-                    let f = addFeat(.hole)
-                    selectedTreeID = "feat-\(f.id.uuidString)"
-                    modelPanel = .none
-                    showToastView("孔已加到 X\(ncf(f.x)) Y\(ncf(f.y))")
+                    beginFeat(.hole)
                 }
                 railButton("圆腔", "circle.dashed", active: false) {
-                    let f = addFeat(.pocket)
-                    selectedTreeID = "feat-\(f.id.uuidString)"
-                    modelPanel = .none
-                    showToastView("圆腔已加到 X\(ncf(f.x)) Y\(ncf(f.y))")
+                    beginFeat(.pocket)
                 }
                 railButton("方腔", "rectangle.dashed", active: false) {
-                    let f = addFeat(.rectPocket)
-                    selectedTreeID = "feat-\(f.id.uuidString)"
-                    modelPanel = .none
-                    showToastView("方腔已加到 X\(ncf(f.x)) Y\(ncf(f.y))")
+                    beginFeat(.rectPocket)
                 }
                 railButton("更多", "square.grid.2x2", active: modelPanel == .tools) {
                     modelPanel = modelPanel == .tools ? .none : .tools
@@ -2704,6 +2711,7 @@ struct StudioScreen: View {
                         .padding(.vertical, 5)
                         .background(item.id == selectedTreeID ? studioBlue.opacity(0.06) : Color.clear)
                         .contentShape(Rectangle())
+                        .onTapGesture(count: 2) { editTreeItem(item) }
                         .onTapGesture { selectedTreeID = item.id }
                         Divider().padding(.leading, 34)
                     }
@@ -2748,6 +2756,14 @@ struct StudioScreen: View {
             modelPanel = .extrude
         } else if item.id.hasPrefix("step-") {
             modelPanel = .steps
+        } else if item.id.hasPrefix("feat-"),
+                  let f = spec.feats.first(where: { "feat-\($0.id.uuidString)" == item.id }) {
+            beginEditFeat(f)
+        } else if item.id.hasPrefix("inner-") {
+            step = 0
+            sketchSidePanel = .params
+            modelPanel = .none
+            showToastView("内轮廓在草图页参数里编辑")
         } else {
             modelPanel = .tools
             showToastView("已选中 \(item.title)，参数在“建模工具”里")
@@ -3272,7 +3288,7 @@ struct StudioScreen: View {
             HStack {
                 miniNum("X", $ptrX)
                 miniNum("Y", $ptrY)
-                Button("用这个点加孔") { addFeat(.hole) }
+                Button("用这个点加孔") { beginFeat(.hole) }
                     .font(.system(size: 12, weight: .semibold))
             }
             Text(hasPtr ? "当前指针 X\(ncf(ptrX)) Y\(ncf(ptrY))" : "还没落点：打开上面的开关，再点一下零件顶面")
@@ -3330,11 +3346,11 @@ struct StudioScreen: View {
                 }
             }
             HStack {
-                Button { addFeat(.hole) } label: { Label("加孔", systemImage: "circle.circle") }
+                Button { beginFeat(.hole) } label: { Label("加孔", systemImage: "circle.circle") }
                 Spacer()
-                Button { addFeat(.pocket) } label: { Label("加圆腔", systemImage: "circle.dashed") }
+                Button { beginFeat(.pocket) } label: { Label("加圆腔", systemImage: "circle.dashed") }
                 Spacer()
-                Button { addFeat(.rectPocket) } label: { Label("加方腔", systemImage: "rectangle.dashed") }
+                Button { beginFeat(.rectPocket) } label: { Label("加方腔", systemImage: "rectangle.dashed") }
             }
             if !spec.innerLoops.isEmpty {
                 Text("草图里还有 \(spec.innerLoops.count) 个内轮廓，会自动作为挖孔/型腔加进工序。")
@@ -3372,17 +3388,66 @@ struct StudioScreen: View {
         }
     }
 
-    @discardableResult
-    private func addFeat(_ kind: PartFeatKind) -> PartFeat {
-        pushUndo()
+    private func makeFeatDraft(_ kind: PartFeatKind) -> PartFeat {
         let b = PartProg.bbox(spec)
         var f = PartFeat(kind: kind)
         f.x = hasPtr ? ptrX : Double(b.midX)
         f.y = hasPtr ? ptrY : Double(b.midY)
         f.dia = kind == .hole ? 10 : 30
         f.depth = min(5, max(1, spec.height / 2))
-        spec.feats.append(f)
         return f
+    }
+
+    private func beginFeat(_ kind: PartFeatKind) {
+        featDraft = makeFeatDraft(kind)
+        featEditID = nil
+        selectedTreeID = nil
+        modelPanel = .none
+        showFeatCommand = true
+    }
+
+    private func beginEditFeat(_ f: PartFeat) {
+        featDraft = f
+        featEditID = f.id
+        selectedTreeID = "feat-\(f.id.uuidString)"
+        showFeatCommand = true
+    }
+
+    private func cancelFeatCommand() {
+        showFeatCommand = false
+        featDraft = nil
+        featEditID = nil
+    }
+
+    private func validFeatDraft(_ f: PartFeat) -> Bool {
+        switch f.kind {
+        case .hole: return f.dia > 0
+        case .pocket: return f.dia > 0 && f.depth > 0
+        case .rectPocket: return f.w > 0 && f.h > 0 && f.depth > 0
+        }
+    }
+
+    private func applyFeatDraft(close: Bool) {
+        guard let draft = featDraft, validFeatDraft(draft) else {
+            showToastView("特征参数不完整，先补尺寸")
+            return
+        }
+        pushUndo()
+        if let id = featEditID, let idx = spec.feats.firstIndex(where: { $0.id == id }) {
+            spec.feats[idx] = draft
+        } else {
+            spec.feats.append(draft)
+            featEditID = draft.id
+            selectedTreeID = "feat-\(draft.id.uuidString)"
+        }
+        if close {
+            showFeatCommand = false
+            featDraft = nil
+            featEditID = nil
+            showToastView("特征已更新，下游工序已重建")
+        } else {
+            showToastView("已应用，继续调整参数")
+        }
     }
 
     private func modelCam(size: CGSize) -> Cam {
@@ -3590,7 +3655,8 @@ struct StudioScreen: View {
                      at: CGPoint(x: c.x, y: c.y - 10))
         }
 
-        for f in spec.feats where !hiddenTreeIDs.contains("feat-\(f.id.uuidString)") {
+        for f in spec.feats where !hiddenTreeIDs.contains("feat-\(f.id.uuidString)")
+            && !(showFeatCommand && featEditID == f.id) {
             let isSelected = selectedTreeID == "feat-\(f.id.uuidString)"
             let host = PartProg.hostZ(spec, f.x, f.y)
             if f.kind == .rectPocket {
@@ -3635,6 +3701,10 @@ struct StudioScreen: View {
             }
         }
 
+        if showFeatCommand, let d = featDraft {
+            drawFeatDraft(&ctx, cam: cam, feat: d, visibleDepth: visibleDepth)
+        }
+
         if sectionOn {
             drawSectionPlane(&ctx, cam, size: size)
         }
@@ -3655,6 +3725,54 @@ struct StudioScreen: View {
             ctx.draw(Text("X\(ncf(ptrX)) Y\(ncf(ptrY))").font(.system(size: 9, weight: .medium)).foregroundColor(.black),
                  at: CGPoint(x: o.x + 2, y: o.y - 16))
         }
+    }
+
+    private func drawFeatDraft(_ ctx: inout GraphicsContext, cam: Cam,
+                               feat f: PartFeat, visibleDepth: Double) {
+        let host = PartProg.hostZ(spec, f.x, f.y)
+        let color = Color(red: 0.10, green: 0.55, blue: 0.95)
+        func ring(_ cx: Double, _ cy: Double, _ z: Double, _ r: Double) -> Path {
+            var p = Path()
+            for i in 0...30 {
+                let a = Double(i) / 30 * 2 * Double.pi
+                let q = cam.p(cx + r * cos(a), cy + r * sin(a), z)
+                if i == 0 { p.move(to: q) } else { p.addLine(to: q) }
+            }
+            return p
+        }
+        func rect(_ z: Double) -> Path {
+            let x0 = f.x - f.w / 2, x1 = f.x + f.w / 2
+            let y0 = f.y - f.h / 2, y1 = f.y + f.h / 2
+            var p = Path()
+            p.move(to: cam.p(x0, y0, z))
+            p.addLine(to: cam.p(x1, y0, z))
+            p.addLine(to: cam.p(x1, y1, z))
+            p.addLine(to: cam.p(x0, y1, z))
+            p.closeSubpath()
+            return p
+        }
+        let top: Path
+        let bottom: Path
+        switch f.kind {
+        case .hole:
+            let r = max(f.dia / 2, 0.1)
+            top = ring(f.x, f.y, host, r)
+            bottom = ring(f.x, f.y, -min(visibleDepth, spec.height), r)
+        case .pocket:
+            let r = max(f.dia / 2, 0.1)
+            top = ring(f.x, f.y, host, r)
+            bottom = ring(f.x, f.y, host - min(f.depth, spec.height + host), r)
+        case .rectPocket:
+            top = rect(host)
+            bottom = rect(host - min(f.depth, spec.height + host))
+        }
+        ctx.fill(top, with: .color(color.opacity(0.12)))
+        ctx.stroke(top, with: .color(color), style: StrokeStyle(lineWidth: 1.8, dash: [4, 3]))
+        ctx.stroke(bottom, with: .color(color.opacity(0.65)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+        let c = cam.p(f.x, f.y, host)
+        let label = f.kind == .hole ? "Ø\(ncf(f.dia)) 通孔" : (f.kind == .rectPocket ? "\(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth))" : "Ø\(ncf(f.dia)) 深\(ncf(f.depth))")
+        ctx.draw(Text("预览 " + label).font(.system(size: 9, weight: .semibold)).foregroundColor(color),
+                 at: CGPoint(x: c.x, y: c.y - 12))
     }
 
     private func drawAxisTriad(_ ctx: inout GraphicsContext, size: CGSize) {
@@ -4812,6 +4930,114 @@ private struct OpParamsSheet: View {
             Spacer()
             TextField("0", value: v, format: .number)
                 .keyboardType(.numberPad)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 100)
+        }
+    }
+}
+
+// MARK: - UG 式特征命令面板
+
+private struct FeatCommandSheet: View {
+    @Binding var feat: PartFeat
+    let hostZ: Double
+    let isNew: Bool
+    let onApply: () -> Void
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    private var shortName: String {
+        switch feat.kind {
+        case .hole: return "孔"
+        case .pocket: return "圆型腔"
+        case .rectPocket: return "方型腔"
+        }
+    }
+
+    private var valid: Bool {
+        switch feat.kind {
+        case .hole: return feat.dia > 0
+        case .pocket: return feat.dia > 0 && feat.depth > 0
+        case .rectPocket: return feat.w > 0 && feat.h > 0 && feat.depth > 0
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("类型") {
+                    Picker("类型", selection: $feat.kind) {
+                        ForEach(PartFeatKind.allCases) { k in Text(k.rawValue).tag(k) }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                Section("位置") {
+                    dRow("X", $feat.x)
+                    dRow("Y", $feat.y)
+                    Text("顶面 Z \(ncf(hostZ))；落在增料台阶上时自动取该台阶顶面")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+
+                Section("尺寸") {
+                    switch feat.kind {
+                    case .hole:
+                        dRow("Ø 孔径", $feat.dia)
+                        Text("贯通孔，深度按所在台阶顶面到底面自动计算")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    case .pocket:
+                        dRow("Ø 型腔直径", $feat.dia)
+                        dRow("深度", $feat.depth)
+                    case .rectPocket:
+                        dRow("长 L", $feat.w)
+                        dRow("宽 W", $feat.h)
+                        dRow("深度", $feat.depth)
+                    }
+                }
+
+                Section("预览") {
+                    Text(previewText)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.blue)
+                    Text("蓝青色虚线是草稿预览；应用/确定后才会写入特征树并重建下游工序。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle(isNew ? "新建\(shortName)" : "编辑\(shortName)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消", action: onCancel)
+                }
+                ToolbarItemGroup(placement: .confirmationAction) {
+                    Button("应用") { onApply() }
+                        .disabled(!valid)
+                    Button("确定") { onConfirm() }
+                        .bold()
+                        .disabled(!valid)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private var previewText: String {
+        switch feat.kind {
+        case .hole:
+            return "Ø\(ncf(feat.dia)) 通孔 @ X\(ncf(feat.x)) Y\(ncf(feat.y))"
+        case .pocket:
+            return "Ø\(ncf(feat.dia)) 深\(ncf(feat.depth)) @ X\(ncf(feat.x)) Y\(ncf(feat.y))"
+        case .rectPocket:
+            return "\(ncf(feat.w))×\(ncf(feat.h)) 深\(ncf(feat.depth)) @ X\(ncf(feat.x)) Y\(ncf(feat.y))"
+        }
+    }
+
+    private func dRow(_ title: String, _ value: Binding<Double>) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            TextField("0", value: value, format: .number)
+                .keyboardType(.decimalPad)
                 .multilineTextAlignment(.trailing)
                 .frame(width: 100)
         }
