@@ -50,6 +50,8 @@ struct PartFeat: Identifiable, Equatable, Codable {
     var w: Double = 30
     var h: Double = 20
     var depth: Double = 5      // 型腔深度（孔不用）
+    /// 手动放置 Z：空 = 自动取所在台阶顶面/Z0；有值 = 放在任意已有面或任意 Z 面
+    var placeZ: Double? = nil
     // 孔类型（可选，旧工程缺省按通孔处理）
     var holeKind: PartHoleKind? = nil
     var holeDepth: Double? = nil
@@ -298,6 +300,9 @@ struct PartSpec: Equatable, Codable {
     var doContour = true
     var doHole = true
     var doPocket = true
+    /// 2.5D 轮廓倒角近似：沿外形顶边走一刀，不生成真实斜面
+    var doChamfer = false
+    var chamferSize: Double = 1
 
     // 孔加工方式
     var holeMode: HoleMode = .spiral
@@ -310,6 +315,8 @@ struct PartSpec: Equatable, Codable {
     var coord: Int = 54           // G54~G59
     var originX: Double = 0       // G54/G55… 的 X0Y0 落在草图坐标的哪个点
     var originY: Double = 0
+    var programNo: Int = 1010     // 程序号 O
+    var optionalStop: Bool = false // 程序尾 M01
 }
 
 // MARK: - 工序清单
@@ -489,6 +496,11 @@ enum PartProg {
         stepAt(p, x, y)?.z1 ?? 0
     }
 
+    /// 特征起始 Z：手动放置优先，否则自动取台阶顶面/Z0。
+    static func hostZ(_ p: PartSpec, _ f: PartFeat) -> Double {
+        f.placeZ ?? hostZ(p, f)
+    }
+
     /// 按工件原点平移整件：让设定的 X0Y0 点变成程序里的 0,0
     static func shifted(_ p: PartSpec, dx: Double, dy: Double) -> PartSpec {
         var q = p
@@ -554,6 +566,14 @@ enum PartProg {
                 zRange: "Z0 → Z\(ncf(-p.height))",
                 status: status("contour")))
         }
+        if p.doChamfer {
+            out.append(PartOpInfo(
+                id: "chamfer", title: "轮廓倒角", kind: "倒角（2.5D 近似）",
+                geometry: "外形顶边 C\(ncf(p.chamferSize))（只对基础外形）",
+                tool: p.contourTool, dia: p.contourDia, spindle: p.spindle, feed: p.feed,
+                zRange: "Z0 → Z\(ncf(-p.chamferSize))",
+                status: status("chamfer")))
+        }
         for s in p.steps {
             let zr = "Z\(ncf(s.drawTop)) → Z\(ncf(s.drawBottom))"
             if s.mode == .add {
@@ -580,7 +600,7 @@ enum PartProg {
         }
         for f in p.feats where !f.suppressed {
             let id = "feat-\(f.id.uuidString)"
-            let host = hostZ(p, f.x, f.y)
+            let host = hostZ(p, f)
             if f.kind == .hole {
                 guard p.doHole else { continue }
                 let hk = f.resolvedHoleKind
@@ -796,7 +816,7 @@ enum PartProg {
 
         for f in p.feats where !f.suppressed {
             let id = "feat-\(f.id.uuidString)"
-            let host = hostZ(p, f.x, f.y)
+            let host = hostZ(p, f)
             guard enabled(id) else { continue }
             if f.kind == .hole && p.doHole {
                 let hk = f.resolvedHoleKind
@@ -998,7 +1018,7 @@ enum PartProg {
         }
         let b = bbox(p)
         for (i, f) in p.feats.enumerated() where !f.suppressed {
-            let host = hostZ(p, f.x, f.y)
+            let host = hostZ(p, f)
             let available = host - minZ(p)
             let r = f.dia / 2
             let inside = f.x - r >= b.minX + 0.5 && f.x + r <= b.maxX - 0.5
@@ -1142,10 +1162,18 @@ enum PartProg {
         if p.doContour && wanted("contour") {
             add("外形轮廓铣 T\(p.contourTool) D\(ncf(p.contourDia))", p.contourTool, ContourProg.generate(outline(p)), id: "contour")
         }
+        if p.doChamfer && wanted("chamfer") {
+            var cd = outline(p)
+            cd.depth = max(p.chamferSize, 0.1)
+            cd.stepDown = max(p.chamferSize, 0.1)
+            cd.zTop = 0
+            add("轮廓倒角 C\(ncf(p.chamferSize))（2.5D 近似，只对基础外形） T\(p.contourTool) D\(ncf(p.contourDia))",
+                p.contourTool, ContourProg.generate(cd), id: "chamfer")
+        }
 
         for f in p.feats where !f.suppressed {
             let id = "feat-\(f.id.uuidString)"
-            let host = hostZ(p, f.x, f.y)
+            let host = hostZ(p, f)
             guard wanted(id) else { continue }
             if f.kind == .hole {
                 guard p.doHole else { continue }
@@ -1271,7 +1299,7 @@ enum PartProg {
 
         var L: [String] = []
         L.append("%")
-        L.append("O1010 (绘图编程 · 多工序)")
+        L.append("O\(p.programNo) (绘图编程 · 多工序)")
         let b = bbox(p)
         let stepNote = p.steps.isEmpty ? "" : "  台阶\(p.steps.count)层"
         let sb = stockBBox(p)
@@ -1285,6 +1313,7 @@ enum PartProg {
         L.append("( X0 Y0 为 G\(p.coord) 零点；已按上面基准平移，程序坐标为工件坐标 )")
         L.append(blocks.joined(separator: "\n"))
         L.append("G0 Z\(ncf(p.safeZ + maxZ(p), 1))")
+        if p.optionalStop { L.append("M01") }
         L.append("M5")
         L.append("M9")
         L.append("G28 G91 Z0")

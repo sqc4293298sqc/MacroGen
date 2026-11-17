@@ -23,6 +23,8 @@ struct StudioScreen: View {
     @State private var cam2DToolpath = true
     @State private var cam2DRapid = true
     @State private var cam2DPaths: [TPSeg] = []
+    @State private var cam2DLayerOnly = false
+    @State private var cam2DLayerZ = 0.0
     @State private var cam2DZoom = 1.0
     @State private var cam2DZoomBase = 1.0
     @State private var cam2DPanX = 0.0
@@ -151,13 +153,14 @@ struct StudioScreen: View {
     }
 
     private enum MeasureTarget: String, CaseIterable, Identifiable {
-        case point = "点", edge = "边", face = "面", angle = "角", body = "体", compound = "复合"
+        case point = "点", edge = "边", face = "面", pointFace = "点-面", angle = "角", body = "体", compound = "复合"
         var id: String { rawValue }
         var icon: String {
             switch self {
             case .point: return "smallcircle.filled.circle"
             case .edge: return "line.diagonal"
             case .face: return "square.on.square"
+            case .pointFace: return "square.and.line.vertical.and.square"
             case .angle: return "angle"
             case .body: return "cube"
             case .compound: return "circle.grid.2x2"
@@ -327,7 +330,7 @@ struct StudioScreen: View {
             if let draft = featDraft {
                 FeatCommandSheet(
                     feat: Binding(get: { featDraft ?? draft }, set: { featDraft = $0 }),
-                    hostZ: PartProg.hostZ(spec, draft.x, draft.y),
+                    hostZ: PartProg.hostZ(spec, draft),
                     isNew: featEditID == nil,
                     onApply: { applyFeatDraft(close: false) },
                     onConfirm: { applyFeatDraft(close: true) },
@@ -3533,7 +3536,7 @@ struct StudioScreen: View {
                                     let cam = modelCam(size: geo.size)
                                     var best = 40.0
                                     for f in spec.feats {
-                                        let q = cam.p(f.x, f.y, PartProg.hostZ(spec, f.x, f.y))
+                                        let q = cam.p(f.x, f.y, PartProg.hostZ(spec, f))
                                         let d = hypot(Double(g.startLocation.x) - Double(q.x),
                                                       Double(g.startLocation.y) - Double(q.y))
                                         if d < best { best = d; dragFeatID = f.id }
@@ -3579,7 +3582,7 @@ struct StudioScreen: View {
                                 var best = 32.0
                                 var hit: PartFeat? = nil
                                 for f in spec.feats {
-                                    let q = cam.p(f.x, f.y, PartProg.hostZ(spec, f.x, f.y))
+                                    let q = cam.p(f.x, f.y, PartProg.hostZ(spec, f))
                                     let d = hypot(Double(g.location.x) - Double(q.x),
                                                   Double(g.location.y) - Double(q.y))
                                     if d < best { best = d; hit = f }
@@ -4892,7 +4895,7 @@ struct StudioScreen: View {
         }
         // 孔 / 圆腔 / 方腔的边也要进入拾取候选，不能只有外轮廓的 4 条边。
         for f in spec.feats where !f.suppressed {
-            let host = PartProg.hostZ(spec, f.x, f.y)
+            let host = PartProg.hostZ(spec, f)
             let rim = featureRim(f)
             scan(rim, z: host, prefix: "feat-\(f.id.uuidString)")
             let bottom = f.kind == .hole ? PartProg.minZ(spec) : host - f.depth
@@ -4968,7 +4971,7 @@ struct StudioScreen: View {
         }
 
         for f in spec.feats where !f.suppressed {
-            let host = PartProg.hostZ(spec, f.x, f.y)
+            let host = PartProg.hostZ(spec, f)
             let w = f.kind == .rectPocket ? f.w : f.dia
             let h = f.kind == .rectPocket ? f.h : f.dia
             consider("feat-\(f.id.uuidString)",
@@ -5122,7 +5125,7 @@ struct StudioScreen: View {
             }
         }
         for f in spec.feats where !f.suppressed {
-            let host = PartProg.hostZ(spec, f.x, f.y)
+            let host = PartProg.hostZ(spec, f)
             consider(f.x, f.y, host)
             consider(f.x, f.y, f.kind == .hole ? PartProg.minZ(spec) : host - f.depth)
         }
@@ -5235,6 +5238,28 @@ struct StudioScreen: View {
                 ? "点1 已拾取 X\(ncf(p.x)) Y\(ncf(p.y)) Z\(ncf(p.z))；再点第二个点"
                 : "两点已拾取；上面显示距离"
             showToastView("已拾取点")
+        case .pointFace:
+            if pickedPoints.isEmpty {
+                let p = nearestModelPoint(cam, at: loc, basePts: basePts)
+                        ?? ModelPickPoint(x: xy.0, y: xy.1, z: z)
+                pickedPoints = [p]
+                pickedFaces = []; pickedHole = nil
+                measurePickHint = "点已拾取 X\(ncf(p.x)) Y\(ncf(p.y)) Z\(ncf(p.z))；再点一个面"
+                showToastView("已拾取点")
+            } else if pickedFaces.isEmpty {
+                guard let face else {
+                    measurePickHint = "没有拾取到面：点在外轮廓/台阶顶面内部"
+                    showToastView("未拾取到面")
+                    return
+                }
+                pickedFaces = [face]
+                pickedHole = nil
+                measurePickHint = "点-面已拾取；上面显示点到面的距离"
+                showToastView("已拾取面")
+            } else {
+                pickedPoints = []; pickedFaces = []
+                measurePickHint = "点/面已清空；重新点一个点"
+            }
         case .angle:
             let p = nearestModelPoint(cam, at: loc, basePts: basePts)
                     ?? ModelPickPoint(x: xy.0, y: xy.1, z: z)
@@ -5351,7 +5376,7 @@ struct StudioScreen: View {
         case .point: return 18
         case .edge: return 16
         case .angle: return 18
-        case .face, .body, .compound: return 22
+        case .face, .pointFace, .body, .compound: return 22
         }
     }
 
@@ -5522,6 +5547,14 @@ struct StudioScreen: View {
                             LabeledContent("三点夹角", value: "\(ncf(acos(cosA) * 180 / .pi))°")
                             LabeledContent("两边长度", value: "\(ncf(lu)) / \(ncf(lv)) mm")
                         }
+                    }
+                    if measureTarget == .pointFace, let p = pickedPoints.first,
+                       let f = pickedFaces.first {
+                        let dz = p.z - f.z
+                        let planar = hypot(p.x - Double(f.center.x), p.y - Double(f.center.y))
+                        LabeledContent("点-面 Z 向距离", value: "\(ncf(abs(dz))) mm")
+                        LabeledContent("点-面 XY 偏移", value: "\(ncf(planar)) mm")
+                        LabeledContent("点投影到面", value: "X\(ncf(p.x)) Y\(ncf(p.y)) Z\(ncf(f.z))")
                     }
                     if !pickedPoints.isEmpty {
                         ForEach(Array(pickedPoints.enumerated()), id: \.offset) { pair in
@@ -5714,7 +5747,7 @@ struct StudioScreen: View {
             cut += a * d
         }
         for f in spec.feats {
-            let host = PartProg.hostZ(spec, f.x, f.y)
+            let host = PartProg.hostZ(spec, f)
             let avail = max(host - bottom, 0)
             let area = f.kind == .rectPocket
                 ? f.w * f.h
@@ -6204,7 +6237,7 @@ struct StudioScreen: View {
         for f in spec.feats where !hiddenTreeIDs.contains("feat-\(f.id.uuidString)")
             && !(showFeatCommand && featEditID == f.id) {
             let isSelected = selectedTreeID == "feat-\(f.id.uuidString)"
-            let host = PartProg.hostZ(spec, f.x, f.y)
+            let host = PartProg.hostZ(spec, f)
             guard visibleZ(host) else { continue }
             if f.kind == .rectPocket {
                 let d = min(f.depth, max(spec.height + host, 0))
@@ -6317,7 +6350,7 @@ struct StudioScreen: View {
 
     private func drawFeatDraft(_ ctx: inout GraphicsContext, cam: Cam,
                                feat f: PartFeat, cutZ: Double?) {
-        let host = PartProg.hostZ(spec, f.x, f.y)
+        let host = PartProg.hostZ(spec, f)
         if let cutZ, host < cutZ - 0.0001 { return }
         let color = Color(red: 0.10, green: 0.55, blue: 0.95)
         func ring(_ cx: Double, _ cy: Double, _ z: Double, _ r: Double) -> Path {
@@ -6565,6 +6598,20 @@ struct StudioScreen: View {
             ctx.draw(Text("顶面面积 \(ncf(partProjectedArea)) mm²")
                         .font(.system(size: 10, weight: .semibold)).foregroundColor(.orange),
                      at: CGPoint(x: q.x, y: q.y - 26))
+
+        case .pointFace:
+            ctx.fill(topPath(), with: .color(Color.orange.opacity(0.12)))
+            ctx.stroke(topPath(), with: .color(.orange.opacity(0.8)), lineWidth: 1.4)
+            for p in pickedPoints {
+                let q = cam.p(p.x, p.y, p.z)
+                ctx.fill(Path(ellipseIn: CGRect(x: q.x - 4, y: q.y - 4, width: 8, height: 8)),
+                         with: .color(.blue))
+            }
+            for f in pickedFaces {
+                let q = cam.p(Double(f.center.x), Double(f.center.y), f.z)
+                ctx.draw(Text("面 \(ncf(f.z))").font(.system(size: 9, weight: .semibold)).foregroundColor(.orange),
+                         at: CGPoint(x: q.x, y: q.y - 12))
+            }
 
         case .angle:
             for (i, p) in pickedPoints.enumerated() {
@@ -7059,7 +7106,14 @@ struct StudioScreen: View {
                     chip("草图", cam2DSketch) { cam2DSketch.toggle() }
                     chip("刀路", cam2DToolpath) { cam2DToolpath.toggle() }
                     chip("快移", cam2DRapid) { cam2DRapid.toggle() }
+                    chip("层切", cam2DLayerOnly) { cam2DLayerOnly.toggle() }
                 }
+            }
+            if cam2DLayerOnly {
+                let lo = PartProg.minZ(spec), hi = max(PartProg.maxZ(spec), lo + 0.1)
+                Slider(value: $cam2DLayerZ, in: lo...hi)
+                Text("层切查看 Z\(ncf(cam2DLayerZ))（只显示该层附近的刀路，不是材料切除仿真）")
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
             }
             Text("俯视示意：青色是切削中心线，灰色虚线是快移。单指拖动平移、双指缩放、双击复位。")
                 .font(.system(size: 9)).foregroundStyle(.secondary)
@@ -7183,7 +7237,7 @@ struct StudioScreen: View {
         }
 
         if cam2DToolpath || cam2DRapid {
-            for seg in cam2DPaths {
+            for seg in cam2DPaths where !cam2DLayerOnly || abs(seg.z - cam2DLayerZ) <= max(0.2, spec.stepDown / 2) {
                 if seg.cut && !cam2DToolpath { continue }
                 if !seg.cut && !cam2DRapid { continue }
                 let sp = seg.pts.map { p(Double($0.x), Double($0.y)) }
@@ -7399,7 +7453,9 @@ struct StudioScreen: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            Section("工件坐标系") {
+            Section("工件坐标系 / 程序") {
+                iRow("程序号 O", $spec.programNo)
+                Toggle("程序尾 M01 可选停", isOn: $spec.optionalStop)
                 Picker("坐标系", selection: $spec.coord) {
                     ForEach([54, 55, 56, 57, 58, 59], id: \.self) { n in Text("G\(n)").tag(n) }
                 }
@@ -7446,6 +7502,16 @@ struct StudioScreen: View {
                     Toggle("轮廓铣（闭合外形）", isOn: $spec.doContour)
                     Button("参数") { openOp("轮廓铣") }.buttonStyle(.borderless)
                         .font(.system(size: 12, weight: .semibold))
+                }
+                HStack {
+                    Toggle("轮廓倒角 C（2.5D 近似）", isOn: $spec.doChamfer)
+                        .font(.system(size: 12))
+                    numRow("C (mm)", $spec.chamferSize)
+                        .frame(width: 120)
+                }
+                if spec.doChamfer {
+                    Text("沿基础外形顶边走一刀，用于去毛刺/倒角近似；不生成真实斜面。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 HStack {
                     Toggle("螺旋铣", isOn: Binding(get: { spec.doHole && spec.holeMode == .spiral },
@@ -8238,6 +8304,10 @@ private struct FeatCommandSheet: View {
         }
     }
 
+    private var effectiveHost: Double {
+        feat.placeZ ?? hostZ
+    }
+
     private var valid: Bool {
         switch feat.kind {
         case .hole:
@@ -8265,7 +8335,19 @@ private struct FeatCommandSheet: View {
                 Section("位置") {
                     dRow("X", $feat.x)
                     dRow("Y", $feat.y)
-                    Text("顶面 Z \(ncf(hostZ))；落在增料台阶上时自动取该台阶顶面")
+                    Toggle("手动指定放置 Z", isOn: Binding(
+                        get: { feat.placeZ != nil },
+                        set: { on in
+                            feat.placeZ = on ? (feat.placeZ ?? hostZ) : nil
+                        }
+                    ))
+                    if feat.placeZ != nil {
+                        dRow("放置 Z", Binding(
+                            get: { feat.placeZ ?? hostZ },
+                            set: { feat.placeZ = $0 }
+                        ))
+                    }
+                    Text("当前起始面 Z \(ncf(effectiveHost))；关掉手动放置时自动取所在台阶顶面或 Z0")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
 
