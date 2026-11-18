@@ -7398,7 +7398,11 @@ struct StudioScreen: View {
 
     private func openVectorImporter() {
         // 从“…”菜单里点导入时，等菜单收起再弹文件选择器，避免状态被菜单事务吞掉。
-        DispatchQueue.main.async { showDXFImporter = true }
+        // 先置 false 再置 true，保证上一次取消后还能重新弹出。
+        showDXFImporter = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            showDXFImporter = true
+        }
     }
 
     private func importVector(_ url: URL) {
