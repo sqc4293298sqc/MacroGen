@@ -122,6 +122,8 @@ struct PartShape: Equatable, Codable {
     var nodes: [ContourNode] = []
     var cx: Double = 0          // 该层轮廓中心 X（UG 里放凸台时的定位）
     var cy: Double = 0          // 该层轮廓中心 Y
+    /// 新建的矩形台阶按“中心”解释 cx/cy；旧工程默认 false，保持原来的左下角偏移，避免升级后整层乱跑。
+    var centeredRect: Bool = false
 
     init() {}
 
@@ -138,7 +140,7 @@ struct PartShape: Equatable, Codable {
 
     // 旧工程没有 cx/cy 字段，解码时补 0，避免升级后工程读不出来
     private enum CodingKeys: String, CodingKey {
-        case template, rectL, rectW, rectR, circleD, slotL, slotW, nodes, cx, cy
+        case template, rectL, rectW, rectR, circleD, slotL, slotW, nodes, cx, cy, centeredRect
     }
 
     init(from decoder: Decoder) throws {
@@ -153,6 +155,7 @@ struct PartShape: Equatable, Codable {
         nodes = try c.decodeIfPresent([ContourNode].self, forKey: .nodes) ?? []
         cx = try c.decodeIfPresent(Double.self, forKey: .cx) ?? 0
         cy = try c.decodeIfPresent(Double.self, forKey: .cy) ?? 0
+        centeredRect = try c.decodeIfPresent(Bool.self, forKey: .centeredRect) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -167,6 +170,7 @@ struct PartShape: Equatable, Codable {
         try c.encode(nodes, forKey: .nodes)
         try c.encode(cx, forKey: .cx)
         try c.encode(cy, forKey: .cy)
+        try c.encode(centeredRect, forKey: .centeredRect)
     }
 
     var summary: String {
@@ -447,8 +451,8 @@ enum PartProg {
                        depth: max(step.height, 0.1), hNo: p.contourTool, zTop: step.z1)
         // 矩形模板是从 0..L / 0..W 建的，圆/腰形/异形已经在原点居中。
         // 台阶的 cx/cy 语义是“中心”，所以矩形要先把左下角退到中心再平移。
-        let rectShiftX = step.shape.template == .rect ? step.shape.rectL / 2 : 0
-        let rectShiftY = step.shape.template == .rect ? step.shape.rectW / 2 : 0
+        let rectShiftX = (step.shape.template == .rect && step.shape.centeredRect) ? step.shape.rectL / 2 : 0
+        let rectShiftY = (step.shape.template == .rect && step.shape.centeredRect) ? step.shape.rectW / 2 : 0
         return ContourGeo.flatten(ContourGeo.segments(ContourGeo.buildNodes(d)))
             .map { CGPoint(x: Double($0.x) - rectShiftX + step.shape.cx,
                            y: Double($0.y) - rectShiftY + step.shape.cy) }
@@ -802,8 +806,8 @@ enum PartProg {
                        depth: max(depth, 0.1), hNo: p.contourTool)
         // 台阶轮廓的 cx/cy 必须在这里统一补上；矩形模板要先把 0..L 的左下角退到中心。
         // 精加工、图纸、DXF、面积计算都走这里，漏一次就会偏半个尺寸。
-        let rectShiftX = shape.template == .rect ? shape.rectL / 2 : 0
-        let rectShiftY = shape.template == .rect ? shape.rectW / 2 : 0
+        let rectShiftX = (shape.template == .rect && shape.centeredRect) ? shape.rectL / 2 : 0
+        let rectShiftY = (shape.template == .rect && shape.centeredRect) ? shape.rectW / 2 : 0
         return ContourGeo.flatten(ContourGeo.segments(ContourGeo.buildNodes(d)))
             .map { CGPoint(x: Double($0.x) - rectShiftX + shape.cx,
                            y: Double($0.y) - rectShiftY + shape.cy) }

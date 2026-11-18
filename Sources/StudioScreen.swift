@@ -4474,6 +4474,7 @@ struct StudioScreen: View {
             s.shape.slotW = min(max(spec.slotW > 1 ? spec.slotW : 30, 2), 500)
         case .free: break
         }
+        s.shape.centeredRect = (template == .rect)
         let c = PartProg.baseCenter(spec)
         let onBase = hasPtr && PartProg.pointIn(PartProg.pts(spec), ptrX, ptrY)
         let onStep = hasPtr && PartProg.stepAt(spec, ptrX, ptrY) != nil
@@ -4549,6 +4550,7 @@ struct StudioScreen: View {
             s.shape.rectL = 50
             s.shape.rectW = 30
             s.shape.rectR = 4
+            s.shape.centeredRect = true
             s.shape.cx = Double(c.x)
             s.shape.cy = Double(c.y)
             spec.steps.append(s)
@@ -4667,6 +4669,9 @@ struct StudioScreen: View {
                             miniNum("中心 Y", $s.shape.cy)
                             Button("居中") {
                                 let c = PartProg.baseCenter(spec)
+                                if $s.shape.template.wrappedValue == .rect {
+                                    $s.shape.centeredRect.wrappedValue = true
+                                }
                                 $s.shape.cx.wrappedValue = Double(c.x)
                                 $s.shape.cy.wrappedValue = Double(c.y)
                             }
@@ -4743,6 +4748,7 @@ struct StudioScreen: View {
                                     let cx = spec.steps[idx].shape.cx
                                     let cy = spec.steps[idx].shape.cy
                                     spec.steps[idx].shape = PartShape(spec)
+                                    spec.steps[idx].shape.centeredRect = (spec.template == .rect)
                                     spec.steps[idx].shape.cx = cx
                                     spec.steps[idx].shape.cy = cy
                                 }
