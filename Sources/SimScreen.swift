@@ -85,6 +85,7 @@ struct SimScreen: View {
     @State private var layerZ: Double = 0
     @State private var layered = false
     @State private var heightmap: SimHeightmap? = nil
+    @State private var lines: [String] = []
     @State private var timer: Timer? = nil
 
     private var curIndex: Int { indexAt(progress) }
@@ -145,7 +146,7 @@ struct SimScreen: View {
                 .background(Color(.systemBackground))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
-            CodeList(lines: lineArray, current: curIndex >= 0 ? (path.pts[safe: curIndex]?.line ?? -1) : -1)
+            CodeList(lines: lines, current: curIndex >= 0 ? (path.pts[safe: curIndex]?.line ?? -1) : -1)
                 .frame(height: 150)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
         }
@@ -155,6 +156,7 @@ struct SimScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             path = MacroInterp.run(code)
+            lines = code.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
             progress = 0
             layerZ = 0
             let stockTop = spec?.zTop ?? 0
@@ -175,14 +177,10 @@ struct SimScreen: View {
         return "\(path.pts.count) 个轨迹点 · 切削 \(Int(path.totalCut)) mm"
     }
 
-    private var lineArray: [String] {
-        code.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
-    }
-
     private var lineText: String {
         let idx = curPoint.line
-        guard idx >= 0, idx < lineArray.count else { return "点播放开始，或拖进度条逐段看" }
-        return "行 \(idx + 1) › " + lineArray[idx].trimmingCharacters(in: .whitespaces)
+        guard idx >= 0, idx < lines.count else { return "点播放开始，或拖进度条逐段看" }
+        return "行 \(idx + 1) › " + lines[idx].trimmingCharacters(in: .whitespaces)
     }
 
     private var speedText: String {
@@ -212,15 +210,19 @@ struct SimScreen: View {
         if progress >= path.maxLen { progress = 0 }
         playing = true
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { t in
-            let stepMm = path.maxLen / 15.0 * 0.05 * speed
-            progress += (stepMm < 1 ? 1 : stepMm)
+        let dt = 1.0 / 30.0
+        let t = Timer(timeInterval: dt, repeats: true) { timer in
+            let stepMm = path.maxLen / 15.0 * dt * speed
+            progress += (stepMm < 0.5 ? 0.5 : stepMm)
             if progress >= path.maxLen {
                 progress = path.maxLen
-                t.invalidate()
+                timer.invalidate()
                 playing = false
             }
         }
+        t.tolerance = 0.01
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
     }
 
     private func stop() {
@@ -270,33 +272,35 @@ struct SimScreen: View {
     }
 }
 
-/// 代码列表：当前执行行高亮，自动滚到中间
+/// 代码列表：只渲染当前行附近的窗口，避免每帧把整段程序都重新排版
 private struct CodeList: View {
     let lines: [String]
     let current: Int
 
+    private var window: [Int] {
+        guard !lines.isEmpty else { return [] }
+        let center = current >= 0 ? current : 0
+        let lo = max(0, center - 10)
+        let hi = min(lines.count - 1, center + 10)
+        return Array(lo...hi)
+    }
+
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(lines.enumerated()), id: \.offset) { idx, line in
-                        Text(line)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(idx == current ? Color.white : Color(white: 0.82))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(idx == current ? Color.orange.opacity(0.75) : Color.clear)
-                            .id(idx)
-                    }
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 2) {
+                ForEach(window, id: \.self) { idx in
+                    Text(lines[idx])
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(idx == current ? Color.white : Color(white: 0.82))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(idx == current ? Color.orange.opacity(0.75) : Color.clear)
                 }
-                .padding(.vertical, 6)
             }
-            .background(Color(red: 0.07, green: 0.10, blue: 0.14))
-            .onChange(of: current) { newValue in
-                proxy.scrollTo(max(0, newValue - 3), anchor: .top)
-            }
+            .padding(.vertical, 6)
         }
+        .background(Color(red: 0.07, green: 0.10, blue: 0.14))
     }
 }
 
