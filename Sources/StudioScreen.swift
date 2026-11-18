@@ -8124,6 +8124,8 @@ struct StudioScreen: View {
                     Button("参数") { openOp("轮廓铣") }.buttonStyle(.borderless)
                         .font(.system(size: 12, weight: .semibold))
                 }
+                Toggle("外轮廓反向（顺/逆铣）", isOn: $spec.reverseOuter)
+                    .font(.system(size: 12))
                 HStack {
                     Toggle("轮廓倒角 C（2.5D 近似）", isOn: $spec.doChamfer)
                         .font(.system(size: 12))

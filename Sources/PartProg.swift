@@ -298,6 +298,8 @@ struct PartSpec: Equatable, Codable {
 
     var doFace = true
     var doContour = true
+    /// 外轮廓反向：顺铣/逆铣切换（2.5D 轮廓方向，不是刀具姿态）
+    var reverseOuter: Bool = false
     var doHole = true
     var doPocket = true
     /// 2.5D 轮廓倒角近似：沿外形顶边走一刀，不生成真实斜面
@@ -381,6 +383,9 @@ enum PartProg {
         d.slotL = shape.slotL
         d.slotW = shape.slotW
         d.nodes = shape.nodes
+        if outward, p.reverseOuter {
+            d.nodes.reverse()
+        }
         d.toolDia = dia
         d.depth = depth
         d.stepDown = p.stepDown
