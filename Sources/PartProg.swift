@@ -946,6 +946,18 @@ enum PartProg {
                 addSegs(CircularClear.segs(dia: l.circleD, depth: host - minZ(p) + 1, zTop: host,
                                            toolDia: p.holeDia, stepDown: p.stepDown, stepOver: p.stepOver),
                         dx: l.cx, dy: l.cy)
+            } else if p.doPocket && l.template == .rect {
+                var s = PocketSpec()
+                s.mode = .pocket
+                s.length = max(l.rectL, 0.1); s.width = max(l.rectW, 0.1)
+                s.cornerType = .square; s.cornerValue = 0
+                s.depth = depth
+                s.stepDown = p.stepDown; s.stepOver = p.stepOver
+                s.toolDia = p.pocketDia
+                s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = host
+                s.hNo = p.pocketTool; s.coord = p.coord
+                s.cx = l.cx; s.cy = l.cy
+                addSegs(ToolpathEngine.build(s), dx: l.cx, dy: l.cy)
             } else if p.doPocket {
                 let pts = loopPoints(l).map { CGPoint(x: $0.x + CGFloat(l.cx), y: $0.y + CGFloat(l.cy)) }
                 line(offsetClosed(pts, by: -p.pocketDia / 2), z: host, cut: true)
@@ -1467,11 +1479,24 @@ enum PartProg {
                     add("\(l.name) Ø\(ncf(l.circleD)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 攻丝 G84 P\(ncf(p.tapPitch))",
                         p.tapTool, tapBlock(p, f, zTop: host), id: id)
                 }
+            } else if l.template == .rect {
+                var s = PocketSpec()
+                s.mode = .pocket
+                s.length = max(l.rectL, 0.1); s.width = max(l.rectW, 0.1)
+                s.cornerType = .square; s.cornerValue = 0
+                s.depth = depth
+                s.stepDown = p.stepDown; s.stepOver = p.stepOver
+                s.toolDia = p.pocketDia
+                s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = host
+                s.hNo = p.pocketTool; s.coord = p.coord
+                s.cx = l.cx; s.cy = l.cy
+                add("\(l.name) 方腔 \(ncf(l.rectL))×\(ncf(l.rectW)) 深\(ncf(depth)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 型腔铣 T\(p.pocketTool) D\(ncf(p.pocketDia))",
+                    p.pocketTool, GCodeGenerator.generate(s), id: id)
             } else {
                 let d = drawForLoop(l, p, depth: depth, dia: p.pocketDia, hNo: p.pocketTool, zTop: host)
                 var code = ContourProg.generate(d)
                 code = shift(code, dx: l.cx, dy: l.cy)
-                add("\(l.name) \(l.template.rawValue) 深\(ncf(depth)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 型腔铣 T\(p.pocketTool) D\(ncf(p.pocketDia))",
+                add("\(l.name) \(l.template.rawValue) 深\(ncf(depth)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 型腔铣（自由轮廓仍沿边）T\(p.pocketTool) D\(ncf(p.pocketDia))",
                     p.pocketTool, code, id: id)
             }
         }

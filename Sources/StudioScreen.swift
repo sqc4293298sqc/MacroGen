@@ -5845,7 +5845,7 @@ struct StudioScreen: View {
                             Label(t.rawValue, systemImage: t.icon).tag(t)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
                 }
 
                 Section("拾取半径") {
