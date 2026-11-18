@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import PhotosUI
+import UniformTypeIdentifiers
 
 /// 建模编程（iOS 对齐安卓四步）：草图 → 建模 → 出图 → 加工
 struct StudioScreen: View {
@@ -120,6 +121,7 @@ struct StudioScreen: View {
 
     // 拍照图纸
     @State private var showPhotoMenu = false
+    @State private var showDXFImporter = false
     @State private var showCamera = false
     @State private var showPhotoPicker = false
     @State private var photoItem: PhotosPickerItem?
@@ -178,6 +180,8 @@ struct StudioScreen: View {
         var z: Double
         var z2: Double? = nil
         var distance: Double = 0
+        /// 非 0 表示这段是圆弧，值为半径
+        var arcR: Double = 0
         var zEnd: Double { z2 ?? z }
     }
 
@@ -305,6 +309,16 @@ struct StudioScreen: View {
         }
         .onDisappear {
             dismissMeasureSheet()
+        }
+        .fileImporter(isPresented: $showDXFImporter,
+                      allowedContentTypes: [UTType(filenameExtension: "dxf") ?? .data],
+                      allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first { importDXF(url) }
+            case .failure:
+                showToastView("DXF 选择失败")
+            }
         }
         .sheet(isPresented: $showOpCode) {
             NavigationStack {
@@ -494,6 +508,9 @@ struct StudioScreen: View {
             Menu {
                 Button { showPhotoMenu = true } label: {
                     Label("拍照图纸", systemImage: "camera.viewfinder")
+                }
+                Button { showDXFImporter = true } label: {
+                    Label("导入 DXF 轮廓", systemImage: "square.and.arrow.down")
                 }
                 Button("保存工程") {
                     ProjectStore.save(spec)
@@ -4933,6 +4950,17 @@ struct StudioScreen: View {
     private func edgeCandidates(_ cam: Cam, at loc: CGPoint) -> [(ModelPickEdge, Double)] {
         var out: [(ModelPickEdge, Double)] = []
         let cutZ = activeSectionCutZ()
+        // 自由轮廓里的真实圆弧段也作为独立候选，带上 R
+        if spec.template == .free {
+            for (i, seg) in ContourGeo.segments(spec.nodes).enumerated()
+                where seg.isArc && !seg.full && seg.r > 0.01 {
+                let pa = cam.p(Double(seg.p0.x), Double(seg.p0.y), 0)
+                let pb = cam.p(Double(seg.p1.x), Double(seg.p1.y), 0)
+                let d = distanceToSegment(loc, pa, pb)
+                out.append((ModelPickEdge(id: "arc-\(i)", a: seg.p0, b: seg.p1,
+                                           z: 0, distance: d, arcR: seg.r), d))
+            }
+        }
         func scan(_ pts: [CGPoint], z: Double, prefix: String) {
             guard pts.count > 1 else { return }
             for i in pts.indices {
@@ -5012,6 +5040,63 @@ struct StudioScreen: View {
         return (0..<20).map { i in
             let a = Double(i) / 20 * 2 * Double.pi
             return cam.p(cx + r * cos(a), cy + r * sin(a), z)
+        }
+    }
+
+    /// 孔/腔中心到外轮廓的最近 2D 距离
+    private func outerEdgeDistance(from h: ModelPickHole) -> Double {
+        let pts = PartProg.pts(spec)
+        guard pts.count > 1 else { return 0 }
+        var best = Double.greatestFiniteMagnitude
+        for i in 0..<pts.count {
+            let a = pts[i], b = pts[(i + 1) % pts.count]
+            let d = segmentDistance3D(
+                (h.x, h.y, 0), (h.x, h.y, 0),
+                (Double(a.x), Double(a.y), 0), (Double(b.x), Double(b.y), 0))
+            best = min(best, d)
+        }
+        return best.isFinite ? best : 0
+    }
+
+    /// 当前圆到最近另一个圆的中心距/边间隙（只看孔、圆腔、圆形内轮廓）
+    private func nearestOtherHole(from h: ModelPickHole) -> (name: String, center: Double, gap: Double)? {
+        var best: (String, Double, Double, Double)? = nil
+        func consider(_ id: String, _ name: String, _ x: Double, _ y: Double, _ dia: Double) {
+            guard id != h.id else { return }
+            let centerD = hypot(x - h.x, y - h.y)
+            let gap = max(0, centerD - (h.dia / 2 + dia / 2))
+            if best == nil || centerD < best!.1 {
+                best = (name, centerD, gap, dia)
+            }
+        }
+        for f in spec.feats where !f.suppressed {
+            let d = f.kind == .rectPocket ? max(f.w, f.h) : f.dia
+            consider("feat-\(f.id.uuidString)", f.name.isEmpty ? f.kind.rawValue : f.name, f.x, f.y, d)
+        }
+        for l in spec.innerLoops where l.template == .circle {
+            consider("loop-\(l.id.uuidString)", l.name, l.cx, l.cy, l.circleD)
+        }
+        guard let b = best else { return nil }
+        return (b.0, b.1, b.2)
+    }
+
+    /// 孔/腔底面的真实边界（模型坐标）
+    private func holeBoundary(_ h: ModelPickHole) -> [ModelPickPoint] {
+        let z = h.bottomZ
+        if h.isPocket, h.w > 0, h.h > 0 {
+            let x0 = h.x - h.w / 2, x1 = h.x + h.w / 2
+            let y0 = h.y - h.h / 2, y1 = h.y + h.h / 2
+            return [
+                ModelPickPoint(x: x0, y: y0, z: z),
+                ModelPickPoint(x: x1, y: y0, z: z),
+                ModelPickPoint(x: x1, y: y1, z: z),
+                ModelPickPoint(x: x0, y: y1, z: z)
+            ]
+        }
+        let r = max(h.dia / 2, 0.1)
+        return (0..<24).map { i in
+            let a = Double(i) / 24 * 2 * Double.pi
+            return ModelPickPoint(x: h.x + r * cos(a), y: h.y + r * sin(a), z: z)
         }
     }
 
@@ -5267,7 +5352,8 @@ struct StudioScreen: View {
             let area = h.isPocket && h.w > 0 ? h.w * h.h : Double.pi * pow(h.dia / 2, 2)
             face = ModelPickFace(id: h.id + "-bottom", name: h.name + " 底面",
                                  z: h.bottomZ, area: area,
-                                 center: CGPoint(x: h.x, y: h.y))
+                                 center: CGPoint(x: h.x, y: h.y),
+                                 boundary: holeBoundary(h))
         }
         let z = (hole?.onBottom == true ? hole?.bottomZ : hole?.z) ?? face?.z ?? 0
 
@@ -5452,7 +5538,12 @@ struct StudioScreen: View {
         let dx = Double(e.b.x - e.a.x)
         let dy = Double(e.b.y - e.a.y)
         let dz = e.zEnd - e.z
-        return sqrt(dx * dx + dy * dy + dz * dz)
+        let chord = sqrt(dx * dx + dy * dy + dz * dz)
+        if e.arcR > 0.01 {
+            let ratio = min(1, chord / (2 * e.arcR))
+            return 2 * e.arcR * asin(ratio)
+        }
+        return chord
     }
 
     private func midpoint(_ e: ModelPickEdge) -> (Double, Double, Double) {
@@ -5843,6 +5934,9 @@ struct StudioScreen: View {
                         }
                         LabeledContent("面", value: "\(f.name) · Z\(ncf(f.z))")
                         LabeledContent("边长度", value: "\(ncf(edgeLength(e))) mm")
+                        if e.arcR > 0.01 {
+                            LabeledContent("圆弧半径 R", value: "\(ncf(e.arcR)) mm")
+                        }
                     }
                     if !pickedPoints.isEmpty {
                         ForEach(Array(pickedPoints.enumerated()), id: \.offset) { pair in
@@ -5859,7 +5953,10 @@ struct StudioScreen: View {
                         }
                     }
                     if let e = pickedEdges.first {
-                        LabeledContent("边1 长度", value: "\(ncf(edgeLength(e))) mm")
+                        LabeledContent(e.arcR > 0.01 ? "圆弧1 弧长" : "边1 长度", value: "\(ncf(edgeLength(e))) mm")
+                        if e.arcR > 0.01 {
+                            LabeledContent("圆弧1 半径 R", value: "\(ncf(e.arcR)) mm")
+                        }
                         LabeledContent("边1 端点", value: "(\(ncf(Double(e.a.x))),\(ncf(Double(e.a.y))),\(ncf(e.z))) → (\(ncf(Double(e.b.x))),\(ncf(Double(e.b.y))),\(ncf(e.zEnd)))")
                     }
                     if pickedEdges.count > 1 {
@@ -5887,6 +5984,16 @@ struct StudioScreen: View {
                         if measureTarget == .circle {
                             LabeledContent("半径 R", value: "\(ncf(h.dia / 2)) mm")
                             LabeledContent("圆心", value: "X\(ncf(h.x)) Y\(ncf(h.y)) Z\(ncf(h.z))")
+                            if h.id != "base-circle" {
+                                let edgeD = outerEdgeDistance(from: h)
+                                let wall = max(0, edgeD - (h.isPocket ? min(h.w, h.h) : h.dia) / 2)
+                                LabeledContent("孔/腔边到外形", value: "\(ncf(edgeD)) mm")
+                                LabeledContent("最小壁厚", value: "\(ncf(wall)) mm")
+                                if let other = nearestOtherHole(from: h) {
+                                    LabeledContent("最近圆：\(other.name)", value: "中心距 \(ncf(other.center)) mm")
+                                    LabeledContent("两圆边间隙", value: "\(ncf(other.gap)) mm")
+                                }
+                            }
                         }
                         LabeledContent("深度", value: h.through ? "通孔 / 通腔" : "\(ncf(h.depth)) mm")
                         LabeledContent("底 Z", value: "Z\(ncf(h.bottomZ))")
@@ -7236,6 +7343,13 @@ struct StudioScreen: View {
                         .buttonStyle(.borderedProminent)
                     }
                 }
+                Button {
+                    showDXFImporter = true
+                } label: {
+                    Label("导入 DXF 轮廓", systemImage: "square.and.arrow.down")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
                 Text("DXF 是 2D 轮廓（外形/内轮廓/孔），可导入 UG、CAD、CAM；不冒充 3D STEP。")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
@@ -7247,6 +7361,40 @@ struct StudioScreen: View {
             drawDrawing(context: context, size: size)
         }
         .background(Color.white)
+    }
+
+    private func importDXF(_ url: URL) {
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            let result = try DXFImporter.parse(text, name: url.deletingPathExtension().lastPathComponent)
+            pushUndo()
+            var s = result.spec
+            s.height = spec.height
+            s.programNo = spec.programNo
+            s.coord = spec.coord
+            s.spindle = spec.spindle
+            s.feed = spec.feed
+            s.stepDown = spec.stepDown
+            s.stepOver = spec.stepOver
+            s.safeZ = spec.safeZ
+            s.faceTool = spec.faceTool; s.faceDia = spec.faceDia
+            s.contourTool = spec.contourTool; s.contourDia = spec.contourDia
+            s.holeTool = spec.holeTool; s.holeDia = spec.holeDia
+            s.pocketTool = spec.pocketTool; s.pocketDia = spec.pocketDia
+            s.tapTool = spec.tapTool; s.tapDia = spec.tapDia
+            s.postName = spec.postName
+            spec = s
+            showToastView(result.note)
+            if !result.warnings.isEmpty {
+                opCodeTitle = "DXF 导入提示"
+                opCodeText = result.warnings.joined(separator: "\n")
+                showOpCode = true
+            }
+        } catch {
+            showToastView("DXF 导入失败：\(error.localizedDescription)")
+        }
     }
 
     private func exportDXF() {
@@ -8125,15 +8273,22 @@ struct StudioScreen: View {
                     Text("点“生成程序”后为已生成；每道工序可单独重算，重算结果会优先合并进最终程序。")
                         .font(.system(size: 9)).foregroundStyle(.secondary)
                 }
-                Button {
-                    opCodeTitle = "工序单 / 刀具单"
-                    opCodeText = setupSheetText()
-                    showOpCode = true
-                } label: {
-                    Label("查看工序单 / 刀具单", systemImage: "list.clipboard")
-                        .font(.system(size: 11, weight: .semibold))
+                HStack(spacing: 8) {
+                    Button {
+                        opCodeTitle = "工序单 / 刀具单"
+                        opCodeText = setupSheetText()
+                        showOpCode = true
+                    } label: {
+                        Label("查看工序单 / 刀具单", systemImage: "list.clipboard")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    ShareLink(item: setupSheetText()) {
+                        Label("分享工序单", systemImage: "square.and.arrow.up")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
 
                 if !opCodeCache.isEmpty {
                     let stale = opCodeCache.keys.filter { cacheIsStale($0) }.count

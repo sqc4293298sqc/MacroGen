@@ -1,6 +1,78 @@
 import SwiftUI
 
 /// 按 G 代码真执行出来的模拟界面：播放 / 单步 / 倍速 / DRO / 当前行高亮
+/// 2.5D 高度图：每个网格记录“被切到的最低 Z”和“第一次切到它的路径长度”。
+/// 它不是实体布尔，但能把残料/已切区域按层显示出来。
+struct SimHeightmap {
+    var minX: Double
+    var minY: Double
+    var maxX: Double
+    var maxY: Double
+    var cols: Int
+    var rows: Int
+    var cellX: Double
+    var cellY: Double
+    var stockTop: Double
+    var topZ: [Double]
+    var cutLen: [Double]
+
+    init(path: SimPath, toolDia: Double, stockTop: Double) {
+        let pad = max(toolDia, 1) * 0.55
+        let loX = path.pts.isEmpty ? 0 : path.minX - pad
+        let hiX = path.pts.isEmpty ? 1 : path.maxX + pad
+        let loY = path.pts.isEmpty ? 0 : path.minY - pad
+        let hiY = path.pts.isEmpty ? 1 : path.maxY + pad
+        minX = loX; maxX = max(hiX, loX + 1)
+        minY = loY; maxY = max(hiY, loY + 1)
+        cols = 64
+        rows = max(12, Int(Double(cols) * (maxY - minY) / max(maxX - minX, 1)))
+        cellX = (maxX - minX) / Double(cols)
+        cellY = (maxY - minY) / Double(rows)
+        self.stockTop = stockTop
+        topZ = Array(repeating: stockTop, count: cols * rows)
+        cutLen = Array(repeating: Double.infinity, count: cols * rows)
+        guard !path.pts.isEmpty else { return }
+        let r = max(toolDia, 0.1) / 2
+        for k in 1..<path.pts.count {
+            let b = path.pts[k]
+            guard !b.rapid else { continue }
+            let ix0 = max(0, Int(floor((b.x - r - minX) / cellX)))
+            let ix1 = min(cols - 1, Int(ceil((b.x + r - minX) / cellX)))
+            let iy0 = max(0, Int(floor((b.y - r - minY) / cellY)))
+            let iy1 = min(rows - 1, Int(ceil((b.y + r - minY) / cellY)))
+            guard ix0 <= ix1, iy0 <= iy1 else { continue }
+            let d = k < path.dist.count ? path.dist[k] : 0
+            for iy in iy0...iy1 {
+                let cy = minY + (Double(iy) + 0.5) * cellY
+                for ix in ix0...ix1 {
+                    let cx = minX + (Double(ix) + 0.5) * cellX
+                    guard hypot(cx - b.x, cy - b.y) <= r + max(cellX, cellY) * 0.5 else { continue }
+                    let i = iy * cols + ix
+                    topZ[i] = min(topZ[i], b.z)
+                    cutLen[i] = min(cutLen[i], d)
+                }
+            }
+        }
+    }
+
+    /// 到当前进度、当前层已经切掉的网格
+    func removedCells(progress: Double, layerZ: Double) -> [CGRect] {
+        var out: [CGRect] = []
+        out.reserveCapacity(cols * rows / 4)
+        for iy in 0..<rows {
+            for ix in 0..<cols {
+                let i = iy * cols + ix
+                guard cutLen[i].isFinite, cutLen[i] <= progress,
+                      topZ[i] <= layerZ + 0.01 else { continue }
+                out.append(CGRect(x: CGFloat(minX + Double(ix) * cellX),
+                                  y: CGFloat(minY + Double(iy) * cellY),
+                                  width: CGFloat(cellX), height: CGFloat(cellY)))
+            }
+        }
+        return out
+    }
+}
+
 struct SimScreen: View {
     let code: String
     var spec: PocketSpec? = nil
@@ -12,6 +84,7 @@ struct SimScreen: View {
     @State private var iso = true
     @State private var layerZ: Double = 0
     @State private var layered = false
+    @State private var heightmap: SimHeightmap? = nil
     @State private var timer: Timer? = nil
 
     private var curIndex: Int { indexAt(progress) }
@@ -20,7 +93,8 @@ struct SimScreen: View {
         VStack(spacing: 8) {
             SimCanvas(path: path, progress: progress, iso: iso,
                       toolDia: spec?.toolDia ?? 6,
-                      layerZ: (!iso && layered) ? layerZ : nil)
+                      layerZ: (!iso && layered) ? layerZ : nil,
+                      heightmap: (!iso && layered) ? heightmap : nil)
 
             HStack(spacing: 0) {
                 dro("X", value: curPoint.x)
@@ -82,7 +156,9 @@ struct SimScreen: View {
         .onAppear {
             path = MacroInterp.run(code)
             progress = 0
-            layerZ = min(0, path.maxZ)
+            layerZ = 0
+            let stockTop = spec?.zTop ?? 0
+            heightmap = SimHeightmap(path: path, toolDia: spec?.toolDia ?? 6, stockTop: stockTop)
         }
         .onDisappear { stop() }
     }
@@ -115,8 +191,8 @@ struct SimScreen: View {
 
     private var layerRange: ClosedRange<Double> {
         let lo = min(path.minZ, 0)
-        let hi = max(path.maxZ, lo + 0.1)
-        return lo...hi
+        let hi = max(0, min(path.maxZ, 0))
+        return lo...max(lo + 0.1, hi)
     }
 
     private func indexAt(_ d: Double) -> Int {
@@ -232,6 +308,8 @@ struct SimCanvas: View {
     var toolDia: Double = 6
     /// 非 nil 时只显示“切到该 Z 层及更深”的材料去除；nil = 全部刀路
     var layerZ: Double? = nil
+    /// 高度图余料；给出后俯视图按网格显示已切区域
+    var heightmap: SimHeightmap? = nil
 
     // 双指缩放 + 拖动平移
     @State private var zoom: CGFloat = 1
@@ -297,26 +375,43 @@ struct SimCanvas: View {
                 let stockPath = Path { pth in pth.addRect(stockRect) }
                 ctx.fill(stockPath, with: .color(Color(white: 0.86)))
                 ctx.stroke(stockPath, with: .color(Color(white: 0.58)), lineWidth: 1)
-                let r = CGFloat(toolDia / 2) * s
-                for k in 1..<path.pts.count {
-                    let b = path.pts[k]
-                    let walkedYet = (path.dist[safe: k] ?? 0) <= progress
-                    guard walkedYet, !b.rapid else { continue }
-                    if let lz = layerZ, b.z > lz + 0.01 { continue }
-                    let q = project(b.x, b.y, b.z)
-                    if r <= 1 {
-                        ctx.fill(Path(ellipseIn: CGRect(x: q.x - 1, y: q.y - 1, width: 2, height: 2)),
-                                 with: .color(Color(white: 0.97)))
-                    } else {
-                        ctx.fill(Path(ellipseIn: CGRect(x: q.x - r, y: q.y - r, width: r * 2, height: r * 2)),
-                                 with: .color(Color(white: 0.97)))
+                if let hm = heightmap, let lz = layerZ {
+                    var cut = Path()
+                    for cell in hm.removedCells(progress: progress, layerZ: lz) {
+                        let a = project(cell.minX, cell.maxY, 0)
+                        let b = project(cell.maxX, cell.minY, 0)
+                        cut.addRect(CGRect(x: min(a.x, b.x), y: min(a.y, b.y),
+                                           width: abs(b.x - a.x), height: abs(b.y - a.y)))
                     }
+                    ctx.fill(cut, with: .color(Color(white: 0.965)))
+                    ctx.stroke(cut, with: .color(Color(white: 0.86)), lineWidth: 0.35)
+                    let layerNote = " · Z\(ncf(lz))"
+                    ctx.draw(Text("高度图余料\(layerNote)")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundColor(.secondary),
+                             at: CGPoint(x: min(stockRect.minX + 58, stockRect.maxX - 58), y: stockRect.minY + 10))
+                } else {
+                    let r = CGFloat(toolDia / 2) * s
+                    for k in 1..<path.pts.count {
+                        let b = path.pts[k]
+                        let walkedYet = (path.dist[safe: k] ?? 0) <= progress
+                        guard walkedYet, !b.rapid else { continue }
+                        if let lz = layerZ, b.z > lz + 0.01 { continue }
+                        let q = project(b.x, b.y, b.z)
+                        if r <= 1 {
+                            ctx.fill(Path(ellipseIn: CGRect(x: q.x - 1, y: q.y - 1, width: 2, height: 2)),
+                                     with: .color(Color(white: 0.97)))
+                        } else {
+                            ctx.fill(Path(ellipseIn: CGRect(x: q.x - r, y: q.y - r, width: r * 2, height: r * 2)),
+                                     with: .color(Color(white: 0.97)))
+                        }
+                    }
+                    let layerNote = layerZ.map { " · Z\(ncf($0))" } ?? ""
+                    ctx.draw(Text("材料去除（2.5D 分层近似\(layerNote)）")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundColor(.secondary),
+                             at: CGPoint(x: min(stockRect.minX + 76, stockRect.maxX - 76), y: stockRect.minY + 10))
                 }
-                let layerNote = layerZ.map { " · Z\(ncf($0))" } ?? ""
-                ctx.draw(Text("材料去除（2.5D 分层近似\(layerNote)）")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.secondary),
-                         at: CGPoint(x: min(stockRect.minX + 76, stockRect.maxX - 76), y: stockRect.minY + 10))
             }
 
             // 性能：分段合批 + 按屏幕距离抽稀，几千个点也只发十几次 stroke
