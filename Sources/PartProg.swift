@@ -445,8 +445,13 @@ enum PartProg {
     static func pts(_ step: PartStep, _ p: PartSpec) -> [CGPoint] {
         let d = asDraw(step.shape, p, outward: true, dia: p.contourDia,
                        depth: max(step.height, 0.1), hNo: p.contourTool, zTop: step.z1)
+        // 矩形模板是从 0..L / 0..W 建的，圆/腰形/异形已经在原点居中。
+        // 台阶的 cx/cy 语义是“中心”，所以矩形要先把左下角退到中心再平移。
+        let rectShiftX = step.shape.template == .rect ? step.shape.rectL / 2 : 0
+        let rectShiftY = step.shape.template == .rect ? step.shape.rectW / 2 : 0
         return ContourGeo.flatten(ContourGeo.segments(ContourGeo.buildNodes(d)))
-            .map { CGPoint(x: Double($0.x) + step.shape.cx, y: Double($0.y) + step.shape.cy) }
+            .map { CGPoint(x: Double($0.x) - rectShiftX + step.shape.cx,
+                           y: Double($0.y) - rectShiftY + step.shape.cy) }
     }
 
     /// 台阶最高点（基础顶面是 0）
@@ -543,6 +548,20 @@ enum PartProg {
             return m
         }
         return q
+    }
+
+    /// 基础草图自己的中心，不把台阶算进来。矩形模板是从 0..L / 0..W 建的，
+    /// 所以它的中心不是 (0,0)，而是 (L/2,W/2)。凸台默认要落在这里。
+    static func baseCenter(_ p: PartSpec) -> CGPoint {
+        let ps = pts(p)
+        guard let f = ps.first else { return .zero }
+        var mnx = Double(f.x), mxx = Double(f.x)
+        var mny = Double(f.y), mxy = Double(f.y)
+        for q in ps {
+            mnx = min(mnx, Double(q.x)); mxx = max(mxx, Double(q.x))
+            mny = min(mny, Double(q.y)); mxy = max(mxy, Double(q.y))
+        }
+        return CGPoint(x: (mnx + mxx) / 2, y: (mny + mxy) / 2)
     }
 
     static func bbox(_ p: PartSpec) -> CGRect {
@@ -781,10 +800,13 @@ enum PartProg {
     static func shapePoints(_ shape: PartShape, _ p: PartSpec, depth: Double = 1) -> [CGPoint] {
         let d = asDraw(shape, p, outward: true, dia: max(p.contourDia, 0.1),
                        depth: max(depth, 0.1), hNo: p.contourTool)
-        // 台阶轮廓的 cx/cy 必须在这里统一补上；
-        // 精加工、图纸、DXF、面积计算都走这里，漏一次就会回到原点。
+        // 台阶轮廓的 cx/cy 必须在这里统一补上；矩形模板要先把 0..L 的左下角退到中心。
+        // 精加工、图纸、DXF、面积计算都走这里，漏一次就会偏半个尺寸。
+        let rectShiftX = shape.template == .rect ? shape.rectL / 2 : 0
+        let rectShiftY = shape.template == .rect ? shape.rectW / 2 : 0
         return ContourGeo.flatten(ContourGeo.segments(ContourGeo.buildNodes(d)))
-            .map { CGPoint(x: Double($0.x) + shape.cx, y: Double($0.y) + shape.cy) }
+            .map { CGPoint(x: Double($0.x) - rectShiftX + shape.cx,
+                           y: Double($0.y) - rectShiftY + shape.cy) }
     }
 
     static func shiftedSegs(_ segs: [TPSeg], dx: Double, dy: Double) -> [TPSeg] {

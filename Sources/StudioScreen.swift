@@ -4474,8 +4474,12 @@ struct StudioScreen: View {
             s.shape.slotW = min(max(spec.slotW > 1 ? spec.slotW : 30, 2), 500)
         case .free: break
         }
-        s.shape.cx = hasPtr ? ptrX : 0
-        s.shape.cy = hasPtr ? ptrY : 0
+        let c = PartProg.baseCenter(spec)
+        let onBase = hasPtr && PartProg.pointIn(PartProg.pts(spec), ptrX, ptrY)
+        let onStep = hasPtr && PartProg.stepAt(spec, ptrX, ptrY) != nil
+        let usePointer = onBase || onStep
+        s.shape.cx = usePointer ? ptrX : Double(c.x)
+        s.shape.cy = usePointer ? ptrY : Double(c.y)
         s.name = mode == .add
             ? (template == .circle ? "圆凸台" : "方凸台")
             : (template == .circle ? "圆型腔" : "方型腔")
@@ -4522,6 +4526,7 @@ struct StudioScreen: View {
         } else {
             spec.circleD = 100
         }
+        let c = PartProg.baseCenter(spec)
         if withCircleBoss {
             var s = PartStep()
             s.name = "圆凸台"
@@ -4530,8 +4535,8 @@ struct StudioScreen: View {
             s.height = 6
             s.shape.template = .circle
             s.shape.circleD = 40
-            s.shape.cx = 0
-            s.shape.cy = 0
+            s.shape.cx = Double(c.x)
+            s.shape.cy = Double(c.y)
             spec.steps.append(s)
         }
         if withRectBoss {
@@ -4544,8 +4549,8 @@ struct StudioScreen: View {
             s.shape.rectL = 50
             s.shape.rectW = 30
             s.shape.rectR = 4
-            s.shape.cx = 0
-            s.shape.cy = 0
+            s.shape.cx = Double(c.x)
+            s.shape.cy = Double(c.y)
             spec.steps.append(s)
         }
         modelPanel = .steps
@@ -4661,8 +4666,9 @@ struct StudioScreen: View {
                             miniNum("中心 X", $s.shape.cx)
                             miniNum("中心 Y", $s.shape.cy)
                             Button("居中") {
-                                $s.shape.cx.wrappedValue = 0
-                                $s.shape.cy.wrappedValue = 0
+                                let c = PartProg.baseCenter(spec)
+                                $s.shape.cx.wrappedValue = Double(c.x)
+                                $s.shape.cy.wrappedValue = Double(c.y)
                             }
                                 .font(.system(size: 9, weight: .semibold))
                                 .buttonStyle(.bordered)
@@ -6343,10 +6349,12 @@ struct StudioScreen: View {
     }
 
     private func makeFeatDraft(_ kind: PartFeatKind) -> PartFeat {
-        let b = PartProg.bbox(spec)
         var f = PartFeat(kind: kind)
-        f.x = hasPtr ? ptrX : Double(b.midX)
-        f.y = hasPtr ? ptrY : Double(b.midY)
+        let c = PartProg.baseCenter(spec)
+        let onBase = hasPtr && PartProg.pointIn(PartProg.pts(spec), ptrX, ptrY)
+        let onStep = hasPtr && PartProg.stepAt(spec, ptrX, ptrY) != nil
+        f.x = (onBase || onStep) ? ptrX : Double(c.x)
+        f.y = (onBase || onStep) ? ptrY : Double(c.y)
         f.dia = kind == .hole ? 10 : 30
         f.depth = min(5, max(1, spec.height / 2))
         return f
