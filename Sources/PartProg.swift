@@ -1158,9 +1158,9 @@ enum PartProg {
             s.zTop = host
             s.hNo = p.restTool
             s.coord = p.coord
-            s.cx = 0
-            s.cy = 0
-            addCode("残料二次开粗 \(name)", GCodeGenerator.generate(s), dx: f.x, dy: f.y)
+            s.cx = f.x
+            s.cy = f.y
+            addCode("残料二次开粗 \(name)", GCodeGenerator.generate(s))
         }
 
         var base = asDraw(p, outward: true, dia: p.restDia, depth: p.height, hNo: p.restTool)

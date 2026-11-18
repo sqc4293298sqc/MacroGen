@@ -8080,7 +8080,7 @@ struct StudioScreen: View {
                 Picker("后处理 / 控制器", selection: $spec.postName) {
                     Text("FANUC 0i-MF").tag("FANUC")
                     Text("三菱 M70/M80").tag("三菱 M70/M80")
-                    Text("Siemens 840D（仅通用G代码）").tag("Siemens 840D")
+                    Text("Siemens 840D（宏展开）").tag("Siemens 840D")
                 }
                 if spec.postName.contains("Siemens") {
                     Text("Siemens 会把 #宏/WHILE 展开成普通 G 代码；G43/G28/G52 和刀补仍需按机床核对。")
