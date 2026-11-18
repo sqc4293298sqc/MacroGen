@@ -153,7 +153,7 @@ struct StudioScreen: View {
     }
 
     private enum MeasureTarget: String, CaseIterable, Identifiable {
-        case point = "点", edge = "边", face = "面", pointFace = "点-面", angle = "角", body = "体", compound = "复合"
+        case point = "点", edge = "边", face = "面", pointFace = "点-面", pointEdge = "点-边", edgeFace = "边-面", angle = "角", body = "体", compound = "复合"
         var id: String { rawValue }
         var icon: String {
             switch self {
@@ -161,6 +161,8 @@ struct StudioScreen: View {
             case .edge: return "line.diagonal"
             case .face: return "square.on.square"
             case .pointFace: return "square.and.line.vertical.and.square"
+            case .pointEdge: return "ruler"
+            case .edgeFace: return "square.dashed"
             case .angle: return "angle"
             case .body: return "cube"
             case .compound: return "circle.grid.2x2"
@@ -1385,6 +1387,10 @@ struct StudioScreen: View {
                     miniNum("阵列 dy", $arrayDY)
                 }
                 Button("阵列内轮廓") { arrayInner() }
+                    .font(.system(size: 13, weight: .semibold))
+                Button("矩形阵列外轮廓为增料层") { arrayOuterAsBosses(circular: false) }
+                    .font(.system(size: 13, weight: .semibold))
+                Button("圆形阵列外轮廓为增料层") { arrayOuterAsBosses(circular: true) }
                     .font(.system(size: 13, weight: .semibold))
                 HStack(spacing: 6) {
                     Stepper("圆阵 \(arrayCount) 个", value: $arrayCount, in: 2...12)
@@ -2818,6 +2824,51 @@ struct StudioScreen: View {
             spec.nodes[i].x += dx / len * d
             spec.nodes[i].y += dy / len * d
         }
+    }
+
+    /// 外轮廓阵列：单实体不能出现多个独立外轮廓，所以把整圈外形复制成多个增料层。
+    /// 每个副本是一层可继续编辑的凸台，能参与建模/刀路，不是只画在草图里的假预览。
+    private func arrayOuterAsBosses(circular: Bool) {
+        let baseShape = PartShape(spec)
+        var copies: [PartStep] = []
+        if circular {
+            let n = max(2, arrayCount)
+            for i in 1..<n {
+                var s = PartStep()
+                s.name = "外轮廓圆阵\(i + 1)"
+                s.mode = .add
+                s.z0 = 0
+                s.height = 5
+                s.shape = baseShape
+                let a = Double(i) / Double(n) * 2 * Double.pi
+                s.shape.cx = arrayRadius * cos(a)
+                s.shape.cy = arrayRadius * sin(a)
+                copies.append(s)
+            }
+        } else {
+            let rows = max(1, arrayRows), cols = max(1, arrayCols)
+            for r in 0..<rows {
+                for c in 0..<cols where !(r == 0 && c == 0) {
+                    var s = PartStep()
+                    s.name = "外轮廓阵列\(r + 1)-\(c + 1)"
+                    s.mode = .add
+                    s.z0 = 0
+                    s.height = 5
+                    s.shape = baseShape
+                    s.shape.cx = arrayDX * Double(c)
+                    s.shape.cy = arrayDY * Double(r)
+                    copies.append(s)
+                }
+            }
+        }
+        guard !copies.isEmpty else {
+            showToastView("阵列行列/数量都为 1，没有可复制的轮廓")
+            return
+        }
+        pushUndo()
+        spec.steps.append(contentsOf: copies)
+        modelPanel = .steps
+        showToastView("已生成 \(copies.count) 个外轮廓增料层，可逐层改高度/轮廓")
     }
 
     private func arrayInner() {
@@ -5282,6 +5333,53 @@ struct StudioScreen: View {
                 pickedPoints = []; pickedFaces = []
                 measurePickHint = "点/面已清空；重新点一个点"
             }
+        case .pointEdge:
+            if pickedPoints.isEmpty {
+                let p = nearestModelPoint(cam, at: loc, basePts: basePts)
+                        ?? ModelPickPoint(x: xy.0, y: xy.1, z: z)
+                pickedPoints = [p]
+                pickedEdges = []; pickedFaces = []; pickedHole = nil
+                measurePickHint = "点已拾取 X\(ncf(p.x)) Y\(ncf(p.y)) Z\(ncf(p.z))；再点一条边"
+                showToastView("已拾取点")
+            } else if pickedEdges.isEmpty {
+                guard let edge else {
+                    measurePickHint = "没有拾取到边：点靠近外轮廓/台阶上沿"
+                    showToastView("未拾取到边")
+                    return
+                }
+                pickedEdges = [edge]
+                pickedFaces = []; pickedHole = nil
+                measurePickHint = "点-边已拾取；上面显示点到边的最短距离"
+                showToastView("已拾取边")
+            } else {
+                pickedPoints = []; pickedEdges = []
+                measurePickHint = "点/边已清空；重新点一个点"
+            }
+        case .edgeFace:
+            if pickedEdges.isEmpty {
+                guard let edge else {
+                    measurePickHint = "没有拾取到边：点靠近外轮廓/台阶上沿"
+                    showToastView("未拾取到边")
+                    return
+                }
+                pickedEdges = [edge]
+                pickedPoints = []; pickedFaces = []; pickedHole = nil
+                measurePickHint = "边已拾取；再点一个面"
+                showToastView("已拾取边")
+            } else if pickedFaces.isEmpty {
+                guard let face else {
+                    measurePickHint = "没有拾取到面：点在外轮廓/台阶顶面内部"
+                    showToastView("未拾取到面")
+                    return
+                }
+                pickedFaces = [face]
+                pickedPoints = []; pickedHole = nil
+                measurePickHint = "边-面已拾取；上面显示边到面所在平面的距离"
+                showToastView("已拾取面")
+            } else {
+                pickedEdges = []; pickedFaces = []
+                measurePickHint = "边/面已清空；重新点一条边"
+            }
         case .angle:
             let p = nearestModelPoint(cam, at: loc, basePts: basePts)
                     ?? ModelPickPoint(x: xy.0, y: xy.1, z: z)
@@ -5383,6 +5481,32 @@ struct StudioScreen: View {
             (Double(b.b.x), Double(b.b.y), b.zEnd))
     }
 
+    /// 点到线段的最短距离（3D，线段退化为点时也能算）
+    private func pointEdgeGap(_ p: ModelPickPoint, _ e: ModelPickEdge) -> Double {
+        segmentDistance3D(
+            (p.x, p.y, p.z), (p.x, p.y, p.z),
+            (Double(e.a.x), Double(e.a.y), e.z),
+            (Double(e.b.x), Double(e.b.y), e.zEnd))
+    }
+
+    /// 边到面所在平面的最短距离；边穿过平面时为 0。
+    /// 只按平面算，不参与面的有限边界，所以界面标“到面所在平面”。
+    private func edgeFaceGap(_ e: ModelPickEdge, _ f: ModelPickFace)
+        -> (distance: Double, crosses: Bool) {
+        let len = max(sqrt(f.nx * f.nx + f.ny * f.ny + f.nz * f.nz), 1e-9)
+        let nx = f.nx / len, ny = f.ny / len, nz = f.nz / len
+        let ax = Double(e.a.x) - Double(f.center.x)
+        let ay = Double(e.a.y) - Double(f.center.y)
+        let az = e.z - f.z
+        let bx = Double(e.b.x) - Double(f.center.x)
+        let by = Double(e.b.y) - Double(f.center.y)
+        let bz = e.zEnd - f.z
+        let da = ax * nx + ay * ny + az * nz
+        let db = bx * nx + by * ny + bz * nz
+        let crosses = da * db <= 0
+        return (crosses ? 0 : min(abs(da), abs(db)), crosses)
+    }
+
     private func edgeIsAmbiguous(_ cam: Cam, at loc: CGPoint) -> Bool {
         let ds = edgeCandidates(cam, at: loc).map { $0.1 }.filter { $0 <= pickTolerance }
         return ds.count > 1 && ds[1] - ds[0] < 3
@@ -5398,7 +5522,7 @@ struct StudioScreen: View {
         case .point: return 18
         case .edge: return 16
         case .angle: return 18
-        case .face, .pointFace, .body, .compound: return 22
+        case .face, .pointFace, .pointEdge, .edgeFace, .body, .compound: return 22
         }
     }
 
@@ -5577,6 +5701,25 @@ struct StudioScreen: View {
                         LabeledContent("点-面 Z 向距离", value: "\(ncf(abs(dz))) mm")
                         LabeledContent("点-面 XY 偏移", value: "\(ncf(planar)) mm")
                         LabeledContent("点投影到面", value: "X\(ncf(p.x)) Y\(ncf(p.y)) Z\(ncf(f.z))")
+                    }
+                    if measureTarget == .pointEdge, let p = pickedPoints.first, let e = pickedEdges.first {
+                        LabeledContent("点-边最短距离", value: "\(ncf(pointEdgeGap(p, e))) mm")
+                        LabeledContent("边长度", value: "\(ncf(edgeLength(e))) mm")
+                        LabeledContent("点坐标", value: "X\(ncf(p.x)) Y\(ncf(p.y)) Z\(ncf(p.z))")
+                        LabeledContent("边端点", value: "(X\(ncf(Double(e.a.x))) Y\(ncf(Double(e.a.y))) Z\(ncf(e.z))) → (X\(ncf(Double(e.b.x))) Y\(ncf(Double(e.b.y))) Z\(ncf(e.zEnd)))")
+                    }
+                    if measureTarget == .edgeFace, let e = pickedEdges.first, let f = pickedFaces.first {
+                        let m = edgeFaceGap(e, f)
+                        LabeledContent("边-面平面距离", value: "\(ncf(m.distance)) mm")
+                        if m.crosses {
+                            Text("边穿过该面所在平面，显示为 0；按平面算，未参与有限边界。")
+                                .font(.system(size: 9)).foregroundStyle(.orange)
+                        } else {
+                            Text("按面所在平面计算，未参与有限边界。")
+                                .font(.system(size: 9)).foregroundStyle(.secondary)
+                        }
+                        LabeledContent("面", value: "\(f.name) · Z\(ncf(f.z))")
+                        LabeledContent("边长度", value: "\(ncf(edgeLength(e))) mm")
                     }
                     if !pickedPoints.isEmpty {
                         ForEach(Array(pickedPoints.enumerated()), id: \.offset) { pair in
@@ -6736,6 +6879,27 @@ struct StudioScreen: View {
                          with: .color(.blue))
             }
             for f in pickedFaces {
+                let q = cam.p(Double(f.center.x), Double(f.center.y), f.z)
+                ctx.draw(Text("面 \(ncf(f.z))").font(.system(size: 9, weight: .semibold)).foregroundColor(.orange),
+                         at: CGPoint(x: q.x, y: q.y - 12))
+            }
+
+        case .pointEdge:
+            if let p = pickedPoints.first, let e = pickedEdges.first {
+                let q = cam.p(p.x, p.y, p.z)
+                let eq = cam.p(Double(e.a.x), Double(e.a.y), e.z)
+                ctx.draw(Text("点-边 \(ncf(pointEdgeGap(p, e))) mm")
+                            .font(.system(size: 9, weight: .semibold)).foregroundColor(.orange),
+                         at: CGPoint(x: q.x, y: min(q.y, eq.y) - 22))
+            }
+
+        case .edgeFace:
+            if let e = pickedEdges.first, let f = pickedFaces.first {
+                let m = edgeFaceGap(e, f)
+                let eq = cam.p(Double(e.a.x), Double(e.a.y), e.z)
+                ctx.draw(Text("边-面 \(ncf(m.distance)) mm")
+                            .font(.system(size: 9, weight: .semibold)).foregroundColor(.orange),
+                         at: CGPoint(x: eq.x, y: eq.y - 22))
                 let q = cam.p(Double(f.center.x), Double(f.center.y), f.z)
                 ctx.draw(Text("面 \(ncf(f.z))").font(.system(size: 9, weight: .semibold)).foregroundColor(.orange),
                          at: CGPoint(x: q.x, y: q.y - 12))

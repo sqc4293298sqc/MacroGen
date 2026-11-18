@@ -28,10 +28,43 @@ enum ProjectStore {
     static func load() -> PartSpec? {
         for url in [file, backup] {
             guard let data = try? Data(contentsOf: url),
-                  let spec = try? JSONDecoder().decode(PartSpec.self, from: data) else { continue }
+                  let spec = decodeSpec(data) else { continue }
             return spec
         }
         return nil
+    }
+
+    /// 旧工程兼容：新版本给 PartSpec 加了非可选字段，直接 decode 会整份失败。
+    /// 先尝试正常解码；失败时把当前默认工程 JSON 递归补齐到旧 JSON 缺失的键，再解码。
+    private static func decodeSpec(_ data: Data) -> PartSpec? {
+        if let spec = try? JSONDecoder().decode(PartSpec.self, from: data) {
+            return spec
+        }
+        guard let rawObject = try? JSONSerialization.jsonObject(with: data),
+              let raw = rawObject as? [String: Any],
+              let defaultsData = try? JSONEncoder().encode(PartSpec()),
+              let defaultsObject = try? JSONSerialization.jsonObject(with: defaultsData),
+              let defaults = defaultsObject as? [String: Any] else {
+            return nil
+        }
+        let merged = mergeDefaults(defaults, raw)
+        guard let mergedData = try? JSONSerialization.data(withJSONObject: merged) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(PartSpec.self, from: mergedData)
+    }
+
+    /// 用当前默认值补齐旧 JSON 的顶层/嵌套字典缺失键；已有值一律保留。
+    private static func mergeDefaults(_ defaults: [String: Any], _ old: [String: Any]) -> [String: Any] {
+        var out = defaults
+        for (key, value) in old {
+            if let base = out[key] as? [String: Any], let nested = value as? [String: Any] {
+                out[key] = mergeDefaults(base, nested)
+            } else {
+                out[key] = value
+            }
+        }
+        return out
     }
 
     static func clear() {
