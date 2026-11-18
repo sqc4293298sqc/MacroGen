@@ -10,6 +10,8 @@ struct SimScreen: View {
     @State private var playing = false
     @State private var speed: Double = 1
     @State private var iso = true
+    @State private var layerZ: Double = 0
+    @State private var layered = false
     @State private var timer: Timer? = nil
 
     private var curIndex: Int { indexAt(progress) }
@@ -17,7 +19,8 @@ struct SimScreen: View {
     var body: some View {
         VStack(spacing: 8) {
             SimCanvas(path: path, progress: progress, iso: iso,
-                      toolDia: spec?.toolDia ?? 6)
+                      toolDia: spec?.toolDia ?? 6,
+                      layerZ: (!iso && layered) ? layerZ : nil)
 
             HStack(spacing: 0) {
                 dro("X", value: curPoint.x)
@@ -36,6 +39,20 @@ struct SimScreen: View {
             Slider(value: $progress, in: 0...max(1, path.maxLen), onEditingChanged: { _ in
                 stop()
             })
+
+            if !iso {
+                HStack(spacing: 6) {
+                    Toggle("分层", isOn: $layered)
+                        .font(.system(size: 11))
+                        .fixedSize()
+                    Text("看层 Z \(ncf(layerZ))")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                    Slider(value: $layerZ, in: layerRange)
+                }
+                .padding(.horizontal, 2)
+            }
 
             HStack(spacing: 6) {
                 btn(playing ? "暂停" : "播放", accent: true) { playing ? stop() : play() }
@@ -65,6 +82,7 @@ struct SimScreen: View {
         .onAppear {
             path = MacroInterp.run(code)
             progress = 0
+            layerZ = min(0, path.maxZ)
         }
         .onDisappear { stop() }
     }
@@ -93,6 +111,12 @@ struct SimScreen: View {
 
     private var speedText: String {
         speed == 0.5 ? "0.5×" : "\(Int(speed))×"
+    }
+
+    private var layerRange: ClosedRange<Double> {
+        let lo = min(path.minZ, 0)
+        let hi = max(path.maxZ, lo + 0.1)
+        return lo...hi
     }
 
     private func indexAt(_ d: Double) -> Int {
@@ -206,6 +230,8 @@ struct SimCanvas: View {
     let progress: Double
     let iso: Bool
     var toolDia: Double = 6
+    /// 非 nil 时只显示“切到该 Z 层及更深”的材料去除；nil = 全部刀路
+    var layerZ: Double? = nil
 
     // 双指缩放 + 拖动平移
     @State private var zoom: CGFloat = 1
@@ -276,6 +302,7 @@ struct SimCanvas: View {
                     let b = path.pts[k]
                     let walkedYet = (path.dist[safe: k] ?? 0) <= progress
                     guard walkedYet, !b.rapid else { continue }
+                    if let lz = layerZ, b.z > lz + 0.01 { continue }
                     let q = project(b.x, b.y, b.z)
                     if r <= 1 {
                         ctx.fill(Path(ellipseIn: CGRect(x: q.x - 1, y: q.y - 1, width: 2, height: 2)),
@@ -285,10 +312,11 @@ struct SimCanvas: View {
                                  with: .color(Color(white: 0.97)))
                     }
                 }
-                ctx.draw(Text("材料去除（2.5D 近似）")
+                let layerNote = layerZ.map { " · Z\(ncf($0))" } ?? ""
+                ctx.draw(Text("材料去除（2.5D 分层近似\(layerNote)）")
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundColor(.secondary),
-                         at: CGPoint(x: min(stockRect.minX + 58, stockRect.maxX - 58), y: stockRect.minY + 10))
+                         at: CGPoint(x: min(stockRect.minX + 76, stockRect.maxX - 76), y: stockRect.minY + 10))
             }
 
             // 性能：分段合批 + 按屏幕距离抽稀，几千个点也只发十几次 stroke

@@ -303,6 +303,11 @@ struct PartSpec: Equatable, Codable {
     /// 2.5D 轮廓倒角近似：沿外形顶边走一刀，不生成真实斜面
     var doChamfer = false
     var chamferSize: Double = 1
+    /// 残料清角 / 二次开粗：大刀粗加工后，用小刀沿同一轮廓补一圈。
+    /// 2.5D 近似，不生成真实残料实体。
+    var doRest = false
+    var restTool: Int = 6
+    var restDia: Double = 3
 
     // 孔加工方式
     var holeMode: HoleMode = .spiral
@@ -574,6 +579,14 @@ enum PartProg {
                 zRange: "Z0 → Z\(ncf(-p.chamferSize))",
                 status: status("chamfer")))
         }
+        if p.doRest {
+            out.append(PartOpInfo(
+                id: "rest", title: "残料清角", kind: "二次开粗（2.5D 近似）",
+                geometry: "基础外形 + 增料台阶，小刀沿轮廓补一圈",
+                tool: p.restTool, dia: p.restDia, spindle: p.spindle, feed: p.feed,
+                zRange: "Z\(ncf(maxZv)) → Z\(ncf(minZv))",
+                status: status("rest")))
+        }
         for s in p.steps {
             let zr = "Z\(ncf(s.drawTop)) → Z\(ncf(s.drawBottom))"
             if s.mode == .add {
@@ -813,6 +826,13 @@ enum PartProg {
             let pts = offsetClosed(pts(p), by: p.contourDia / 2)
             line(pts, z: 0, cut: true)
         }
+        if p.doRest && enabled("rest") {
+            line(offsetClosed(pts(p), by: p.restDia / 2), z: 0, cut: true)
+            for s in p.steps where s.mode == .add {
+                let pts = shapePoints(s.shape, p, depth: max(s.height, 0.1))
+                line(offsetClosed(pts, by: p.restDia / 2), z: s.z1, cut: true)
+            }
+        }
 
         for f in p.feats where !f.suppressed {
             let id = "feat-\(f.id.uuidString)"
@@ -1042,6 +1062,12 @@ enum PartProg {
                 if f.depth > available { out.append("特征 \(i + 1)：方腔深度超过该处可用厚度 \(ncf(available))") }
             }
         }
+        if p.doRest {
+            if p.restDia <= 0 { out.append("残料清角刀径要大于 0") }
+            if p.restDia >= p.contourDia {
+                out.append("残料清角刀径 Ø\(ncf(p.restDia)) 不小于轮廓/开粗刀径 Ø\(ncf(p.contourDia))：清不到残料")
+            }
+        }
         out.append(contentsOf: collisionIssues(p))
         return out
     }
@@ -1057,7 +1083,7 @@ enum PartProg {
         }
         let tools = [(p.faceTool, p.faceDia), (p.contourTool, p.contourDia),
                      (p.holeTool, p.holeDia), (p.pocketTool, p.pocketDia),
-                     (p.tapTool, p.tapDia)]
+                     (p.tapTool, p.tapDia), (p.restTool, p.restDia)]
         var seen: [Int: Double] = [:]
         for (t, d) in tools where t > 0 {
             if let old = seen[t], abs(old - d) > 0.01 {
@@ -1075,6 +1101,30 @@ enum PartProg {
             }
         }
         return out
+    }
+
+    /// 残料清角 / 二次开粗：用小刀沿基础外形和增料台阶再走一圈。
+    /// 这是 2.5D 轮廓补刀，不是按前一把刀真实残料模型生成的清角。
+    static func restBlock(_ p: PartSpec) -> String {
+        var pieces: [String] = []
+        func addPiece(_ d: DrawSpec) {
+            var d = d
+            d.stepDown = min(max(p.stepDown, 0.5), max(0.5, p.restDia * 1.2))
+            d.feed = Double(p.feed)
+            d.rpm = Double(p.spindle)
+            let code = ContourProg.generate(d)
+            let body = strip(code)
+            if !body.isEmpty { pieces.append("( 残料清角 T\(p.restTool) D\(ncf(p.restDia)) )\n" + body) }
+        }
+        var base = asDraw(p, outward: true, dia: p.restDia, depth: p.height, hNo: p.restTool)
+        base.zTop = 0
+        addPiece(base)
+        for s in p.steps.filter({ $0.mode == .add }).sorted(by: { $0.z1 > $1.z1 }) {
+            let d = asDraw(s.shape, p, outward: true, dia: p.restDia,
+                          depth: max(s.height, 0.1), hNo: p.restTool, zTop: s.z1)
+            addPiece(d)
+        }
+        return pieces.joined(separator: "\n")
     }
 
     /// 把所有工序串成一个程序：共用一段抬头，每段自己带换刀后要用的 G43 H、S、F
@@ -1169,6 +1219,10 @@ enum PartProg {
             cd.zTop = 0
             add("轮廓倒角 C\(ncf(p.chamferSize))（2.5D 近似，只对基础外形） T\(p.contourTool) D\(ncf(p.contourDia))",
                 p.contourTool, ContourProg.generate(cd), id: "chamfer")
+        }
+        if p.doRest && wanted("rest") {
+            add("残料清角 / 二次开粗（2.5D 近似） T\(p.restTool) D\(ncf(p.restDia))",
+                p.restTool, restBlock(p), id: "rest")
         }
 
         for f in p.feats where !f.suppressed {

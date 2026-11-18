@@ -153,7 +153,7 @@ struct StudioScreen: View {
     }
 
     private enum MeasureTarget: String, CaseIterable, Identifiable {
-        case point = "点", edge = "边", face = "面", pointFace = "点-面", pointEdge = "点-边", edgeFace = "边-面", angle = "角", body = "体", compound = "复合"
+        case point = "点", edge = "边", face = "面", pointFace = "点-面", pointEdge = "点-边", edgeFace = "边-面", circle = "圆/弧", angle = "角", body = "体", compound = "复合"
         var id: String { rawValue }
         var icon: String {
             switch self {
@@ -163,6 +163,7 @@ struct StudioScreen: View {
             case .pointFace: return "square.and.line.vertical.and.square"
             case .pointEdge: return "ruler"
             case .edgeFace: return "square.dashed"
+            case .circle: return "circle"
             case .angle: return "angle"
             case .body: return "cube"
             case .compound: return "circle.grid.2x2"
@@ -189,6 +190,8 @@ struct StudioScreen: View {
         var nx: Double = 0
         var ny: Double = 0
         var nz: Double = 1
+        /// 面的真实边界多边形（模型坐标）；空 = 只按无限平面算
+        var boundary: [ModelPickPoint] = []
     }
 
     private struct ModelPickHole: Identifiable, Equatable {
@@ -5093,7 +5096,8 @@ struct StudioScreen: View {
         if PartProg.pointIn(basePts, xy.0, xy.1) {
             best = ModelPickFace(id: "base-face", name: "基础顶面", z: 0,
                                  area: abs(ContourGeo.signedArea(basePts)),
-                                 center: centroid(basePts))
+                                 center: centroid(basePts),
+                                 boundary: basePts.map { ModelPickPoint(x: Double($0.x), y: Double($0.y), z: 0) })
         }
         for s in spec.steps {
             let pts = PartProg.pts(s, spec)
@@ -5102,7 +5106,8 @@ struct StudioScreen: View {
                 best = ModelPickFace(id: "step-\(s.id.uuidString)",
                                      name: "\(s.name) 顶面", z: s.drawTop,
                                      area: abs(ContourGeo.signedArea(pts)),
-                                     center: centroid(pts))
+                                     center: centroid(pts),
+                                     boundary: pts.map { ModelPickPoint(x: Double($0.x), y: Double($0.y), z: s.drawTop) })
             }
         }
         return best
@@ -5115,10 +5120,12 @@ struct StudioScreen: View {
         // 基础底面按外轮廓投影判断，不用圆近似。
         let poly = PartProg.pts(spec).map { cam.p(Double($0.x), Double($0.y), bottom) }
         guard pointInScreenPolygon(loc, poly) else { return nil }
+        let basePts = PartProg.pts(spec)
         return ModelPickFace(id: "base-bottom", name: "基础底面", z: bottom,
-                             area: abs(ContourGeo.signedArea(PartProg.pts(spec))),
-                             center: centroid(PartProg.pts(spec)),
-                             nx: 0, ny: 0, nz: -1)
+                             area: abs(ContourGeo.signedArea(basePts)),
+                             center: centroid(basePts),
+                             nx: 0, ny: 0, nz: -1,
+                             boundary: basePts.map { ModelPickPoint(x: Double($0.x), y: Double($0.y), z: bottom) })
     }
 
     private func sideFaceAt(_ cam: Cam, at loc: CGPoint) -> ModelPickFace? {
@@ -5145,7 +5152,13 @@ struct StudioScreen: View {
                                       z: (top + bottom) / 2,
                                       area: len * (top - bottom),
                                       center: CGPoint(x: mx, y: my),
-                                      nx: nx, ny: ny, nz: 0)
+                                      nx: nx, ny: ny, nz: 0,
+                                      boundary: [
+                                        ModelPickPoint(x: Double(a.x), y: Double(a.y), z: top),
+                                        ModelPickPoint(x: Double(b.x), y: Double(b.y), z: top),
+                                        ModelPickPoint(x: Double(b.x), y: Double(b.y), z: bottom),
+                                        ModelPickPoint(x: Double(a.x), y: Double(a.y), z: bottom)
+                                      ])
                 if best == nil || d < best!.1 { best = (f, d) }
             }
         }
@@ -5380,6 +5393,27 @@ struct StudioScreen: View {
                 pickedEdges = []; pickedFaces = []
                 measurePickHint = "边/面已清空；重新点一条边"
             }
+        case .circle:
+            if let h = hole, (!h.isPocket || abs(h.w - h.h) < 0.01) {
+                pickedHole = h
+                pickedPoints = []; pickedEdges = []; pickedFaces = []
+                measurePickHint = "圆已拾取 Ø\(ncf(h.dia))；结果区显示半径 R\(ncf(h.dia / 2))"
+                showToastView("已拾取圆")
+            } else if spec.template == .circle {
+                let c = centroid(basePts)
+                let h = ModelPickHole(id: "base-circle", name: "基础圆",
+                                      x: Double(c.x), y: Double(c.y), z: 0,
+                                      dia: spec.circleD, depth: 0, through: true,
+                                      isPocket: false, w: spec.circleD, h: spec.circleD,
+                                      bottomZ: PartProg.minZ(spec), onBottom: false)
+                pickedHole = h
+                pickedPoints = []; pickedEdges = []; pickedFaces = []
+                measurePickHint = "基础圆 Ø\(ncf(h.dia))；结果区显示半径 R\(ncf(h.dia / 2))"
+                showToastView("已拾取基础圆")
+            } else {
+                measurePickHint = "没有拾取到圆：点圆孔、圆腔或圆形内轮廓"
+                showToastView("未拾取到圆")
+            }
         case .angle:
             let p = nearestModelPoint(cam, at: loc, basePts: basePts)
                     ?? ModelPickPoint(x: xy.0, y: xy.1, z: z)
@@ -5437,6 +5471,13 @@ struct StudioScreen: View {
         sqrt(dot3(a, a))
     }
 
+    private func cross3(_ a: (Double, Double, Double),
+                        _ b: (Double, Double, Double)) -> (Double, Double, Double) {
+        (a.1 * b.2 - a.2 * b.1,
+         a.2 * b.0 - a.0 * b.2,
+         a.0 * b.1 - a.1 * b.0)
+    }
+
     private func add3(_ a: (Double, Double, Double), _ b: (Double, Double, Double), _ s: Double = 1) -> (Double, Double, Double) {
         (a.0 + b.0 * s, a.1 + b.1 * s, a.2 + b.2 * s)
     }
@@ -5489,22 +5530,100 @@ struct StudioScreen: View {
             (Double(e.b.x), Double(e.b.y), e.zEnd))
     }
 
-    /// 边到面所在平面的最短距离；边穿过平面时为 0。
-    /// 只按平面算，不参与面的有限边界，所以界面标“到面所在平面”。
+    private func faceNormal(_ f: ModelPickFace) -> (Double, Double, Double) {
+        let l = max(sqrt(f.nx * f.nx + f.ny * f.ny + f.nz * f.nz), 1e-9)
+        return (f.nx / l, f.ny / l, f.nz / l)
+    }
+
+    /// 以面边界第一条边为 u 轴，建立面内的二维坐标；没有边界时返回 nil。
+    private func faceBasis(_ f: ModelPickFace)
+        -> (n: (Double, Double, Double), u: (Double, Double, Double),
+           v: (Double, Double, Double), origin: (Double, Double, Double))? {
+        guard f.boundary.count >= 3 else { return nil }
+        let n = faceNormal(f)
+        let p0 = (f.boundary[0].x, f.boundary[0].y, f.boundary[0].z)
+        let p1 = (f.boundary[1].x, f.boundary[1].y, f.boundary[1].z)
+        let e = sub3(p1, p0)
+        let el = len3(e)
+        guard el > 1e-9 else { return nil }
+        let u = (e.0 / el, e.1 / el, e.2 / el)
+        let v = cross3(n, u)
+        return (n, u, v, p0)
+    }
+
+    private func pointInFaceBoundary(_ p: (Double, Double, Double),
+                                     _ f: ModelPickFace,
+                                     _ basis: (n: (Double, Double, Double),
+                                               u: (Double, Double, Double),
+                                               v: (Double, Double, Double),
+                                               origin: (Double, Double, Double))?) -> Bool {
+        guard f.boundary.count >= 3, let basis else { return true }
+        let rel = sub3(p, basis.origin)
+        let q = CGPoint(x: CGFloat(dot3(rel, basis.u)), y: CGFloat(dot3(rel, basis.v)))
+        let poly = f.boundary.map { pt -> CGPoint in
+            let r = (pt.x - basis.origin.0, pt.y - basis.origin.1, pt.z - basis.origin.2)
+            return CGPoint(x: CGFloat(dot3(r, basis.u)), y: CGFloat(dot3(r, basis.v)))
+        }
+        return pointInScreenPolygon(q, poly)
+    }
+
+    /// 点到面的最短距离：优先用真实边界；没有边界才退回无限平面。
+    private func pointFaceGap(_ p: ModelPickPoint, _ f: ModelPickFace)
+        -> (distance: Double, finite: Bool) {
+        let n = faceNormal(f)
+        let delta = (p.x - Double(f.center.x), p.y - Double(f.center.y), p.z - f.z)
+        let signed = dot3(delta, n)
+        let planeD = abs(signed)
+        let basis = faceBasis(f)
+        guard f.boundary.count >= 3, let basis else { return (planeD, false) }
+        let proj = (p.x - n.0 * signed, p.y - n.1 * signed, p.z - n.2 * signed)
+        if pointInFaceBoundary(proj, f, basis) { return (planeD, true) }
+        var best = Double.greatestFiniteMagnitude
+        for i in f.boundary.indices {
+            let a = f.boundary[i]
+            let b = f.boundary[(i + 1) % f.boundary.count]
+            let d = segmentDistance3D(
+                (p.x, p.y, p.z), (p.x, p.y, p.z),
+                (a.x, a.y, a.z), (b.x, b.y, b.z))
+            best = min(best, d)
+        }
+        return (best.isFinite ? best : planeD, true)
+    }
+
+    /// 边到面（有限边界）的最短距离；没有边界时退回面所在平面。
     private func edgeFaceGap(_ e: ModelPickEdge, _ f: ModelPickFace)
-        -> (distance: Double, crosses: Bool) {
-        let len = max(sqrt(f.nx * f.nx + f.ny * f.ny + f.nz * f.nz), 1e-9)
-        let nx = f.nx / len, ny = f.ny / len, nz = f.nz / len
-        let ax = Double(e.a.x) - Double(f.center.x)
-        let ay = Double(e.a.y) - Double(f.center.y)
-        let az = e.z - f.z
-        let bx = Double(e.b.x) - Double(f.center.x)
-        let by = Double(e.b.y) - Double(f.center.y)
-        let bz = e.zEnd - f.z
-        let da = ax * nx + ay * ny + az * nz
-        let db = bx * nx + by * ny + bz * nz
+        -> (distance: Double, crosses: Bool, finite: Bool) {
+        let n = faceNormal(f)
+        let a = (Double(e.a.x), Double(e.a.y), e.z)
+        let b = (Double(e.b.x), Double(e.b.y), e.zEnd)
+        let c = (Double(f.center.x), Double(f.center.y), f.z)
+        let da = dot3(sub3(a, c), n)
+        let db = dot3(sub3(b, c), n)
         let crosses = da * db <= 0
-        return (crosses ? 0 : min(abs(da), abs(db)), crosses)
+        guard f.boundary.count >= 3, let basis = faceBasis(f) else {
+            return (crosses ? 0 : min(abs(da), abs(db)), crosses, false)
+        }
+        if crosses {
+            let denom = da - db
+            if abs(denom) > 1e-9 {
+                let t = da / denom
+                let hit = add3(a, sub3(b, a), t)
+                if pointInFaceBoundary(hit, f, basis) { return (0, true, true) }
+            }
+        }
+        var best = Double.greatestFiniteMagnitude
+        let pa = (a.0 - n.0 * da, a.1 - n.1 * da, a.2 - n.2 * da)
+        let pb = (b.0 - n.0 * db, b.1 - n.1 * db, b.2 - n.2 * db)
+        if pointInFaceBoundary(pa, f, basis) { best = min(best, abs(da)) }
+        if pointInFaceBoundary(pb, f, basis) { best = min(best, abs(db)) }
+        for i in f.boundary.indices {
+            let q1 = f.boundary[i]
+            let q2 = f.boundary[(i + 1) % f.boundary.count]
+            let d = segmentDistance3D(a, b, (q1.x, q1.y, q1.z), (q2.x, q2.y, q2.z))
+            best = min(best, d)
+        }
+        if !best.isFinite { best = min(abs(da), abs(db)) }
+        return (best, false, true)
     }
 
     private func edgeIsAmbiguous(_ cam: Cam, at loc: CGPoint) -> Bool {
@@ -5522,7 +5641,7 @@ struct StudioScreen: View {
         case .point: return 18
         case .edge: return 16
         case .angle: return 18
-        case .face, .pointFace, .pointEdge, .edgeFace, .body, .compound: return 22
+        case .face, .pointFace, .pointEdge, .edgeFace, .circle, .body, .compound: return 22
         }
     }
 
@@ -5698,6 +5817,10 @@ struct StudioScreen: View {
                        let f = pickedFaces.first {
                         let dz = p.z - f.z
                         let planar = hypot(p.x - Double(f.center.x), p.y - Double(f.center.y))
+                        let shortest = pointFaceGap(p, f)
+                        LabeledContent("点-面最短距离", value: "\(ncf(shortest.distance)) mm")
+                        Text(shortest.finite ? "按面的有限边界计算。" : "没有面边界，按无限平面计算。")
+                            .font(.system(size: 9)).foregroundStyle(shortest.finite ? Color.secondary : Color.orange)
                         LabeledContent("点-面 Z 向距离", value: "\(ncf(abs(dz))) mm")
                         LabeledContent("点-面 XY 偏移", value: "\(ncf(planar)) mm")
                         LabeledContent("点投影到面", value: "X\(ncf(p.x)) Y\(ncf(p.y)) Z\(ncf(f.z))")
@@ -5710,13 +5833,13 @@ struct StudioScreen: View {
                     }
                     if measureTarget == .edgeFace, let e = pickedEdges.first, let f = pickedFaces.first {
                         let m = edgeFaceGap(e, f)
-                        LabeledContent("边-面平面距离", value: "\(ncf(m.distance)) mm")
+                        LabeledContent(m.finite ? "边-面最短距离" : "边-面平面距离", value: "\(ncf(m.distance)) mm")
                         if m.crosses {
-                            Text("边穿过该面所在平面，显示为 0；按平面算，未参与有限边界。")
+                            Text("边穿过该面，距离按 0 处理。")
                                 .font(.system(size: 9)).foregroundStyle(.orange)
                         } else {
-                            Text("按面所在平面计算，未参与有限边界。")
-                                .font(.system(size: 9)).foregroundStyle(.secondary)
+                            Text(m.finite ? "按面的有限边界计算。" : "没有面边界，按无限平面计算。")
+                                .font(.system(size: 9)).foregroundStyle(m.finite ? Color.secondary : Color.orange)
                         }
                         LabeledContent("面", value: "\(f.name) · Z\(ncf(f.z))")
                         LabeledContent("边长度", value: "\(ncf(edgeLength(e))) mm")
@@ -5761,6 +5884,10 @@ struct StudioScreen: View {
                         LabeledContent(h.onBottom ? "底面中心" : "中心 / 顶面",
                                        value: "X\(ncf(h.x)) Y\(ncf(h.y)) Z\(ncf(h.onBottom ? h.bottomZ : h.z))")
                         LabeledContent(h.isPocket ? "外形尺寸" : "直径", value: "\(ncf(h.dia)) mm")
+                        if measureTarget == .circle {
+                            LabeledContent("半径 R", value: "\(ncf(h.dia / 2)) mm")
+                            LabeledContent("圆心", value: "X\(ncf(h.x)) Y\(ncf(h.y)) Z\(ncf(h.z))")
+                        }
                         LabeledContent("深度", value: h.through ? "通孔 / 通腔" : "\(ncf(h.depth)) mm")
                         LabeledContent("底 Z", value: "Z\(ncf(h.bottomZ))")
                     }
@@ -6905,6 +7032,19 @@ struct StudioScreen: View {
                          at: CGPoint(x: q.x, y: q.y - 12))
             }
 
+        case .circle:
+            if let h = pickedHole {
+                let hz = h.onBottom ? h.bottomZ : h.z
+                let q = cam.p(h.x, h.y, hz)
+                let edge = cam.p(h.x + h.dia / 2, h.y, hz)
+                let r = max(8, abs(Double(edge.x - q.x)))
+                ctx.stroke(Path(ellipseIn: CGRect(x: q.x - r, y: q.y - r, width: r * 2, height: r * 2)),
+                           with: .color(.orange), lineWidth: 2.6)
+                ctx.draw(Text("R\(ncf(h.dia / 2))  Ø\(ncf(h.dia))")
+                            .font(.system(size: 9, weight: .semibold)).foregroundColor(.orange),
+                         at: CGPoint(x: q.x, y: q.y - r - 12))
+            }
+
         case .angle:
             for (i, p) in pickedPoints.enumerated() {
                 let q = cam.p(p.x, p.y, p.z)
@@ -7813,6 +7953,16 @@ struct StudioScreen: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 HStack {
+                    Toggle("残料清角 / 二次开粗（2.5D 近似）", isOn: $spec.doRest)
+                        .font(.system(size: 12))
+                    Spacer()
+                }
+                if spec.doRest {
+                    toolRow("残料", $spec.restTool, $spec.restDia)
+                    Text("用小刀沿基础外形和增料台阶再走一圈；不是按前一把刀真实残料模型生成。小刀径应小于轮廓/开粗刀径。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                HStack {
                     Toggle("螺旋铣", isOn: Binding(get: { spec.doHole && spec.holeMode == .spiral },
                                                 set: { v in
                                                     spec.doHole = v && hasHole
@@ -8023,6 +8173,7 @@ struct StudioScreen: View {
                 toolRow("轮廓", $spec.contourTool, $spec.contourDia)
                 toolRow("孔", $spec.holeTool, $spec.holeDia)
                 toolRow("型腔", $spec.pocketTool, $spec.pocketDia)
+                toolRow("残料", $spec.restTool, $spec.restDia)
                 toolRow("攻丝", $spec.tapTool, $spec.tapDia)
                 Text("上面是当前工序用的 T/D；下面的刀具库是常用刀具表，换工程也保留。")
                     .font(.caption).foregroundStyle(.secondary)
