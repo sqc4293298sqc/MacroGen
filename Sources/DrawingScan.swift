@@ -402,7 +402,7 @@ enum DrawingScanner {
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = false
         request.recognitionLanguages = ["zh-Hans", "en-US"]
-        request.minimumTextHeight = minHeight
+        request.minimumTextHeight = Float(minHeight)
 
         let handler = VNImageRequestHandler(cgImage: cg, orientation: .up, options: [:])
         do {
@@ -411,7 +411,7 @@ enum DrawingScanner {
             return []
         }
         let observations = (request.results as? [VNRecognizedTextObservation]) ?? []
-        return observations.compactMap { obs in
+        return observations.compactMap { obs -> ScanTextLine? in
             guard let candidate = obs.topCandidates(1).first else { return nil }
             let b = obs.boundingBox
             // 分块坐标（Vision 原点左下）→ 整图归一化坐标（原点左下）
