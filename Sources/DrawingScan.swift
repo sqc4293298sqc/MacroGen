@@ -80,7 +80,7 @@ enum DrawingScanner {
     private struct ScanTextLine {
         var text: String
         var rect: CGRect
-        var confidence: Float
+        var confidence: CGFloat
     }
 
     private static func scanSync(_ image: UIImage) throws -> DrawingScanResult {
