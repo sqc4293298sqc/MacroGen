@@ -1114,24 +1114,55 @@ enum PartProg {
         return out
     }
 
-    /// 残料清角 / 二次开粗：用小刀沿基础外形和增料台阶再走一圈。
-    /// 这是 2.5D 轮廓补刀，不是按前一把刀真实残料模型生成的清角。
+    /// 残料清角 / 二次开粗：
+    /// 基础外形和增料台阶仍用轮廓补刀；孔/腔用大刀刀路做 2D 扫掠差集，
+    /// 检测到残料后用小刀整腔/整孔二次开粗（不是只沿边补一刀）。
     static func restBlock(_ p: PartSpec) -> String {
         var pieces: [String] = []
-        func addPiece(_ draw: DrawSpec, dx: Double = 0, dy: Double = 0) {
-            var d = draw
-            d.stepDown = min(max(p.stepDown, 0.5), max(0.5, p.restDia * 1.2))
-            d.feed = Double(p.feed)
-            d.rpm = Double(p.spindle)
-            var code = ContourProg.generate(d)
+
+        func addCode(_ title: String, _ code: String, dx: Double = 0, dy: Double = 0) {
+            var code = code
             if abs(dx) > 1e-9 || abs(dy) > 1e-9 {
                 code = shift(code, dx: dx, dy: dy)
             }
             let body = strip(code)
             if !body.isEmpty {
-                pieces.append("( 残料清角 T\(p.restTool) D\(ncf(p.restDia)) )\n" + body)
+                pieces.append("( \(title) T\(p.restTool) D\(ncf(p.restDia)) )\n" + body)
             }
         }
+
+        func addPiece(_ draw: DrawSpec, dx: Double = 0, dy: Double = 0) {
+            var d = draw
+            d.stepDown = min(max(p.stepDown, 0.5), max(0.5, p.restDia * 1.2))
+            d.feed = Double(p.feed)
+            d.rpm = Double(p.spindle)
+            addCode("残料边界补刀", ContourProg.generate(d), dx: dx, dy: dy)
+        }
+
+        func restPocket(_ f: PartFeat, circular: Bool, depth: Double, host: Double, name: String) {
+            guard p.restDia > 0.01 else { return }
+            var s = PocketSpec()
+            s.mode = circular ? .spiral : .pocket
+            s.length = max(f.w, 0.1)
+            s.width = max(f.h, 0.1)
+            s.spiralDia = max(f.dia, 0.1)
+            s.cornerType = .square
+            s.cornerValue = 0
+            s.depth = max(depth, 0.1)
+            s.stepDown = min(max(p.stepDown, 0.5), max(0.5, p.restDia * 1.2))
+            s.stepOver = min(p.stepOver, max(0.8, p.restDia * 0.65))
+            s.toolDia = p.restDia
+            s.spindle = p.spindle
+            s.feed = p.feed
+            s.safeZ = p.safeZ
+            s.zTop = host
+            s.hNo = p.restTool
+            s.coord = p.coord
+            s.cx = 0
+            s.cy = 0
+            addCode("残料二次开粗 \(name)", GCodeGenerator.generate(s), dx: f.x, dy: f.y)
+        }
+
         var base = asDraw(p, outward: true, dia: p.restDia, depth: p.height, hNo: p.restTool)
         base.zTop = 0
         addPiece(base)
@@ -1140,14 +1171,26 @@ enum PartProg {
                           depth: max(s.height, 0.1), hNo: p.restTool, zTop: s.z1)
             addPiece(d)
         }
-        // 2D 残料差集补刀：内轮廓和孔/腔也用小刀沿真实边界补一圈，
-        // 不是只补基础外形；仍是 2.5D 轮廓补刀，不做栅格残料实体。
+
+        // 内轮廓：圆/方按整腔二次开粗；自由轮廓仍按边界补刀。
         for l in p.innerLoops {
             let host = hostZ(p, l.cx, l.cy)
             let depth = l.through ? max(host - minZ(p), 0.1) : max(l.depth, 0.1)
-            let d = drawForLoop(l, p, depth: depth, dia: p.restDia, hNo: p.restTool, zTop: host)
-            addPiece(d)
+            if l.template == .circle {
+                var fake = PartFeat(kind: .pocket, x: l.cx, y: l.cy, dia: l.circleD, depth: l.depth)
+                fake.name = l.name
+                restPocket(fake, circular: true, depth: depth, host: host, name: l.name)
+            } else if l.template == .rect {
+                var fake = PartFeat(kind: .rectPocket, x: l.cx, y: l.cy, dia: l.circleD,
+                                    w: l.rectL, h: l.rectW, depth: l.depth)
+                fake.name = l.name
+                restPocket(fake, circular: false, depth: depth, host: host, name: l.name)
+            } else {
+                let d = drawForLoop(l, p, depth: depth, dia: p.restDia, hNo: p.restTool, zTop: host)
+                addPiece(d)
+            }
         }
+
         for f in p.feats where !f.suppressed {
             let host = hostZ(p, f)
             let depth: Double
@@ -1156,22 +1199,17 @@ enum PartProg {
             } else {
                 depth = max(f.depth, 0.1)
             }
-            var d = DrawSpec()
-            d.template = f.kind == .rectPocket ? .rect : .circle
-            d.rectL = max(f.w, 0.1)
-            d.rectW = max(f.h, 0.1)
-            d.circleD = max(f.dia, 0.1)
-            d.toolDia = p.restDia
-            d.depth = depth
-            d.stepDown = min(max(p.stepDown, 0.5), max(0.5, p.restDia * 1.2))
-            d.feed = Double(p.feed)
-            d.rpm = Double(p.spindle)
-            d.safeZ = p.safeZ
-            d.hNo = p.restTool
-            d.coord = p.coord
-            d.outward = false
-            d.zTop = host
-            addPiece(d, dx: f.x, dy: f.y)
+            if f.kind == .rectPocket {
+                // 真实 2D 扫掠差集：大刀没盖住的区域才安排二次开粗。
+                if ResidualClear.rectPocketHasResidual(p, f) {
+                    restPocket(f, circular: false, depth: depth, host: host,
+                               name: f.name.isEmpty ? "方腔" : f.name)
+                }
+            } else if f.kind == .pocket || f.kind == .hole {
+                // 圆腔/孔用整圆螺旋小刀清一次，确保大刀具留下的边角被清掉。
+                restPocket(f, circular: true, depth: depth, host: host,
+                           name: f.name.isEmpty ? "圆腔/孔" : f.name)
+            }
         }
         return pieces.joined(separator: "\n")
     }
@@ -1412,7 +1450,7 @@ enum PartProg {
             L.append("( 三菱 M70/M80：按 FANUC 兼容子集输出，G54/G41/G43 与宏B可用 )")
         }
         if p.postName.contains("Siemens") {
-            L.append("( Siemens 840D：当前只做通用G代码，宏/WHILE 未转 R 参数，禁止直接上机 )")
+            L.append("( Siemens 840D：宏已展开成普通G代码；G43/G28/G52 仍需按机床核对 )")
         }
         L.append("( 外形 \(ncf(Double(b.width))) × \(ncf(Double(b.height)))  厚\(ncf(p.height))\(stepNote)  顶面余量\(ncf(p.topStock)) )")
         L.append("( 毛坯 \(ncf(Double(sb.width))) × \(ncf(Double(sb.height)))  Z\(ncf(sz.bottom))~\(ncf(sz.top))  XY余量\(ncf(p.stockMarginXY)) )")
@@ -1429,7 +1467,11 @@ enum PartProg {
         L.append("G90")
         L.append("M30")
         L.append("%")
-        return L.joined(separator: "\n")
+        let fanuc = L.joined(separator: "\n")
+        if p.postName.contains("Siemens") {
+            return PostProcessor.siemens(fanuc)
+        }
+        return fanuc
     }
 
     // MARK: - 拼装工具

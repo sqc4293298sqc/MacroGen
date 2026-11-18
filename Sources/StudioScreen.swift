@@ -8083,7 +8083,7 @@ struct StudioScreen: View {
                     Text("Siemens 840D（仅通用G代码）").tag("Siemens 840D")
                 }
                 if spec.postName.contains("Siemens") {
-                    Text("Siemens 只做程序头标记；宏变量/WHILE 仍是 FANUC 写法，上机前必须人工改。")
+                    Text("Siemens 会把 #宏/WHILE 展开成普通 G 代码；G43/G28/G52 和刀补仍需按机床核对。")
                         .font(.caption).foregroundStyle(.orange)
                 }
                 Picker("坐标系", selection: $spec.coord) {
