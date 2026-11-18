@@ -311,28 +311,43 @@ struct StudioScreen: View {
             dismissMeasureSheet()
         }
         .fileImporter(isPresented: $showDXFImporter,
-                      allowedContentTypes: [UTType(filenameExtension: "dxf") ?? .data],
+                      allowedContentTypes: [
+                        UTType(filenameExtension: "dxf") ?? .data,
+                        UTType(filenameExtension: "svg") ?? .data,
+                        UTType(filenameExtension: "plt") ?? .data,
+                        UTType(filenameExtension: "hpgl") ?? .data,
+                        .data
+                      ],
                       allowsMultipleSelection: false) { result in
             switch result {
             case .success(let urls):
-                if let url = urls.first { importDXF(url) }
+                if let url = urls.first { importVector(url) }
             case .failure:
-                showToastView("DXF 选择失败")
+                showToastView("轮廓文件选择失败")
             }
         }
         .sheet(isPresented: $showOpCode) {
             NavigationStack {
                 ScrollView {
-                    Text(opCodeText)
+                    TextEditor(text: $opCodeText)
                         .font(.system(size: 11, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled(true)
+                        .frame(maxWidth: .infinity, minHeight: 420, alignment: .topLeading)
+                        .padding(8)
+                    Text("当前查看的程序可直接改字、复制或分享；改动只影响这次导出的文本，不会反写参数。")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 8)
                 }
                 .navigationTitle(opCodeTitle)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        ShareLink(item: opCodeText) {
+                            Image(systemName: "square.and.arrow.up")
+                        }
                         Button("关闭") { showOpCode = false }
                     }
                 }
@@ -510,7 +525,7 @@ struct StudioScreen: View {
                     Label("拍照图纸", systemImage: "camera.viewfinder")
                 }
                 Button { showDXFImporter = true } label: {
-                    Label("导入 DXF 轮廓", systemImage: "square.and.arrow.down")
+                    Label("导入 DXF / SVG / PLT", systemImage: "square.and.arrow.down")
                 }
                 Button("保存工程") {
                     ProjectStore.save(spec)
@@ -7346,11 +7361,11 @@ struct StudioScreen: View {
                 Button {
                     showDXFImporter = true
                 } label: {
-                    Label("导入 DXF 轮廓", systemImage: "square.and.arrow.down")
+                    Label("导入 DXF / SVG / PLT", systemImage: "square.and.arrow.down")
                         .font(.system(size: 13, weight: .semibold))
                 }
                 .buttonStyle(.bordered)
-                Text("DXF 是 2D 轮廓（外形/内轮廓/孔），可导入 UG、CAD、CAM；不冒充 3D STEP。")
+                Text("支持 DXF / SVG / PLT 的 2D 轮廓（外形/内轮廓/孔）；不冒充 3D STEP。")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }
@@ -7363,37 +7378,56 @@ struct StudioScreen: View {
         .background(Color.white)
     }
 
-    private func importDXF(_ url: URL) {
+    private func importVector(_ url: URL) {
+        let ext = url.pathExtension.lowercased()
+        do {
+            let text = try readImportText(url)
+            let name = url.deletingPathExtension().lastPathComponent
+            let result: DXFImportResult
+            let kind: String
+            switch ext {
+            case "svg":
+                result = try SVGImporter.parse(text, name: name); kind = "SVG"
+            case "plt", "hpgl":
+                result = try PLTImporter.parse(text, name: name); kind = "PLT"
+            default:
+                result = try DXFImporter.parse(text, name: name); kind = "DXF"
+            }
+            applyImportedVector(result, kind: kind)
+        } catch {
+            showToastView("轮廓导入失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func readImportText(_ url: URL) throws -> String {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
-        do {
-            let text = try String(contentsOf: url, encoding: .utf8)
-            let result = try DXFImporter.parse(text, name: url.deletingPathExtension().lastPathComponent)
-            pushUndo()
-            var s = result.spec
-            s.height = spec.height
-            s.programNo = spec.programNo
-            s.coord = spec.coord
-            s.spindle = spec.spindle
-            s.feed = spec.feed
-            s.stepDown = spec.stepDown
-            s.stepOver = spec.stepOver
-            s.safeZ = spec.safeZ
-            s.faceTool = spec.faceTool; s.faceDia = spec.faceDia
-            s.contourTool = spec.contourTool; s.contourDia = spec.contourDia
-            s.holeTool = spec.holeTool; s.holeDia = spec.holeDia
-            s.pocketTool = spec.pocketTool; s.pocketDia = spec.pocketDia
-            s.tapTool = spec.tapTool; s.tapDia = spec.tapDia
-            s.postName = spec.postName
-            spec = s
-            showToastView(result.note)
-            if !result.warnings.isEmpty {
-                opCodeTitle = "DXF 导入提示"
-                opCodeText = result.warnings.joined(separator: "\n")
-                showOpCode = true
-            }
-        } catch {
-            showToastView("DXF 导入失败：\(error.localizedDescription)")
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func applyImportedVector(_ result: DXFImportResult, kind: String) {
+        pushUndo()
+        var s = result.spec
+        s.height = spec.height
+        s.programNo = spec.programNo
+        s.coord = spec.coord
+        s.spindle = spec.spindle
+        s.feed = spec.feed
+        s.stepDown = spec.stepDown
+        s.stepOver = spec.stepOver
+        s.safeZ = spec.safeZ
+        s.faceTool = spec.faceTool; s.faceDia = spec.faceDia
+        s.contourTool = spec.contourTool; s.contourDia = spec.contourDia
+        s.holeTool = spec.holeTool; s.holeDia = spec.holeDia
+        s.pocketTool = spec.pocketTool; s.pocketDia = spec.pocketDia
+        s.tapTool = spec.tapTool; s.tapDia = spec.tapDia
+        s.postName = spec.postName
+        spec = s
+        showToastView(result.note)
+        if !result.warnings.isEmpty {
+            opCodeTitle = "\(kind) 导入提示"
+            opCodeText = result.warnings.joined(separator: "\n")
+            showOpCode = true
         }
     }
 
