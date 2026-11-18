@@ -72,8 +72,15 @@ enum DrawingScanner {
         var pair: (Double, Double)?
         var numbers: [Double] = []
         var holeDias: [Double] = []
+        var holeLabels: [(dia: Double, rect: CGRect)] = []
         var thickness: Double?
         var annotations: [ScanAnnotation] = []
+    }
+
+    private struct ScanTextLine {
+        var text: String
+        var rect: CGRect
+        var confidence: Float
     }
 
     private static func scanSync(_ image: UIImage) throws -> DrawingScanResult {
@@ -82,11 +89,8 @@ enum DrawingScanner {
 
         let handler = VNImageRequestHandler(cgImage: cg, orientation: .up, options: [:])
 
-        let textRequest = VNRecognizeTextRequest()
-        textRequest.recognitionLevel = .accurate
-        textRequest.usesLanguageCorrection = false
-        textRequest.recognitionLanguages = ["zh-Hans", "en-US"]
-        textRequest.minimumTextHeight = 0.01
+        // 尺寸文字很小，整图一次 OCR 容易漏；全图 + 2×2 重叠分块各跑一遍，再把坐标映射回整图。
+        let textLines = collectTextLines(image)
 
         let contourRequest = VNDetectContoursRequest()
         contourRequest.contrastAdjustment = 2.1
@@ -100,16 +104,15 @@ enum DrawingScanner {
         rectRequest.maximumObservations = 5
 
         do {
-            try handler.perform([textRequest, contourRequest, rectRequest])
+            try handler.perform([contourRequest, rectRequest])
         } catch {
             throw DrawingScanError.visionFailed(error.localizedDescription)
         }
 
-        let texts = (textRequest.results as? [VNRecognizedTextObservation]) ?? []
         let contours = (contourRequest.results as? [VNContoursObservation]) ?? []
         let rectangles = (rectRequest.results as? [VNRectangleObservation]) ?? []
 
-        let ocr = readOcr(texts)
+        let ocr = readOcr(textLines)
         let contourInfo = bestOuterContour(contours)
         let rectInfo = bestOuterRectangle(rectangles)
 
@@ -193,7 +196,7 @@ enum DrawingScanner {
 
         let holes = detectHoles(
             contours: contours, outer: outerContour, outerBox: rawBox,
-            length: length, width: width, height: height)
+            length: length, width: width, height: height, ocr: ocr)
         spec.feats = holes.feats
         annotations.append(contentsOf: holes.annotations)
         annotations.append(contentsOf: ocr.annotations)
@@ -207,13 +210,19 @@ enum DrawingScanner {
             if ocr.pair == nil { w.append(ocr.numbers.isEmpty ? "没读到尺寸，按 100 mm 估算，请核对" : "只读到一个尺寸，另一个按图比例推算") }
             if ocr.thickness == nil { w.append("厚度没读到，按 10 mm 生成，请核对") }
             if holes.feats.isEmpty && !ocr.holeDias.isEmpty { w.append("读到孔径标注，但没识别到圆的闭合轮廓，孔请手动加") }
+            if holes.feats.contains(where: { $0.kind == .rectPocket }) {
+                w.append("识别到槽/方腔，按矩形腔近似；圆角/真实轮廓请在草图核对")
+            }
             if holes.feats.count >= 6 { w.append("识别到较多孔，可能是多视图/尺寸文字误判；请逐个核对，错的可在草图里删") }
             if ocr.pair == nil && ocr.numbers.count >= 8 { w.append("图上尺寸很多，自动选的不一定是总尺寸；请直接改长/宽核对") }
             w.append("照片尽量正对图纸拍，斜拍/反光/手写标注会影响精度")
             return w
         }()
 
-        let summary = "外形 \(ncf(length)) × \(ncf(width)) mm · 厚 \(ncf(height)) mm · 孔 \(holes.feats.count) 个"
+        let holeCount = holes.feats.filter { $0.kind == .hole }.count
+        let pocketCount = holes.feats.count - holeCount
+        let summary = "外形 \(ncf(length)) × \(ncf(width)) mm · 厚 \(ncf(height)) mm · 孔 \(holeCount) 个"
+            + (pocketCount > 0 ? " · 槽/腔 \(pocketCount) 个" : "")
         let confidence = min(0.96, 0.42
             + (outerContour == nil ? 0 : 0.25)
             + (ocr.pair == nil ? 0 : 0.16)
@@ -357,11 +366,92 @@ enum DrawingScanner {
 
     // MARK: - OCR
 
-    private static func readOcr(_ observations: [VNRecognizedTextObservation]) -> OcrFacts {
+    /// 全图 + 2×2 重叠分块，专门救小尺寸文字。
+    private static func collectTextLines(_ image: UIImage) -> [ScanTextLine] {
+        let oriented = image.fixedOrientation()
+        guard let cg = oriented.cgImage else { return [] }
+        let full = prepare(oriented, maxDimension: 2000)
+        guard let fullCG = full.cgImage else { return [] }
+
+        var lines = textLines(from: fullCG,
+                              in: CGRect(x: 0, y: 0, width: 1, height: 1),
+                              minHeight: 0.006)
+
+        // 12% 重叠，避免尺寸文字正好落在切缝上被切掉。
+        let tiles: [CGRect] = [
+            CGRect(x: 0, y: 0, width: 0.56, height: 0.56),
+            CGRect(x: 0.44, y: 0, width: 0.56, height: 0.56),
+            CGRect(x: 0, y: 0.44, width: 0.56, height: 0.56),
+            CGRect(x: 0.44, y: 0.44, width: 0.56, height: 0.56)
+        ]
+        let W = CGFloat(cg.width), H = CGFloat(cg.height)
+        for tile in tiles {
+            let pixel = CGRect(x: tile.minX * W, y: tile.minY * H,
+                               width: tile.width * W, height: tile.height * H).integral
+            guard pixel.width > 8, pixel.height > 8,
+                  let crop = cg.cropping(to: pixel) else { continue }
+            let tileImage = prepare(UIImage(cgImage: crop), maxDimension: 1600)
+            guard let tileCG = tileImage.cgImage else { continue }
+            lines.append(contentsOf: textLines(from: tileCG, in: tile, minHeight: 0.004))
+        }
+        return dedupeText(lines)
+    }
+
+    private static func textLines(from cg: CGImage, in base: CGRect, minHeight: CGFloat) -> [ScanTextLine] {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        request.recognitionLanguages = ["zh-Hans", "en-US"]
+        request.minimumTextHeight = minHeight
+
+        let handler = VNImageRequestHandler(cgImage: cg, orientation: .up, options: [:])
+        do {
+            try handler.perform([request])
+        } catch {
+            return []
+        }
+        let observations = (request.results as? [VNRecognizedTextObservation]) ?? []
+        return observations.compactMap { obs in
+            guard let candidate = obs.topCandidates(1).first else { return nil }
+            let b = obs.boundingBox
+            // 分块坐标（Vision 原点左下）→ 整图归一化坐标（原点左下）
+            let rect = CGRect(
+                x: base.minX + b.minX * base.width,
+                y: (1 - base.maxY) + b.minY * base.height,
+                width: b.width * base.width,
+                height: b.height * base.height)
+            return ScanTextLine(text: candidate.string, rect: rect, confidence: candidate.confidence)
+        }
+    }
+
+    private static func dedupeText(_ lines: [ScanTextLine]) -> [ScanTextLine] {
+        var out: [ScanTextLine] = []
+        for line in lines {
+            let text = normalizeText(line.text)
+            guard !text.isEmpty else { continue }
+            if let i = out.firstIndex(where: {
+                normalizeText($0.text) == text && iou($0.rect, line.rect) > 0.55
+            }) {
+                if line.confidence > out[i].confidence { out[i] = line }
+            } else {
+                out.append(line)
+            }
+        }
+        return out
+    }
+
+    private static func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        let inter = a.intersection(b)
+        guard !inter.isNull, inter.width > 0, inter.height > 0 else { return 0 }
+        let union = a.width * a.height + b.width * b.height - inter.width * inter.height
+        guard union > 0.000001 else { return 0 }
+        return inter.width * inter.height / union
+    }
+
+    private static func readOcr(_ lines: [ScanTextLine]) -> OcrFacts {
         var facts = OcrFacts()
-        for (index, obs) in observations.enumerated() {
-            guard let candidate = obs.topCandidates(1).first else { continue }
-            let raw = normalizeText(candidate.string)
+        for (index, line) in lines.enumerated() {
+            let raw = normalizeText(line.text)
             guard !raw.isEmpty else { continue }
 
             if let pair = matchPair(raw) {
@@ -372,9 +462,12 @@ enum DrawingScanner {
                 }
             }
             if let dia = matchOne(raw, pattern: "[ØøΦφ∅]\\s*([0-9]+(?:\\.[0-9]+)?)") {
-                if dia > 0.2 { facts.holeDias.append(dia) }
+                if dia > 0.2 {
+                    facts.holeDias.append(dia)
+                    facts.holeLabels.append((dia, line.rect))
+                }
             }
-            if let t = matchOne(raw, pattern: "(?:厚(?:度)?|T)\\s*([0-9]+(?:\\.[0-9]+)?)") {
+            if let t = matchOne(raw, pattern: "(?:厚(?:度)?|T|δ)\\s*[=:：]?\\s*([0-9]+(?:\\.[0-9]+)?)") {
                 facts.thickness = t
             }
             let onlyFeatureText = (raw.contains("Ø") || raw.contains("厚") || raw.hasPrefix("R"))
@@ -385,11 +478,11 @@ enum DrawingScanner {
                 }
             }
 
-            if index < 24 && (raw.contains("Ø") || raw.contains("厚") || raw.contains("R")
+            if index < 80 && (raw.contains("Ø") || raw.contains("厚") || raw.contains("R")
                 || raw.range(of: "[0-9]", options: .regularExpression) != nil) {
                 facts.annotations.append(ScanAnnotation(
                     text: raw,
-                    rect: obs.boundingBox,
+                    rect: line.rect,
                     kind: .ocr))
             }
         }
@@ -473,7 +566,8 @@ enum DrawingScanner {
                                     outerBox: CGRect,
                                     length: Double,
                                     width: Double,
-                                    height: Double) -> (feats: [PartFeat], annotations: [ScanAnnotation]) {
+                                    height: Double,
+                                    ocr: OcrFacts) -> (feats: [PartFeat], annotations: [ScanAnnotation]) {
         guard let observation = contours.first else { return ([], []) }
         let outerArea = max(Double(outerBox.width * outerBox.height), 0.0001)
         let scaleX = length / Double(max(outerBox.width, 0.001))
@@ -502,28 +596,68 @@ enum DrawingScanner {
                   b.midY > outerBox.minY, b.midY < outerBox.maxY else { continue }
 
             let ar = Double(b.width / b.height)
-            guard ar > 0.65, ar < 1.45 else { continue }
             let perimeter = polygonPerimeter(p)
             let circularity = perimeter > 0.001 ? (4 * .pi * area / (perimeter * perimeter)) : 0
-            guard circularity > 0.65 else { continue }
-
-            let dia = (Double(b.width) * scaleX + Double(b.height) * scaleY) / 2
-            guard dia > 2.0, dia < min(length, width) * 0.92 else { continue }
             let x = (Double(b.midX) - Double(outerBox.midX)) * scaleX
             let y = (Double(b.midY) - Double(outerBox.midY)) * scaleY
 
+            // 1) 圆孔：近圆、闭合、面积合理；优先用附近 Ø 标注校正像素估算值。
+            if ar > 0.65 && ar < 1.45 && circularity > 0.65 {
+                var dia = (Double(b.width) * scaleX + Double(b.height) * scaleY) / 2
+                if let label = ocr.holeLabels.min(by: {
+                    hypot($0.rect.midX - b.midX, $0.rect.midY - b.midY)
+                        < hypot($1.rect.midX - b.midX, $1.rect.midY - b.midY)
+                }), hypot(label.rect.midX - b.midX, label.rect.midY - b.midY) < 0.10 {
+                    let d = label.dia
+                    if d > 2, d < min(length, width) * 0.92,
+                       abs(d - dia) / max(dia, 0.1) < 0.35 { dia = d }
+                }
+                guard dia > 2.0, dia < min(length, width) * 0.92 else { continue }
+                var duplicate = false
+                for f in feats {
+                    if hypot(f.x - x, f.y - y) < 1.5 && abs(f.dia - dia) < 1.2 { duplicate = true; break }
+                }
+                if duplicate { continue }
+
+                var f = PartFeat(kind: .hole, x: x, y: y, dia: dia,
+                                 depth: height + 1, name: "识别孔 \(feats.count + 1)")
+                f.depth = height + 1
+                feats.append(f)
+                var annotation = ScanAnnotation(
+                    text: "Ø\(ncf(dia))",
+                    rect: b,
+                    kind: .hole)
+                annotation.featID = f.id
+                annotations.append(annotation)
+                continue
+            }
+
+            // 2) 槽 / 方型腔：非圆形闭合内轮廓，按矩形腔近似。
+            // 只收长宽比明显、面积够大的，避免把文字/箭头/图框当成型腔。
+            guard ar > 1.22 || ar < 0.82 else { continue }
+            guard area / outerArea > 0.004, area / outerArea < 0.20 else { continue }
+            guard b.width > 0.025, b.height > 0.018, p.count >= 6 else { continue }
+            guard b.midX > outerBox.minX + outerBox.width * 0.02,
+                  b.midX < outerBox.maxX - outerBox.width * 0.02,
+                  b.midY > outerBox.minY + outerBox.height * 0.02,
+                  b.midY < outerBox.maxY - outerBox.height * 0.02 else { continue }
+
+            let w = Double(b.width) * scaleX
+            let h = Double(b.height) * scaleY
+            guard w > 2.0, h > 1.5, w < length * 0.9, h < width * 0.9 else { continue }
             var duplicate = false
-            for f in feats {
-                if hypot(f.x - x, f.y - y) < 1.5 && abs(f.dia - dia) < 1.2 { duplicate = true; break }
+            for f in feats where f.kind == .rectPocket {
+                if hypot(f.x - x, f.y - y) < 1.5 && abs(f.w - w) < 1.2 && abs(f.h - h) < 1.2 { duplicate = true; break }
             }
             if duplicate { continue }
 
-            var f = PartFeat(kind: .hole, x: x, y: y, dia: dia,
-                             depth: height + 1, name: "识别孔 \(feats.count + 1)")
+            var f = PartFeat(kind: .rectPocket, x: x, y: y, dia: max(w, h),
+                             w: w, h: h, depth: height + 1,
+                             name: "识别槽/腔 \(feats.count + 1)")
             f.depth = height + 1
             feats.append(f)
             var annotation = ScanAnnotation(
-                text: "Ø\(ncf(dia))",
+                text: "槽/腔 \(ncf(w))×\(ncf(h))",
                 rect: b,
                 kind: .hole)
             annotation.featID = f.id
