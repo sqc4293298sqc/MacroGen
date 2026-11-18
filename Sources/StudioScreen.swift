@@ -553,10 +553,20 @@ struct StudioScreen: View {
     /// 实体基色（RGB 0...1）：按当前材料给金属/塑料底色
     private var metalBaseRGB: (Double, Double, Double) {
         switch material {
-        case .aluminum: return (0.76, 0.80, 0.84)
-        case .steel:    return (0.52, 0.56, 0.60)
-        case .brass:    return (0.80, 0.64, 0.34)
-        case .abs:      return (0.86, 0.85, 0.81)
+        case .aluminum: return (0.70, 0.75, 0.80)
+        case .steel:    return (0.44, 0.49, 0.55)
+        case .brass:    return (0.74, 0.56, 0.24)
+        case .abs:      return (0.80, 0.79, 0.74)
+        }
+    }
+
+    /// 金属高光强度：钢最亮、铝次之、黄铜暖高光、ABS 只留很弱的塑料反光
+    private var metalSpecularStrength: Double {
+        switch material {
+        case .aluminum: return 0.88
+        case .steel:    return 0.94
+        case .brass:    return 0.80
+        case .abs:      return 0.22
         }
     }
 
@@ -6063,10 +6073,68 @@ struct StudioScreen: View {
         func metalTone(_ k: Double, _ alpha: Double = 1) -> Color {
             let t = max(0, min(1, k))
             let b = metalBaseRGB
-            let f = 0.42 + 0.62 * t
+            let f = 0.30 + 0.74 * t
             return Color(red: min(1, b.0 * f),
                          green: min(1, b.1 * f),
                          blue: min(1, b.2 * f)).opacity(alpha)
+        }
+
+        /// 高光色：向白色混合，保留材料本身的冷暖倾向
+        func metalSpecular(_ strength: Double) -> Color {
+            let s = max(0, min(1, strength))
+            let b = metalBaseRGB
+            return Color(red: min(1, b.0 + (1 - b.0) * s),
+                         green: min(1, b.1 + (1 - b.1) * s),
+                         blue: min(1, b.2 + (1 - b.2) * s))
+        }
+
+        /// 顶面：沿屏幕光照方向做暗→亮→高光渐变，避免整块死平
+        func metalTopShading(_ ring: [CGPoint], z: Double) -> GraphicsContext.Shading {
+            guard let first = ring.first else { return .color(metalTone(0.92)) }
+            var minX = Double(first.x), maxX = Double(first.x)
+            var minY = Double(first.y), maxY = Double(first.y)
+            for p in ring {
+                let q = cam.p(Double(p.x), Double(p.y), z)
+                minX = min(minX, Double(q.x)); maxX = max(maxX, Double(q.x))
+                minY = min(minY, Double(q.y)); maxY = max(maxY, Double(q.y))
+            }
+            let start = CGPoint(x: CGFloat(minX), y: CGFloat(maxY))
+            let end = CGPoint(x: CGFloat(maxX), y: CGFloat(minY))
+            let spec = metalSpecularStrength * 0.88
+            return .linearGradient(
+                Gradient(stops: [
+                    .init(color: metalTone(0.56), location: 0.0),
+                    .init(color: metalTone(0.82), location: 0.36),
+                    .init(color: metalTone(1.0), location: 0.74),
+                    .init(color: metalSpecular(spec), location: 1.0)
+                ]),
+                startPoint: start,
+                endPoint: end
+            )
+        }
+
+        /// 侧面：上沿亮、下沿暗，朝光面再加一条窄高光带
+        func metalFaceShading(_ a: CGPoint, _ b: CGPoint,
+                              zTop: Double, zBottom: Double,
+                              shade: Double) -> GraphicsContext.Shading {
+            let midX = (Double(a.x) + Double(b.x)) / 2
+            let midY = (Double(a.y) + Double(b.y)) / 2
+            let topMid = cam.p(midX, midY, zTop)
+            let botMid = cam.p(midX, midY, zBottom)
+            let faceSpec = max(0, min(1, (shade - 0.56) / 0.40)) * metalSpecularStrength
+            var stops: [Gradient.Stop] = [
+                .init(color: metalTone(min(1, shade + 0.08)), location: 0.0)
+            ]
+            if faceSpec > 0.03 {
+                stops.append(.init(color: metalSpecular(faceSpec), location: 0.14))
+            }
+            stops.append(.init(color: metalTone(shade * 0.78), location: 0.50))
+            stops.append(.init(color: metalTone(shade * 0.52), location: 1.0))
+            return .linearGradient(
+                Gradient(stops: stops),
+                startPoint: topMid,
+                endPoint: botMid
+            )
         }
 
         /// 侧面朝光程度：外法向与固定光照方向点积，做出面与面之间的明暗差
@@ -6104,10 +6172,10 @@ struct StudioScreen: View {
                     side.addLine(to: cam.p(Double(a.x), Double(a.y), zBottom))
                     side.closeSubpath()
                     let shade = sideShade(a, b, centroid: (cx, cy))
-                    ctx.fill(side, with: .color(metalTone(shade)))
+                    ctx.fill(side, with: metalFaceShading(a, b, zTop: zTop, zBottom: zBottom, shade: shade))
                 }
-                ctx.fill(top, with: .color(metalTone(1.0)))
-                ctx.stroke(top, with: .color(metalTone(0.30)), lineWidth: 1.2)
+                ctx.fill(top, with: metalTopShading(ring, z: zTop))
+                ctx.stroke(top, with: .color(metalTone(0.28)), lineWidth: 1.2)
             } else {
                 ctx.fill(bottom, with: .color(tint.opacity(alpha * 0.45)))
                 ctx.stroke(bottom, with: .color(tint.opacity(alpha + 0.25)), lineWidth: 1)
@@ -6169,7 +6237,7 @@ struct StudioScreen: View {
                 side.addLine(to: cam.p(a.x, a.y, baseBottom))
                 side.closeSubpath()
                 let shade = sideShade(a, b, centroid: (baseCx, baseCy))
-                ctx.fill(side, with: .color(metalTone(shade)))
+                ctx.fill(side, with: metalFaceShading(a, b, zTop: baseTop, zBottom: baseBottom, shade: shade))
             }
 
             let layers = max(1, Int(ceil((baseTop - baseBottom) / max(spec.stepDown, 0.1))))
@@ -6187,7 +6255,7 @@ struct StudioScreen: View {
                 }, with: .color(metalTone(0.30, 0.75)), lineWidth: 0.8)
             }
 
-            ctx.fill(ringPath(baseTop), with: .color(metalTone(1.0)))
+            ctx.fill(ringPath(baseTop), with: metalTopShading(pts, z: baseTop))
             ctx.stroke(ringPath(baseTop), with: .color(metalTone(0.25)), lineWidth: 1.2)
 
             if bodyHighlight {
