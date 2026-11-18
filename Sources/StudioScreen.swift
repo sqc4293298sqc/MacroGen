@@ -312,19 +312,25 @@ struct StudioScreen: View {
             dismissMeasureSheet()
         }
         .fileImporter(isPresented: $showDXFImporter,
-                      allowedContentTypes: [
-                        UTType(filenameExtension: "dxf") ?? .data,
-                        UTType(filenameExtension: "svg") ?? .data,
-                        UTType(filenameExtension: "plt") ?? .data,
-                        UTType(filenameExtension: "hpgl") ?? .data,
-                        .data
-                      ],
+                      allowedContentTypes: [.item],
                       allowsMultipleSelection: false) { result in
             switch result {
             case .success(let urls):
-                if let url = urls.first { importVector(url) }
-            case .failure:
-                showToastView("轮廓文件选择失败")
+                guard let url = urls.first else {
+                    showToastView("没有选到文件")
+                    return
+                }
+                let ext = url.pathExtension.lowercased()
+                guard ["dxf", "svg", "plt", "hpgl"].contains(ext) else {
+                    showToastView("请选择 DXF / SVG / PLT 文件（当前：\(ext.isEmpty ? "无扩展名" : ext)")
+                    return
+                }
+                importVector(url)
+            case .failure(let error):
+                // 用户主动取消不算失败；只有真的选择失败才提示
+                if (error as NSError).code != NSUserCancelledError {
+                    showToastView("轮廓文件选择失败：\(error.localizedDescription)")
+                }
             }
         }
         .sheet(isPresented: $showOpCode) {
@@ -525,7 +531,7 @@ struct StudioScreen: View {
                 Button { showPhotoMenu = true } label: {
                     Label("拍照图纸", systemImage: "camera.viewfinder")
                 }
-                Button { showDXFImporter = true } label: {
+                Button { openVectorImporter() } label: {
                     Label("导入 DXF / SVG / PLT", systemImage: "square.and.arrow.down")
                 }
                 Button("保存工程") {
@@ -7371,7 +7377,7 @@ struct StudioScreen: View {
                     }
                 }
                 Button {
-                    showDXFImporter = true
+                    openVectorImporter()
                 } label: {
                     Label("导入 DXF / SVG / PLT", systemImage: "square.and.arrow.down")
                         .font(.system(size: 13, weight: .semibold))
@@ -7388,6 +7394,11 @@ struct StudioScreen: View {
             drawDrawing(context: context, size: size)
         }
         .background(Color.white)
+    }
+
+    private func openVectorImporter() {
+        // 从“…”菜单里点导入时，等菜单收起再弹文件选择器，避免状态被菜单事务吞掉。
+        DispatchQueue.main.async { showDXFImporter = true }
     }
 
     private func importVector(_ url: URL) {
@@ -7414,7 +7425,12 @@ struct StudioScreen: View {
     private func readImportText(_ url: URL) throws -> String {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
-        return try String(contentsOf: url, encoding: .utf8)
+        let data = try Data(contentsOf: url)
+        if let s = String(data: data, encoding: .utf8) { return s }
+        if let s = String(data: data, encoding: .utf16) { return s }
+        // 老 DXF 常见 GBK/ANSI；几何行是 ASCII，按 Latin-1 读不会破坏坐标，只影响中文注释。
+        if let s = String(data: data, encoding: .isoLatin1) { return s }
+        throw DXFImportError.badText
     }
 
     private func applyImportedVector(_ result: DXFImportResult, kind: String) {
