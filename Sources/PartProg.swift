@@ -300,6 +300,8 @@ struct PartSpec: Equatable, Codable {
     var doContour = true
     /// 外轮廓反向：顺铣/逆铣切换（2.5D 轮廓方向，不是刀具姿态）
     var reverseOuter: Bool = false
+    /// 外轮廓起点节点序号（自由轮廓有效，0 = 原来的起点）
+    var contourStartNode: Int = 0
     var doHole = true
     var doPocket = true
     /// 2.5D 轮廓倒角近似：沿外形顶边走一刀，不生成真实斜面
@@ -383,6 +385,10 @@ enum PartProg {
         d.slotL = shape.slotL
         d.slotW = shape.slotW
         d.nodes = shape.nodes
+        if outward, d.template == .free, d.nodes.count > 1, p.contourStartNode > 0 {
+            let i = min(max(p.contourStartNode, 0), d.nodes.count - 1)
+            d.nodes = Array(d.nodes[i...]) + Array(d.nodes[..<i])
+        }
         if outward, p.reverseOuter {
             d.nodes.reverse()
         }
@@ -587,7 +593,7 @@ enum PartProg {
         if p.doRest {
             out.append(PartOpInfo(
                 id: "rest", title: "残料清角", kind: "二次开粗（2.5D 近似）",
-                geometry: "基础外形 + 增料台阶，小刀沿轮廓补一圈",
+                geometry: "基础外形 + 台阶 + 孔/腔/内轮廓，小刀沿边界补一圈",
                 tool: p.restTool, dia: p.restDia, spindle: p.spindle, feed: p.feed,
                 zRange: "Z\(ncf(maxZv)) → Z\(ncf(minZv))",
                 status: status("rest")))
@@ -1112,14 +1118,19 @@ enum PartProg {
     /// 这是 2.5D 轮廓补刀，不是按前一把刀真实残料模型生成的清角。
     static func restBlock(_ p: PartSpec) -> String {
         var pieces: [String] = []
-        func addPiece(_ d: DrawSpec) {
-            var d = d
+        func addPiece(_ draw: DrawSpec, dx: Double = 0, dy: Double = 0) {
+            var d = draw
             d.stepDown = min(max(p.stepDown, 0.5), max(0.5, p.restDia * 1.2))
             d.feed = Double(p.feed)
             d.rpm = Double(p.spindle)
-            let code = ContourProg.generate(d)
+            var code = ContourProg.generate(d)
+            if abs(dx) > 1e-9 || abs(dy) > 1e-9 {
+                code = shift(code, dx: dx, dy: dy)
+            }
             let body = strip(code)
-            if !body.isEmpty { pieces.append("( 残料清角 T\(p.restTool) D\(ncf(p.restDia)) )\n" + body) }
+            if !body.isEmpty {
+                pieces.append("( 残料清角 T\(p.restTool) D\(ncf(p.restDia)) )\n" + body)
+            }
         }
         var base = asDraw(p, outward: true, dia: p.restDia, depth: p.height, hNo: p.restTool)
         base.zTop = 0
@@ -1128,6 +1139,39 @@ enum PartProg {
             let d = asDraw(s.shape, p, outward: true, dia: p.restDia,
                           depth: max(s.height, 0.1), hNo: p.restTool, zTop: s.z1)
             addPiece(d)
+        }
+        // 2D 残料差集补刀：内轮廓和孔/腔也用小刀沿真实边界补一圈，
+        // 不是只补基础外形；仍是 2.5D 轮廓补刀，不做栅格残料实体。
+        for l in p.innerLoops {
+            let host = hostZ(p, l.cx, l.cy)
+            let depth = l.through ? max(host - minZ(p), 0.1) : max(l.depth, 0.1)
+            let d = drawForLoop(l, p, depth: depth, dia: p.restDia, hNo: p.restTool, zTop: host)
+            addPiece(d)
+        }
+        for f in p.feats where !f.suppressed {
+            let host = hostZ(p, f)
+            let depth: Double
+            if f.kind == .hole {
+                depth = max(host - holeBottomZ(p, f, host: host), 0.1)
+            } else {
+                depth = max(f.depth, 0.1)
+            }
+            var d = DrawSpec()
+            d.template = f.kind == .rectPocket ? .rect : .circle
+            d.rectL = max(f.w, 0.1)
+            d.rectW = max(f.h, 0.1)
+            d.circleD = max(f.dia, 0.1)
+            d.toolDia = p.restDia
+            d.depth = depth
+            d.stepDown = min(max(p.stepDown, 0.5), max(0.5, p.restDia * 1.2))
+            d.feed = Double(p.feed)
+            d.rpm = Double(p.spindle)
+            d.safeZ = p.safeZ
+            d.hNo = p.restTool
+            d.coord = p.coord
+            d.outward = false
+            d.zTop = host
+            addPiece(d, dx: f.x, dy: f.y)
         }
         return pieces.joined(separator: "\n")
     }
@@ -1364,6 +1408,12 @@ enum PartProg {
         let sb = stockBBox(p)
         let sz = stockZRange(p)
         L.append("( 工程 \(p.projectName)  后处理 \(p.postName) )")
+        if p.postName.contains("三菱") {
+            L.append("( 三菱 M70/M80：按 FANUC 兼容子集输出，G54/G41/G43 与宏B可用 )")
+        }
+        if p.postName.contains("Siemens") {
+            L.append("( Siemens 840D：当前只做通用G代码，宏/WHILE 未转 R 参数，禁止直接上机 )")
+        }
         L.append("( 外形 \(ncf(Double(b.width))) × \(ncf(Double(b.height)))  厚\(ncf(p.height))\(stepNote)  顶面余量\(ncf(p.topStock)) )")
         L.append("( 毛坯 \(ncf(Double(sb.width))) × \(ncf(Double(sb.height)))  Z\(ncf(sz.bottom))~\(ncf(sz.top))  XY余量\(ncf(p.stockMarginXY)) )")
         L.append("( 工件坐标系 G\(p.coord)  X0=\(ncf(ox)) Y0=\(ncf(oy)) (草图坐标)  Z0=基础顶面；台阶顶面为正值 )")

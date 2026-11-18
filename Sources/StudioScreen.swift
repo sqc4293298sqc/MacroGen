@@ -8077,6 +8077,15 @@ struct StudioScreen: View {
                         .frame(width: 100)
                 }
                 Toggle("程序尾 M01 可选停", isOn: $spec.optionalStop)
+                Picker("后处理 / 控制器", selection: $spec.postName) {
+                    Text("FANUC 0i-MF").tag("FANUC")
+                    Text("三菱 M70/M80").tag("三菱 M70/M80")
+                    Text("Siemens 840D（仅通用G代码）").tag("Siemens 840D")
+                }
+                if spec.postName.contains("Siemens") {
+                    Text("Siemens 只做程序头标记；宏变量/WHILE 仍是 FANUC 写法，上机前必须人工改。")
+                        .font(.caption).foregroundStyle(.orange)
+                }
                 Picker("坐标系", selection: $spec.coord) {
                     ForEach([54, 55, 56, 57, 58, 59], id: \.self) { n in Text("G\(n)").tag(n) }
                 }
@@ -8126,6 +8135,13 @@ struct StudioScreen: View {
                 }
                 Toggle("外轮廓反向（顺/逆铣）", isOn: $spec.reverseOuter)
                     .font(.system(size: 12))
+                HStack {
+                    Text("轮廓起点序号").font(.system(size: 12))
+                    Stepper("", value: $spec.contourStartNode,
+                            in: 0...max(0, spec.nodes.count - 1))
+                        .labelsHidden()
+                    Text("\(spec.contourStartNode)").font(.system(size: 12, design: .monospaced))
+                }
                 HStack {
                     Toggle("轮廓倒角 C（2.5D 近似）", isOn: $spec.doChamfer)
                         .font(.system(size: 12))
