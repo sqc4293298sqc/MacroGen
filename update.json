@@ -1,8 +1,8 @@
 {
   "android": {
-    "versionCode": 16,
-    "versionName": "2.6.5",
-    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.6.5/MacroGen.apk",
-    "changelog": "锥孔 / 内圆倒角 / 外圆倒角改成螺旋一刀流（中途不抬刀）；外方形改成上边中点（X0）半圆弧切入、半圆弧退刀；仿真更快；图标名和标题带版本号，打开软件提示更新内容。"
+    "versionCode": 23,
+    "versionName": "2.9.2",
+    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.9.2/MacroGen.apk",
+    "changelog": "安卓正式版 2.9.2：建模编程（草图/3D/工序）、建模特征清单与外形厚度、整件旋转/缩放/适合窗口、G81/G83 钻孔、攻丝、工序参数编辑；在线更新覆盖 2.6.5 及更早版本。"
   }
 }
