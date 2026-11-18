@@ -942,6 +942,7 @@ enum PartProg {
             let id = "loop-\(l.id.uuidString)"
             let host = hostZ(p, l.cx, l.cy)
             guard enabled(id) else { continue }
+            let depth = l.through ? max(host - minZ(p), 0.1) : max(l.depth, 0.1)
             if l.template == .circle && l.through && p.doHole {
                 addSegs(CircularClear.segs(dia: l.circleD, depth: host - minZ(p) + 1, zTop: host,
                                            toolDia: p.holeDia, stepDown: p.stepDown, stepOver: p.stepOver),
