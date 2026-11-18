@@ -420,7 +420,7 @@ enum DrawingScanner {
                 y: (1 - base.maxY) + b.minY * base.height,
                 width: b.width * base.width,
                 height: b.height * base.height)
-            return ScanTextLine(text: candidate.string, rect: rect, confidence: candidate.confidence)
+            return ScanTextLine(text: candidate.string, rect: rect, confidence: CGFloat(candidate.confidence))
         }
     }
 
