@@ -307,8 +307,9 @@ struct PartSpec: Equatable, Codable {
     /// 2.5D 轮廓倒角近似：沿外形顶边走一刀，不生成真实斜面
     var doChamfer = false
     var chamferSize: Double = 1
-    /// 残料清角 / 二次开粗：大刀粗加工后，用小刀沿同一轮廓补一圈。
-    /// 2.5D 近似，不生成真实残料实体。
+    /// 残料清角 / 二次开粗：基础外形和台阶仍沿边界补刀；
+    /// 方腔按大刀 2D 刀路扫掠差集判断，有残料才整腔二次开粗；
+    /// 圆腔/孔用小刀整圆清一次。仍是 2.5D，不做 3D 实体布尔。
     var doRest = false
     var restTool: Int = 6
     var restDia: Double = 3
@@ -593,7 +594,7 @@ enum PartProg {
         if p.doRest {
             out.append(PartOpInfo(
                 id: "rest", title: "残料清角", kind: "二次开粗（2.5D 近似）",
-                geometry: "基础外形 + 台阶 + 孔/腔/内轮廓，小刀沿边界补一圈",
+                geometry: "基础外形/台阶边界补刀；方腔按大刀2D扫掠差集判断，有残料才整腔二次开粗；圆腔/孔整圆清一次",
                 tool: p.restTool, dia: p.restDia, spindle: p.spindle, feed: p.feed,
                 zRange: "Z\(ncf(maxZv)) → Z\(ncf(minZv))",
                 status: status("rest")))
@@ -838,10 +839,64 @@ enum PartProg {
             line(pts, z: 0, cut: true)
         }
         if p.doRest && enabled("rest") {
-            line(offsetClosed(pts(p), by: p.restDia / 2), z: 0, cut: true)
+            if p.doContour && enabled("contour") {
+                line(offsetClosed(pts(p), by: p.restDia / 2), z: 0, cut: true)
+            }
             for s in p.steps where s.mode == .add {
+                guard enabled("steprough-\(s.id.uuidString)") else { continue }
                 let pts = shapePoints(s.shape, p, depth: max(s.height, 0.1))
                 line(offsetClosed(pts, by: p.restDia / 2), z: s.z1, cut: true)
+            }
+            // 与 restBlock 一致：圆腔/孔整圆清一次；方腔只在残料检测为真时整腔清。
+            func restSegs(circular: Bool, dia: Double, w: Double, h: Double,
+                          depth: Double, host: Double, dx: Double, dy: Double) {
+                let ap = min(max(p.stepDown, 0.5), max(0.5, p.restDia * 1.2))
+                let ae = min(p.stepOver, max(0.8, p.restDia * 0.65))
+                if circular {
+                    addSegs(CircularClear.segs(dia: dia, depth: max(depth, 0.1), zTop: host,
+                                               toolDia: p.restDia, stepDown: ap, stepOver: ae),
+                            dx: dx, dy: dy)
+                } else {
+                    var s = PocketSpec()
+                    s.mode = .pocket
+                    s.length = w; s.width = h
+                    s.cornerType = .square; s.cornerValue = 0
+                    s.depth = max(depth, 0.1)
+                    s.stepDown = ap; s.stepOver = ae
+                    s.toolDia = p.restDia
+                    s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ
+                    s.hNo = p.restTool; s.coord = p.coord
+                    s.zTop = host
+                    addSegs(ToolpathEngine.build(s), dx: dx, dy: dy)
+                }
+            }
+            if p.doPocket {
+                for l in p.innerLoops {
+                    let host = hostZ(p, l.cx, l.cy)
+                    let depth = l.through ? max(host - minZ(p), 0.1) : max(l.depth, 0.1)
+                    if l.template == .circle {
+                        restSegs(circular: true, dia: l.circleD, w: 0, h: 0,
+                                 depth: depth, host: host, dx: l.cx, dy: l.cy)
+                    } else if l.template == .rect {
+                        restSegs(circular: false, dia: 0, w: l.rectL, h: l.rectW,
+                                 depth: depth, host: host, dx: l.cx, dy: l.cy)
+                    }
+                }
+            }
+            for f in p.feats where !f.suppressed {
+                if f.kind == .hole && !p.doHole { continue }
+                if f.kind != .hole && !p.doPocket { continue }
+                let host = hostZ(p, f)
+                let depth = f.kind == .hole ? max(host - holeBottomZ(p, f, host: host), 0.1) : max(f.depth, 0.1)
+                if f.kind == .rectPocket {
+                    if ResidualClear.rectPocketHasResidual(p, f) {
+                        restSegs(circular: false, dia: 0, w: f.w, h: f.h,
+                                 depth: depth, host: host, dx: f.x, dy: f.y)
+                    }
+                } else {
+                    restSegs(circular: true, dia: f.dia, w: 0, h: 0,
+                             depth: depth, host: host, dx: f.x, dy: f.y)
+                }
             }
         }
 
@@ -856,31 +911,20 @@ enum PartProg {
                 if hk == .counterbore || hk == .countersink {
                     let bigD = hk == .counterbore ? f.resolvedCbDia : f.resolvedCsDia
                     let bigDepth = hk == .counterbore ? counterboreDepth(f) : countersinkDepth(f)
-                    var s = PocketSpec()
-                    s.mode = .spiral
-                    s.spiralDia = bigD
-                    s.toolDia = p.pocketDia
-                    s.depth = bigDepth
-                    s.stepDown = p.stepDown
-                    s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = host
-                    s.hNo = p.pocketTool
-                    s.coord = p.coord
-                    addSegs(ToolpathEngine.build(s), dx: f.x, dy: f.y)
+                    addSegs(CircularClear.segs(dia: bigD, depth: bigDepth, zTop: host,
+                                               toolDia: p.pocketDia, stepDown: p.stepDown, stepOver: p.stepOver),
+                            dx: f.x, dy: f.y)
                 }
-                var s = PocketSpec()
-                s.mode = .spiral
-                s.spiralDia = f.dia
-                s.toolDia = p.holeDia
-                s.depth = max(host - bottom, 0.1)
-                s.stepDown = p.stepDown
-                s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = host
-                s.hNo = p.holeTool
-                s.coord = p.coord
-                addSegs(ToolpathEngine.build(s), dx: f.x, dy: f.y)
+                addSegs(CircularClear.segs(dia: f.dia, depth: max(host - bottom, 0.1), zTop: host,
+                                           toolDia: p.holeDia, stepDown: p.stepDown, stepOver: p.stepOver),
+                        dx: f.x, dy: f.y)
             } else if f.kind == .rectPocket && p.doPocket {
                 var s = PocketSpec()
                 s.mode = .pocket
                 s.length = f.w; s.width = f.h
+                // 方腔就是直角矩形；PocketSpec 默认 R8，不能带进方腔刀路。
+                s.cornerType = .square
+                s.cornerValue = 0
                 s.depth = f.depth; s.stepDown = p.stepDown; s.stepOver = p.stepOver
                 s.toolDia = p.pocketDia
                 s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = host
@@ -888,15 +932,9 @@ enum PartProg {
                 s.coord = p.coord
                 addSegs(ToolpathEngine.build(s), dx: f.x, dy: f.y)
             } else if p.doPocket {
-                var s = PocketSpec()
-                s.mode = .spiral
-                s.spiralDia = f.dia
-                s.toolDia = p.pocketDia
-                s.depth = f.depth; s.stepDown = p.stepDown
-                s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = host
-                s.hNo = p.pocketTool
-                s.coord = p.coord
-                addSegs(ToolpathEngine.build(s), dx: f.x, dy: f.y)
+                addSegs(CircularClear.segs(dia: f.dia, depth: f.depth, zTop: host,
+                                           toolDia: p.pocketDia, stepDown: p.stepDown, stepOver: p.stepOver),
+                        dx: f.x, dy: f.y)
             }
         }
 
@@ -905,16 +943,9 @@ enum PartProg {
             let host = hostZ(p, l.cx, l.cy)
             guard enabled(id) else { continue }
             if l.template == .circle && l.through && p.doHole {
-                var s = PocketSpec()
-                s.mode = .spiral
-                s.spiralDia = l.circleD
-                s.toolDia = p.holeDia
-                s.depth = host - minZ(p) + 1
-                s.stepDown = p.stepDown
-                s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = host
-                s.hNo = p.holeTool
-                s.coord = p.coord
-                addSegs(ToolpathEngine.build(s), dx: l.cx, dy: l.cy)
+                addSegs(CircularClear.segs(dia: l.circleD, depth: host - minZ(p) + 1, zTop: host,
+                                           toolDia: p.holeDia, stepDown: p.stepDown, stepOver: p.stepOver),
+                        dx: l.cx, dy: l.cy)
             } else if p.doPocket {
                 let pts = loopPoints(l).map { CGPoint(x: $0.x + CGFloat(l.cx), y: $0.y + CGFloat(l.cy)) }
                 line(offsetClosed(pts, by: -p.pocketDia / 2), z: host, cut: true)
@@ -1076,7 +1107,13 @@ enum PartProg {
         if p.doRest {
             if p.restDia <= 0 { out.append("残料清角刀径要大于 0") }
             if p.restDia >= p.contourDia {
-                out.append("残料清角刀径 Ø\(ncf(p.restDia)) 不小于轮廓/开粗刀径 Ø\(ncf(p.contourDia))：清不到残料")
+                out.append("残料清角刀径 Ø\(ncf(p.restDia)) 不小于轮廓刀径 Ø\(ncf(p.contourDia))：清不到残料")
+            }
+            if p.restDia >= p.pocketDia {
+                out.append("残料清角刀径 Ø\(ncf(p.restDia)) 不小于型腔刀径 Ø\(ncf(p.pocketDia))：型腔二次开粗会过切/清不到")
+            }
+            if p.restDia >= p.holeDia {
+                out.append("残料清角刀径 Ø\(ncf(p.restDia)) 不小于孔刀径 Ø\(ncf(p.holeDia))：孔二次开粗会过切")
             }
         }
         out.append(contentsOf: collisionIssues(p))
@@ -1119,6 +1156,7 @@ enum PartProg {
     /// 检测到残料后用小刀整腔/整孔二次开粗（不是只沿边补一刀）。
     static func restBlock(_ p: PartSpec) -> String {
         var pieces: [String] = []
+        func enabled(_ id: String) -> Bool { !p.disabledOps.contains(id) }
 
         func addCode(_ title: String, _ code: String, dx: Double = 0, dy: Double = 0) {
             var code = code
@@ -1141,38 +1179,51 @@ enum PartProg {
 
         func restPocket(_ f: PartFeat, circular: Bool, depth: Double, host: Double, name: String) {
             guard p.restDia > 0.01 else { return }
-            var s = PocketSpec()
-            s.mode = circular ? .spiral : .pocket
-            s.length = max(f.w, 0.1)
-            s.width = max(f.h, 0.1)
-            s.spiralDia = max(f.dia, 0.1)
-            s.cornerType = .square
-            s.cornerValue = 0
-            s.depth = max(depth, 0.1)
-            s.stepDown = min(max(p.stepDown, 0.5), max(0.5, p.restDia * 1.2))
-            s.stepOver = min(p.stepOver, max(0.8, p.restDia * 0.65))
-            s.toolDia = p.restDia
-            s.spindle = p.spindle
-            s.feed = p.feed
-            s.safeZ = p.safeZ
-            s.zTop = host
-            s.hNo = p.restTool
-            s.coord = p.coord
-            s.cx = f.x
-            s.cy = f.y
-            addCode("残料二次开粗 \(name)", GCodeGenerator.generate(s))
+            let ap = min(max(p.stepDown, 0.5), max(0.5, p.restDia * 1.2))
+            let ae = min(p.stepOver, max(0.8, p.restDia * 0.65))
+            if circular {
+                addCode("残料二次开粗 \(name)",
+                        CircularClear.code(dia: max(f.dia, 0.1), depth: max(depth, 0.1), zTop: host,
+                                           toolDia: p.restDia, stepDown: ap, stepOver: ae,
+                                           feed: p.feed, spindle: p.spindle, safeZ: p.safeZ,
+                                           hNo: p.restTool, cx: f.x, cy: f.y, coord: p.coord))
+            } else {
+                var s = PocketSpec()
+                s.mode = .pocket
+                s.length = max(f.w, 0.1)
+                s.width = max(f.h, 0.1)
+                s.cornerType = .square
+                s.cornerValue = 0
+                s.depth = max(depth, 0.1)
+                s.stepDown = ap
+                s.stepOver = ae
+                s.toolDia = p.restDia
+                s.spindle = p.spindle
+                s.feed = p.feed
+                s.safeZ = p.safeZ
+                s.zTop = host
+                s.hNo = p.restTool
+                s.coord = p.coord
+                s.cx = f.x
+                s.cy = f.y
+                addCode("残料二次开粗 \(name)", GCodeGenerator.generate(s))
+            }
         }
 
-        var base = asDraw(p, outward: true, dia: p.restDia, depth: p.height, hNo: p.restTool)
-        base.zTop = 0
-        addPiece(base)
+        if p.doContour && enabled("contour") {
+            var base = asDraw(p, outward: true, dia: p.restDia, depth: p.height, hNo: p.restTool)
+            base.zTop = 0
+            addPiece(base)
+        }
         for s in p.steps.filter({ $0.mode == .add }).sorted(by: { $0.z1 > $1.z1 }) {
+            guard enabled("steprough-\(s.id.uuidString)") else { continue }
             let d = asDraw(s.shape, p, outward: true, dia: p.restDia,
                           depth: max(s.height, 0.1), hNo: p.restTool, zTop: s.z1)
             addPiece(d)
         }
 
         // 内轮廓：圆/方按整腔二次开粗；自由轮廓仍按边界补刀。
+        if p.doPocket {
         for l in p.innerLoops {
             let host = hostZ(p, l.cx, l.cy)
             let depth = l.through ? max(host - minZ(p), 0.1) : max(l.depth, 0.1)
@@ -1190,8 +1241,11 @@ enum PartProg {
                 addPiece(d)
             }
         }
+        }
 
         for f in p.feats where !f.suppressed {
+            if f.kind == .hole && !p.doHole { continue }
+            if f.kind != .hole && !p.doPocket { continue }
             let host = hostZ(p, f)
             let depth: Double
             if f.kind == .hole {
@@ -1325,47 +1379,37 @@ enum PartProg {
                 if hk == .counterbore {
                     let cbID = "\(id)-cb"
                     if wanted(cbID) {
-                        var d = asDraw(p, outward: false, template: .circle,
-                                       circleD: f.resolvedCbDia,
-                                       dia: p.pocketDia, depth: counterboreDepth(f), hNo: p.pocketTool)
-                        d.zTop = host
-                        var code = ContourProg.generate(d)
-                        code = shift(code, dx: f.x, dy: f.y)
                         add("沉头 Ø\(ncf(f.resolvedCbDia)) 深\(ncf(counterboreDepth(f))) @X\(ncf(f.x)) Y\(ncf(f.y)) 圆柱近似 T\(p.pocketTool) D\(ncf(p.pocketDia))",
-                            p.pocketTool, code, id: cbID)
+                            p.pocketTool,
+                            CircularClear.code(dia: f.resolvedCbDia, depth: counterboreDepth(f), zTop: host,
+                                               toolDia: p.pocketDia, stepDown: p.stepDown, stepOver: p.stepOver,
+                                               feed: p.feed, spindle: p.spindle, safeZ: p.safeZ,
+                                               hNo: p.pocketTool, cx: f.x, cy: f.y, coord: p.coord),
+                            id: cbID)
                     }
                 }
                 // 沉孔顶部锥面：2.5D 用倒角圆近似
                 if hk == .countersink {
                     let csID = "\(id)-cs"
                     if wanted(csID) {
-                        var d = asDraw(p, outward: false, template: .circle,
-                                       circleD: f.resolvedCsDia,
-                                       dia: p.pocketDia, depth: countersinkDepth(f), hNo: p.pocketTool)
-                        d.zTop = host
-                        var code = ContourProg.generate(d)
-                        code = shift(code, dx: f.x, dy: f.y)
                         add("沉孔 Ø\(ncf(f.resolvedCsDia)) \(ncf(f.resolvedCsAngle))° 深\(ncf(countersinkDepth(f))) @X\(ncf(f.x)) Y\(ncf(f.y)) 锥面近似 T\(p.pocketTool) D\(ncf(p.pocketDia))",
-                            p.pocketTool, code, id: csID)
+                            p.pocketTool,
+                            CircularClear.code(dia: f.resolvedCsDia, depth: countersinkDepth(f), zTop: host,
+                                               toolDia: p.pocketDia, stepDown: p.stepDown, stepOver: p.stepOver,
+                                               feed: p.feed, spindle: p.spindle, safeZ: p.safeZ,
+                                               hNo: p.pocketTool, cx: f.x, cy: f.y, coord: p.coord),
+                            id: csID)
                     }
                 }
                 switch mode {
                 case .spiral:
-                    var s = PocketSpec()
-                    s.mode = .spiral
-                    s.spiralDia = f.dia
-                    s.toolDia = p.holeDia
-                    s.depth = max(host - bottom, 0.1)
-                    s.stepDown = p.stepDown
-                    s.spindle = p.spindle
-                    s.feed = p.feed
-                    s.safeZ = p.safeZ; s.zTop = host
-                    s.hNo = p.holeTool
-                    s.coord = p.coord
-                    s.cx = f.x
-                    s.cy = f.y
-                    add("孔 Ø\(ncf(f.dia)) \(f.holeSummary) @X\(ncf(f.x)) Y\(ncf(f.y)) 螺旋铣 T\(p.holeTool) D\(ncf(p.holeDia))",
-                        p.holeTool, GCodeGenerator.generate(s), id: id)
+                    add("孔 Ø\(ncf(f.dia)) \(f.holeSummary) @X\(ncf(f.x)) Y\(ncf(f.y)) 整圆螺旋清腔 T\(p.holeTool) D\(ncf(p.holeDia))",
+                        p.holeTool,
+                        CircularClear.code(dia: f.dia, depth: max(host - bottom, 0.1), zTop: host,
+                                           toolDia: p.holeDia, stepDown: p.stepDown, stepOver: p.stepOver,
+                                           feed: p.feed, spindle: p.spindle, safeZ: p.safeZ,
+                                           hNo: p.holeTool, cx: f.x, cy: f.y, coord: p.coord),
+                        id: id)
                 case .g81, .g83:
                     add("孔 Ø\(ncf(f.dia)) \(f.holeSummary) @X\(ncf(f.x)) Y\(ncf(f.y)) 钻孔 \(mode == .g81 ? "G81" : "G83")",
                         p.holeTool, drillBlock(p, f, zTop: host, zBottom: bottom), id: id)
@@ -1374,24 +1418,26 @@ enum PartProg {
                         p.tapTool, tapBlock(p, f, zTop: host, zBottom: bottom), id: id)
                 }
             } else if p.doPocket && f.kind == .rectPocket {
-                var d = asDraw(p, outward: false, template: .rect,
-                               dia: p.pocketDia, depth: f.depth, hNo: p.pocketTool)
-                d.rectL = f.w
-                d.rectW = f.h
-                d.rectR = 0
-                d.zTop = host
-                var code = ContourProg.generate(d)
-                code = shift(code, dx: f.x, dy: f.y)
+                var s = PocketSpec()
+                s.mode = .pocket
+                s.length = f.w; s.width = f.h
+                s.cornerType = .square; s.cornerValue = 0
+                s.depth = f.depth
+                s.stepDown = p.stepDown; s.stepOver = p.stepOver
+                s.toolDia = p.pocketDia
+                s.spindle = p.spindle; s.feed = p.feed; s.safeZ = p.safeZ; s.zTop = host
+                s.hNo = p.pocketTool; s.coord = p.coord
+                s.cx = f.x; s.cy = f.y
                 add("方腔 \(ncf(f.w))×\(ncf(f.h)) 深\(ncf(f.depth)) @X\(ncf(f.x)) Y\(ncf(f.y)) 型腔铣 T\(p.pocketTool) D\(ncf(p.pocketDia))",
-                    p.pocketTool, code, id: id)
+                    p.pocketTool, GCodeGenerator.generate(s), id: id)
             } else if p.doPocket {
-                var d = asDraw(p, outward: false, template: .circle, circleD: f.dia,
-                               dia: p.pocketDia, depth: f.depth, hNo: p.pocketTool)
-                d.zTop = host
-                var code = ContourProg.generate(d)
-                code = shift(code, dx: f.x, dy: f.y)
-                add("沉台 Ø\(ncf(f.dia)) 深\(ncf(f.depth)) @X\(ncf(f.x)) Y\(ncf(f.y)) 型腔铣 T\(p.pocketTool) D\(ncf(p.pocketDia))",
-                    p.pocketTool, code, id: id)
+                add("沉台 Ø\(ncf(f.dia)) 深\(ncf(f.depth)) @X\(ncf(f.x)) Y\(ncf(f.y)) 整圆清腔 T\(p.pocketTool) D\(ncf(p.pocketDia))",
+                    p.pocketTool,
+                    CircularClear.code(dia: f.dia, depth: f.depth, zTop: host,
+                                       toolDia: p.pocketDia, stepDown: p.stepDown, stepOver: p.stepOver,
+                                       feed: p.feed, spindle: p.spindle, safeZ: p.safeZ,
+                                       hNo: p.pocketTool, cx: f.x, cy: f.y, coord: p.coord),
+                    id: id)
             }
         }
 
@@ -1405,21 +1451,13 @@ enum PartProg {
             if l.template == .circle && l.through {
                 switch p.holeMode {
                 case .spiral:
-                    var s = PocketSpec()
-                    s.mode = .spiral
-                    s.spiralDia = l.circleD
-                    s.toolDia = p.holeDia
-                    s.depth = depth
-                    s.stepDown = p.stepDown
-                    s.spindle = p.spindle
-                    s.feed = p.feed
-                    s.safeZ = p.safeZ; s.zTop = maxZ(p)
-                    s.hNo = p.holeTool
-                s.coord = p.coord
-                    s.cx = l.cx
-                    s.cy = l.cy
-                    add("\(l.name) Ø\(ncf(l.circleD)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 螺旋铣 T\(p.holeTool) D\(ncf(p.holeDia))",
-                        p.holeTool, GCodeGenerator.generate(s), id: id)
+                    add("\(l.name) Ø\(ncf(l.circleD)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 整圆螺旋清腔 T\(p.holeTool) D\(ncf(p.holeDia))",
+                        p.holeTool,
+                        CircularClear.code(dia: l.circleD, depth: depth, zTop: maxZ(p),
+                                           toolDia: p.holeDia, stepDown: p.stepDown, stepOver: p.stepOver,
+                                           feed: p.feed, spindle: p.spindle, safeZ: p.safeZ,
+                                           hNo: p.holeTool, cx: l.cx, cy: l.cy, coord: p.coord),
+                        id: id)
                 case .g81, .g83:
                     let f = PartFeat(kind: .hole, x: l.cx, y: l.cy, dia: l.circleD, depth: depth)
                     add("\(l.name) Ø\(ncf(l.circleD)) @X\(ncf(l.cx)) Y\(ncf(l.cy)) 钻孔 \(p.holeMode == .g81 ? "G81" : "G83")",

@@ -69,7 +69,6 @@ struct StudioScreen: View {
     @State private var dimEditText = ""
     @State private var dimTarget: DimTarget = .none
     @State private var sketchSidePanel: SketchSidePanel = .none
-    @State private var showModelTools = false
     @State private var drawInner = false
     @State private var innerDraft: [ContourNode] = []
     @State private var undoStack: [PartSpec] = []
@@ -297,11 +296,13 @@ struct StudioScreen: View {
         }
         .onChange(of: spec) { _ in
             opGenerated = false
-            cam2DPaths = PartProg.toolpaths2D(spec)
+            // 2D 刀路只在加工页需要；草图/建模页每改一个尺寸就全量重算会明显卡顿。
+            if step == 3 { cam2DPaths = PartProg.toolpaths2D(spec) }
             ProjectStore.save(spec)
         }
         .onChange(of: step) { v in
             if v != 1 && stepShapeEditID != nil { cancelStepShapeEdit() }
+            if v == 3 { cam2DPaths = PartProg.toolpaths2D(spec) }
         }
         .onAppear {
             cam2DPaths = PartProg.toolpaths2D(spec)
@@ -8159,7 +8160,7 @@ struct StudioScreen: View {
                 }
                 if spec.doRest {
                     toolRow("残料", $spec.restTool, $spec.restDia)
-                    Text("用小刀沿基础外形和增料台阶再走一圈；不是按前一把刀真实残料模型生成。小刀径应小于轮廓/开粗刀径。")
+                    Text("基础外形/台阶沿边界补刀；方腔按上一把大刀的 2D 刀路扫掠差集，只有真检测到残料才整腔二次开粗；圆腔/孔整圆清一次。仍是 2.5D，不是 3D 实体布尔。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 HStack {
