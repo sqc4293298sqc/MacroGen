@@ -4476,16 +4476,13 @@ struct StudioScreen: View {
         }
         s.shape.centeredRect = (template == .rect)
         let c = PartProg.baseCenter(spec)
-        let onBase = hasPtr && PartProg.pointIn(PartProg.pts(spec), ptrX, ptrY)
-        let onStep = hasPtr && PartProg.stepAt(spec, ptrX, ptrY) != nil
-        let usePointer = onBase || onStep
-        s.shape.cx = usePointer ? ptrX : Double(c.x)
-        s.shape.cy = usePointer ? ptrY : Double(c.y)
+        s.shape.cx = Double(c.x)
+        s.shape.cy = Double(c.y)
         s.name = mode == .add
             ? (template == .circle ? "圆凸台" : "方凸台")
             : (template == .circle ? "圆型腔" : "方型腔")
         spec.steps.append(s)
-        showToastView("已加\(s.name)：Z\(ncf(s.drawBottom))~\(ncf(s.drawTop))，可在这一行改尺寸/中心")
+        showToastView("已加\(s.name)：默认在基础中心，可在这一行改 X/Y")
     }
 
     /// 直接加一个自由轮廓凸台，落点后马上进入“点模型画异形”模式
