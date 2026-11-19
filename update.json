@@ -1,8 +1,8 @@
 {
   "android": {
-    "versionCode": 23,
-    "versionName": "2.9.2",
-    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.9.2/MacroGen.apk",
-    "changelog": "安卓正式版 2.9.2：建模编程（草图/3D/工序）、建模特征清单与外形厚度、整件旋转/缩放/适合窗口、G81/G83 钻孔、攻丝、工序参数编辑；在线更新覆盖 2.6.5 及更早版本。"
+    "versionCode": 26,
+    "versionName": "2.9.5",
+    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.9.5/MacroGen.apk",
+    "changelog": "新增汉字刻字：黑体/宋体/等线/楷体/仿宋/圆体；支持单字宽高、逐字宽高、字距、总宽高、总深、每层切深、刀径和进给；带轮廓预览、G代码仿真、保存和分享。"
   }
 }
