@@ -41,6 +41,14 @@ struct HomeView: View {
                              tint: Color(red: 1.0, green: 0.42, blue: 0.10))
                     }
                     .buttonStyle(.plain)
+
+                    NavigationLink {
+                        TextEngraveScreen()
+                    } label: {
+                        Tile(title: "汉字刻字", icon: "textformat",
+                             tint: Color(red: 0.44, green: 0.35, blue: 0.78))
+                    }
+                    .buttonStyle(.plain)
                 }
 
                 group("查询 · 工具")
