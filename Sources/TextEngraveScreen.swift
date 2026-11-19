@@ -191,7 +191,7 @@ struct TextEngraveScreen: View {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         return parts.compactMap {
-            Double($0.replacingOccurrences(of: ",", with: ".")).map(CGFloat.init)
+            Double($0.replacingOccurrences(of: ",", with: ".")).map { CGFloat($0) }
         }
     }
 
