@@ -241,8 +241,9 @@ enum TextEngraveEngine {
         func quad(_ p: CGPoint, control c: CGPoint) {
             let approx = max(8, Int(ceil((hypot(c.x - last.x, c.y - last.y)
                 + hypot(p.x - c.x, p.y - c.y)) / step))
-            for i in 1...max(1, approx) {
-                let t = CGFloat(i) / CGFloat(max(1, approx))
+            let count = max(1, approx)
+            for i in 1...count {
+                let t = CGFloat(i) / CGFloat(count)
                 let x = (1 - t) * (1 - t) * last.x + 2 * (1 - t) * t * c.x + t * t * p.x
                 let y = (1 - t) * (1 - t) * last.y + 2 * (1 - t) * t * c.y + t * t * p.y
                 add(CGPoint(x: x, y: y))
@@ -254,8 +255,9 @@ enum TextEngraveEngine {
             let approx = max(10, Int(ceil((hypot(c1.x - last.x, c1.y - last.y)
                 + hypot(c2.x - c1.x, c2.y - c1.y)
                 + hypot(p.x - c2.x, p.y - c2.y)) / step))
-            for i in 1...max(1, approx) {
-                let t = CGFloat(i) / CGFloat(max(1, approx))
+            let count = max(1, approx)
+            for i in 1...count {
+                let t = CGFloat(i) / CGFloat(count)
                 let mt = 1 - t
                 let x = mt * mt * mt * last.x + 3 * mt * mt * t * c1.x
                     + 3 * mt * t * t * c2.x + t * t * t * p.x
