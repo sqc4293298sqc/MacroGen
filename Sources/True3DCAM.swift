@@ -332,8 +332,13 @@ enum True3DCAM {
     private static func offset(_ loop: CamLoop, by distance: Double, expand: Bool) -> [CGPoint]? {
         let d = abs(distance)
         guard d > 0.01 else { return loop.points }
-        let plusLoops = loop.wire.offset(by: d).map { polygons(of: $0) } ?? []
-        let minusLoops = loop.wire.offset(by: -d).map { polygons(of: $0) } ?? []
+        // 用面做多环偏置：Wire.offset 只返回结果里的第一条 wire，
+        // 当 OCCT 同时产生正确轮廓和包围盒边界线时会直接丢掉正确环。
+        let offsetFace = Shape.face(from: loop.wire, planar: true)
+        let plusWires = offsetFace?.multiOffsetWires(offsets: [d]) ?? loop.wire.offset(by: d).map { [$0] } ?? []
+        let minusWires = offsetFace?.multiOffsetWires(offsets: [-d]) ?? loop.wire.offset(by: -d).map { [$0] } ?? []
+        let plusLoops = plusWires.flatMap { polygons(of: $0) }
+        let minusLoops = minusWires.flatMap { polygons(of: $0) }
         let baseArea = max(loop.area, 0.01)
         if ProcessInfo.processInfo.environment["CAM_DEBUG"] == "1", d < 10 {
             func b(_ loops: [[CGPoint]]) -> String {
