@@ -54,9 +54,7 @@ func verifyCase(_ name: String, model: True3DParams, cam: True3DCAMParams) {
 var base = True3DParams()
 var cam = True3DCAMParams()
 // Debug: isolate the base outer contour and avoid inner clearing / face rows.
-base.bossEnabled = false
-base.holeEnabled = false
-base.pocketEnabled = false
+base.features = []
 cam.doFaceBaseTop = false
 cam.doFaceBossTop = false
 cam.doFacePocketBottom = false
@@ -68,19 +66,24 @@ base = True3DParams()
 cam = True3DCAMParams()
 verifyCase("default-boss-hole-pocket", model: base, cam: cam)
 
-base.bossEnabled = false
-base.holeEnabled = false
-base.pocketEnabled = true
+base.features = True3DParams.defaultFeatures.filter { $0.kind == .rectPocket }
 base.edgeMode = .chamfer
 verifyCase("chamfer-pocket-only", model: base, cam: cam)
 
-base.bossEnabled = true
-base.holeEnabled = true
-base.pocketEnabled = false
+base.features = True3DParams.defaultFeatures.filter { $0.kind == .hole || $0.kind == .boss }
 base.edgeMode = .none
 cam.stepDown = 2.5
 cam.stepOver = 5
 verifyCase("no-fillet-hole-boss", model: base, cam: cam)
+
+base = True3DParams()
+var extraHole = True3DFeatureSpec(kind: .hole, x: -30, y: 0)
+extraHole.name = "第二孔"; extraHole.dia = 10; extraHole.holeKind = .through
+var extraPocket = True3DFeatureSpec(kind: .rectPocket, x: 30, y: -20)
+extraPocket.name = "第二方腔"; extraPocket.width = 16; extraPocket.depthY = 12; extraPocket.depth = 4; extraPocket.cornerRadius = 2
+base.features.append(extraHole)
+base.features.append(extraPocket)
+verifyCase("multi-feature", model: base, cam: cam)
 
 cam.toolDia = 10
 base = True3DParams()

@@ -1,25 +1,38 @@
 import Foundation
 import SceneKit
 import SwiftUI
+import UIKit
+import PhotosUI
+import UniformTypeIdentifiers
 import OCCTSwift
 
-/// iOS 正式真 3D 建模页：所有几何都由 OCCT B-Rep 生成。
-/// 当前覆盖基础块、圆角/倒角、通孔、凸台、方腔和 STEP/STL 导出。
+/// iOS 正式真 3D 建模页：OCCT B-Rep 实体、可编辑特征树、DXF/照片导入、STEP/STL 导出。
 struct True3DModelScreen: View {
     @State private var params = True3DParams()
     @State private var scene = SCNScene()
     @State private var result: True3DResult?
     @State private var error: String?
+    @State private var notice: String?
     @State private var message = "点“生成实体”创建 OCCT 实体"
     @State private var showWire = true
     @State private var stepURL: URL?
     @State private var stlURL: URL?
     @State private var isBuilding = false
     @State private var didInitialBuild = false
+    @State private var selectedFeatureID: UUID?
+    @State private var showImporter = false
+    @State private var showCamera = false
+    @State private var showPhotoPicker = false
+    @State private var photoItem: PhotosPickerItem?
+    @State private var importBusy = false
 
     private var isDirty: Bool {
         guard let result else { return false }
         return result.params != params
+    }
+
+    private var dxfType: UTType {
+        UTType(filenameExtension: "dxf") ?? .plainText
     }
 
     var body: some View {
@@ -36,6 +49,12 @@ struct True3DModelScreen: View {
                     )
 
                 statusArea
+                if let notice {
+                    Label(notice, systemImage: "info.circle")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 buildButton
 
                 if let result {
@@ -61,8 +80,9 @@ struct True3DModelScreen: View {
                 }
 
                 parametersArea
+                featureListArea
 
-                Text("真 3D 页面使用 Open CASCADE Technology 8.0.1 的 B-Rep 实体和布尔运算；旧 2.5D 建模/工序入口已移除，仅保留 2D 单工序快捷编程。")
+                Text("真 3D 页面使用 Open CASCADE Technology 8.0.1 的 B-Rep 实体和布尔运算；旧 2.5D 建模/工序入口已移除。")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -74,21 +94,62 @@ struct True3DModelScreen: View {
             .padding(16)
             .padding(.bottom, 24)
         }
-        .navigationTitle("真 3D 建模")
+        .navigationTitle(params.projectName.isEmpty ? "真 3D 建模" : params.projectName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    rebuild()
+                Menu {
+                    Button { showImporter = true } label: {
+                        Label("导入 DXF 轮廓", systemImage: "doc.badge.plus")
+                    }
+                    Button { showPhotoPicker = true } label: {
+                        Label("相册识别轮廓", systemImage: "photo")
+                    }
+                    Button { showCamera = true } label: {
+                        Label("拍照识别轮廓", systemImage: "camera")
+                    }
+                    Divider()
+                    Button { saveProject() } label: {
+                        Label("保存工程", systemImage: "square.and.arrow.down")
+                    }
+                    Button { loadProject() } label: {
+                        Label("载入工程", systemImage: "folder")
+                    }
+                    Divider()
+                    Button { rebuild() } label: {
+                        Label("重新生成", systemImage: "arrow.clockwise")
+                    }
                 } label: {
-                    Image(systemName: "arrow.clockwise")
+                    Image(systemName: "ellipsis.circle")
                 }
+                .disabled(isBuilding || importBusy)
             }
         }
         .task {
             if !didInitialBuild {
                 didInitialBuild = true
                 rebuild()
+            }
+        }
+        .fileImporter(
+            isPresented: $showImporter,
+            allowedContentTypes: [dxfType, .plainText],
+            allowsMultipleSelection: true
+        ) { outcome in
+            switch outcome {
+            case .success(let urls):
+                if let url = urls.first { importDXF(url) }
+            case .failure(let err):
+                self.error = "打开 DXF 失败：\(err.localizedDescription)"
+            }
+        }
+        .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images)
+        .onChange(of: photoItem) { _ in
+            loadPhotoItem()
+        }
+        .sheet(isPresented: $showCamera) {
+            CameraPicker { image in
+                scanImage(image)
             }
         }
     }
@@ -106,7 +167,7 @@ struct True3DModelScreen: View {
                     .foregroundStyle(Color(red: 0.08, green: 0.42, blue: 0.38))
                     .clipShape(Capsule())
             }
-            Text("实体布尔 · 圆角/倒角 · 通孔 · 凸台 · 方腔 · STEP/STL")
+            Text("实体布尔 · 多孔/凸台/型腔/腰槽 · 特征树 · DXF/照片 · STEP/STL")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
         }
@@ -130,12 +191,15 @@ struct True3DModelScreen: View {
                     Divider().frame(height: 30)
                     metric("三角面", "\(result.stats.triangles)")
                 }
-                HStack(spacing: 8) {
+                HStack {
+                    Text("外形 \(String(format: "%.1f", result.stats.sizeX)) × \(String(format: "%.1f", result.stats.sizeY)) × \(String(format: "%.1f", result.stats.sizeZ)) mm")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Spacer()
                     Label(result.stats.valid ? "实体有效" : "实体无效",
                           systemImage: result.stats.valid ? "checkmark.seal.fill" : "exclamationmark.octagon.fill")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(result.stats.valid ? Color.green : Color.red)
-                    Spacer()
                     Toggle("线框", isOn: $showWire)
                         .font(.system(size: 12))
                         .toggleStyle(.switch)
@@ -152,8 +216,8 @@ struct True3DModelScreen: View {
             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
         } else {
             HStack(spacing: 8) {
-                if isBuilding { ProgressView() }
-                Text(message)
+                if isBuilding || importBusy { ProgressView() }
+                Text(importBusy ? "正在识别轮廓…" : message)
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             }
@@ -184,36 +248,35 @@ struct True3DModelScreen: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
-            .disabled(isBuilding)
+            .disabled(isBuilding || importBusy)
 
             Button {
                 params = True3DParams()
+                selectedFeatureID = nil
                 rebuild()
             } label: {
                 Label("恢复默认", systemImage: "arrow.counterclockwise")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
-            .disabled(isBuilding)
+            .disabled(isBuilding || importBusy)
         }
         .font(.system(size: 13, weight: .medium))
     }
 
     private func featureTree(_ features: [True3DFeature]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("特征树")
+            sectionTitle("生成结果")
             VStack(spacing: 0) {
                 ForEach(Array(features.enumerated()), id: \.element.id) { index, feature in
                     HStack(spacing: 10) {
-                        Image(systemName: feature.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
-                            .foregroundStyle(feature.ok ? Color.green : Color.red)
+                        Image(systemName: feature.ok ? "checkmark.circle.fill" : "minus.circle")
+                            .foregroundStyle(feature.ok ? Color.green : Color.secondary)
                             .font(.system(size: 14))
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(feature.name)
-                                .font(.system(size: 13, weight: .semibold))
-                            Text(feature.detail)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
+                            Text(feature.name).font(.system(size: 13, weight: .semibold))
+                            Text(feature.detail).font(.system(size: 11)).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer()
                         Text("\(index + 1)")
@@ -221,9 +284,7 @@ struct True3DModelScreen: View {
                             .foregroundStyle(.tertiary)
                     }
                     .padding(.vertical, 8)
-                    if index < features.count - 1 {
-                        Divider().padding(.leading, 24)
-                    }
+                    if index < features.count - 1 { Divider().padding(.leading, 24) }
                 }
             }
             .padding(.horizontal, 12)
@@ -237,32 +298,23 @@ struct True3DModelScreen: View {
             HStack(spacing: 10) {
                 if let stepURL {
                     ShareLink(item: stepURL) {
-                        Label("分享 STEP", systemImage: "square.and.arrow.up")
-                            .frame(maxWidth: .infinity)
+                        Label("分享 STEP", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                 } else {
-                    Button {
-                        exportSTEP()
-                    } label: {
-                        Label("生成 STEP", systemImage: "doc.badge.plus")
-                            .frame(maxWidth: .infinity)
+                    Button { exportSTEP() } label: {
+                        Label("生成 STEP", systemImage: "doc.badge.plus").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                 }
-
                 if let stlURL {
                     ShareLink(item: stlURL) {
-                        Label("分享 STL", systemImage: "square.and.arrow.up")
-                            .frame(maxWidth: .infinity)
+                        Label("分享 STL", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                 } else {
-                    Button {
-                        exportSTL()
-                    } label: {
-                        Label("生成 STL", systemImage: "doc.badge.plus")
-                            .frame(maxWidth: .infinity)
+                    Button { exportSTL() } label: {
+                        Label("生成 STL", systemImage: "doc.badge.plus").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                 }
@@ -273,14 +325,31 @@ struct True3DModelScreen: View {
 
     private var parametersArea: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("参数")
-
+            sectionTitle("基础形状")
+            group("工程") {
+                TextField("工程名", text: $params.projectName)
+                    .textFieldStyle(.roundedBorder)
+            }
             group("基础块") {
+                Picker("形状", selection: $params.baseShape) {
+                    ForEach(True3DBaseShape.allCases) { shape in
+                        Text(shape.rawValue).tag(shape)
+                    }
+                }
+                .pickerStyle(.segmented)
+                if params.baseShape == .profile {
+                    Text("轮廓点：\(params.profile.count) 个（由 DXF/照片导入）")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    Button("清空轮廓，改回矩形") {
+                        params.baseShape = .box
+                        params.profile.removeAll()
+                    }
+                    .font(.system(size: 11))
+                }
                 numRow("X 长", $params.width)
                 numRow("Y 宽", $params.depth)
                 numRow("Z 高", $params.height)
             }
-
             group("边缘处理") {
                 Picker("方式", selection: $params.edgeMode) {
                     ForEach(True3DEdgeMode.allCases) { mode in
@@ -292,46 +361,156 @@ struct True3DModelScreen: View {
                     numRow(params.edgeMode == .fillet ? "圆角 R" : "倒角 C", $params.edgeSize)
                 }
             }
-
-            group("通孔") {
-                Toggle("启用通孔", isOn: $params.holeEnabled)
-                if params.holeEnabled {
-                    numRow("孔径 Ø", $params.holeDiameter)
-                    numRow("中心 X", $params.holeX)
-                    numRow("中心 Y", $params.holeY)
-                }
-            }
-
-            group("凸台") {
-                Toggle("启用凸台", isOn: $params.bossEnabled)
-                if params.bossEnabled {
-                    numRow("直径 Ø", $params.bossDiameter)
-                    numRow("高度 H", $params.bossHeight)
-                    numRow("中心 X", $params.bossX)
-                    numRow("中心 Y", $params.bossY)
-                }
-            }
-
-            group("方腔") {
-                Toggle("启用方腔", isOn: $params.pocketEnabled)
-                if params.pocketEnabled {
-                    numRow("X 宽", $params.pocketWidth)
-                    numRow("Y 宽", $params.pocketDepthXY)
-                    numRow("深度 Z", $params.pocketZ)
-                    numRow("中心 X", $params.pocketX)
-                    numRow("中心 Y", $params.pocketY)
-                }
-            }
         }
         .padding(12)
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
     }
 
+    private var featureListArea: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                sectionTitle("特征")
+                Spacer()
+                Menu {
+                    Button("孔") { addFeature(.hole) }
+                    Button("凸台") { addFeature(.boss) }
+                    Button("圆腔") { addFeature(.circularPocket) }
+                    Button("方腔") { addFeature(.rectPocket) }
+                    Button("腰形槽") { addFeature(.slot) }
+                } label: {
+                    Label("添加", systemImage: "plus.circle")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .disabled(isBuilding || importBusy)
+            }
+            if params.features.isEmpty {
+                Text("还没有特征；点“添加”创建孔、凸台或型腔。")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+            VStack(spacing: 0) {
+                ForEach($params.features) { $feature in
+                    featureRow($feature)
+                    if selectedFeatureID == feature.wrappedValue.id {
+                        featureEditor($feature)
+                            .padding(.horizontal, 12)
+                            .padding(.bottom, 10)
+                    }
+                    Divider().padding(.leading, 12)
+                }
+            }
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private func featureRow(_ feature: Binding<True3DFeatureSpec>) -> some View {
+        HStack(spacing: 9) {
+            Button {
+                selectedFeatureID = selectedFeatureID == feature.wrappedValue.id ? nil : feature.wrappedValue.id
+            } label: {
+                Image(systemName: icon(for: feature.wrappedValue.kind))
+                    .font(.system(size: 16))
+                    .foregroundStyle(feature.wrappedValue.suppressed ? Color.secondary : Color(red: 0.10, green: 0.55, blue: 0.50))
+                    .frame(width: 26)
+            }
+            .buttonStyle(.plain)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(feature.wrappedValue.name)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(feature.wrappedValue.suppressed ? .secondary : .primary)
+                Text(feature.wrappedValue.detail)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            Spacer()
+            Toggle("", isOn: feature.suppressed).labelsHidden().scaleEffect(0.8)
+            Button(role: .destructive) {
+                params.features.removeAll { $0.id == feature.wrappedValue.id }
+                if selectedFeatureID == feature.wrappedValue.id { selectedFeatureID = nil }
+            } label: {
+                Image(systemName: "trash").font(.system(size: 12))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.red.opacity(0.75))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+    }
+
+    @ViewBuilder
+    private func featureEditor(_ f: Binding<True3DFeatureSpec>) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("特征名称", text: f.name)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12))
+            switch f.wrappedValue.kind {
+            case .hole:
+                numRow("直径 Ø", f.dia)
+                numRow("中心 X", f.x)
+                numRow("中心 Y", f.y)
+                Picker("孔类型", selection: f.holeKind) {
+                    ForEach(True3DHoleKind.allCases) { kind in
+                        Text(kind.rawValue).tag(kind)
+                    }
+                }
+                .font(.system(size: 12))
+                if f.wrappedValue.holeKind == .blind || f.wrappedValue.holeKind == .thread {
+                    numRow("深度", f.holeDepth)
+                }
+                if f.wrappedValue.holeKind == .counterbore {
+                    optRow("沉头 Ø", f.cbDia, fallback: f.wrappedValue.dia + 2)
+                    optRow("沉头深", f.cbDepth, fallback: 2)
+                }
+                if f.wrappedValue.holeKind == .countersink {
+                    optRow("沉孔 Ø", f.csDia, fallback: f.wrappedValue.dia + 2)
+                    optRow("沉孔角", f.csAngle, fallback: 90)
+                }
+            case .boss:
+                numRow("直径 Ø", f.dia)
+                numRow("高度 H", f.bossHeight)
+                numRow("中心 X", f.x)
+                numRow("中心 Y", f.y)
+            case .circularPocket:
+                numRow("直径 Ø", f.dia)
+                numRow("深度", f.depth)
+                numRow("中心 X", f.x)
+                numRow("中心 Y", f.y)
+            case .rectPocket:
+                numRow("X 长", f.width)
+                numRow("Y 宽", f.depthY)
+                numRow("深度", f.depth)
+                numRow("圆角 R", f.cornerRadius)
+                numRow("中心 X", f.x)
+                numRow("中心 Y", f.y)
+            case .slot:
+                numRow("总长", f.width)
+                numRow("槽宽", f.depthY)
+                numRow("深度", f.depth)
+                numRow("中心 X", f.x)
+                numRow("中心 Y", f.y)
+            }
+            topZEditor(f)
+        }
+        .padding(10)
+        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder
+    private func topZEditor(_ f: Binding<True3DFeatureSpec>) -> some View {
+        Toggle("指定顶面 Z", isOn: Binding(
+            get: { f.wrappedValue.topZ != nil },
+            set: { on in f.wrappedValue.topZ = on ? params.height : nil }
+        ))
+        .font(.system(size: 12))
+        if f.wrappedValue.topZ != nil {
+            optRow("顶面 Z", f.topZ, fallback: params.height)
+        }
+    }
+
     private func group<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
+            Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
             content()
             Divider()
         }
@@ -339,19 +518,22 @@ struct True3DModelScreen: View {
 
     private func numRow(_ title: String, _ value: Binding<Double>) -> some View {
         HStack(spacing: 8) {
-            Text(title)
-                .font(.system(size: 13))
+            Text(title).font(.system(size: 12))
             Spacer()
-            TextField("0", value: value, format: .number.precision(.fractionLength(1)))
+            TextField("0", value: value, format: .number.precision(.fractionLength(2)))
                 .keyboardType(.decimalPad)
                 .multilineTextAlignment(.trailing)
-                .frame(width: 76)
+                .frame(width: 82)
                 .textFieldStyle(.roundedBorder)
-            Text("mm")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .frame(width: 20, alignment: .leading)
+            Text("mm").font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 20, alignment: .leading)
         }
+    }
+
+    private func optRow(_ title: String, _ value: Binding<Double?>, fallback: Double) -> some View {
+        numRow(title, Binding(
+            get: { value.wrappedValue ?? fallback },
+            set: { value.wrappedValue = $0 }
+        ))
     }
 
     private func sectionTitle(_ title: String) -> some View {
@@ -360,15 +542,43 @@ struct True3DModelScreen: View {
             .foregroundStyle(Color(red: 0.14, green: 0.17, blue: 0.22))
     }
 
+    private func icon(for kind: True3DFeatureKind) -> String {
+        switch kind {
+        case .hole: return "circle.circle"
+        case .boss: return "cylinder"
+        case .circularPocket: return "circle.dashed"
+        case .rectPocket: return "square.dashed"
+        case .slot: return "capsule"
+        }
+    }
+
+    private func addFeature(_ kind: True3DFeatureKind) {
+        var f = True3DFeatureSpec(kind: kind)
+        switch kind {
+        case .hole:
+            f.name = "新孔"; f.x = -params.width * 0.25; f.dia = 10
+        case .boss:
+            f.name = "新凸台"; f.x = params.width * 0.25; f.y = params.depth * 0.15; f.dia = 20; f.bossHeight = 6
+        case .circularPocket:
+            f.name = "新圆腔"; f.x = -params.width * 0.25; f.dia = 20; f.depth = 5
+        case .rectPocket:
+            f.name = "新方腔"; f.x = params.width * 0.25; f.y = -params.depth * 0.2; f.width = 24; f.depthY = 18
+        case .slot:
+            f.name = "新腰形槽"; f.x = 0; f.y = -params.depth * 0.25; f.width = 40; f.depthY = 12
+        }
+        params.features.append(f)
+        selectedFeatureID = f.id
+    }
+
     private func rebuild() {
         error = nil
+        notice = nil
         result = nil
         scene = SCNScene()
         stepURL = nil
         stlURL = nil
         isBuilding = true
         message = "正在构建 OCCT 实体…"
-
         do {
             let newResult = try True3DKernel.build(params)
             result = newResult
@@ -384,11 +594,9 @@ struct True3DModelScreen: View {
     private func makeScene(result: True3DResult) -> SCNScene {
         let newScene = SCNScene()
         newScene.background.contents = UIColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1)
-
         let modelRoot = SCNNode()
         modelRoot.eulerAngles.x = -Float.pi / 2
         newScene.rootNode.addChildNode(modelRoot)
-
         let geometry = result.mesh.sceneKitGeometry()
         let material = SCNMaterial()
         material.lightingModel = .physicallyBased
@@ -399,7 +607,6 @@ struct True3DModelScreen: View {
         let solidNode = SCNNode(geometry: geometry)
         solidNode.name = "solid"
         modelRoot.addChildNode(solidNode)
-
         let wireMaterial = SCNMaterial()
         wireMaterial.lightingModel = .constant
         wireMaterial.diffuse.contents = UIColor(red: 0.10, green: 0.15, blue: 0.20, alpha: 0.72)
@@ -412,9 +619,9 @@ struct True3DModelScreen: View {
         wireNode.scale = SCNVector3(1.002, 1.002, 1.002)
         wireNode.isHidden = !showWire
         modelRoot.addChildNode(wireNode)
-
         let model = result.params
-        let maxSize = max(model.width, model.depth, model.height, 20)
+        let bossMax = model.bossFeatures.map(\.bossHeight).max() ?? 0
+        let maxSize = max(model.width, model.depth, model.height + bossMax, 20)
         let camera = SCNNode()
         camera.camera = SCNCamera()
         camera.camera?.fieldOfView = 38
@@ -426,7 +633,6 @@ struct True3DModelScreen: View {
         newScene.rootNode.addChildNode(target)
         camera.constraints = [SCNLookAtConstraint(target: target)]
         newScene.rootNode.addChildNode(camera)
-
         let light = SCNNode()
         light.light = SCNLight()
         light.light?.type = .omni
@@ -434,14 +640,12 @@ struct True3DModelScreen: View {
         light.light?.temperature = 6500
         light.position = SCNVector3(Float(maxSize * 1.2), Float(maxSize * 1.8), Float(maxSize * 1.2))
         newScene.rootNode.addChildNode(light)
-
         let fill = SCNNode()
         fill.light = SCNLight()
         fill.light?.type = .ambient
         fill.light?.intensity = 350
         fill.light?.color = UIColor(red: 0.72, green: 0.80, blue: 0.90, alpha: 1)
         newScene.rootNode.addChildNode(fill)
-
         return newScene
     }
 
@@ -467,6 +671,156 @@ struct True3DModelScreen: View {
         } catch {
             self.error = "STL 导出失败：\(error.localizedDescription)"
         }
+    }
+
+    private func saveProject() {
+        do {
+            try True3DProjectStore.save(params)
+            notice = "工程已保存到 Documents/MacroGen-3D-project.json"
+        } catch {
+            self.error = "保存工程失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func loadProject() {
+        do {
+            params = try True3DProjectStore.load()
+            selectedFeatureID = nil
+            rebuild()
+            notice = "已载入上次保存的 3D 工程"
+        } catch {
+            self.error = "载入工程失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func importDXF(_ url: URL) {
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            let imported = try DXFImporter.parse(text, name: url.deletingPathExtension().lastPathComponent)
+            apply(spec: imported.spec, name: url.deletingPathExtension().lastPathComponent, note: imported.note)
+        } catch {
+            self.error = "DXF 导入失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func loadPhotoItem() {
+        guard let item = photoItem else { return }
+        Task {
+            do {
+                guard let data = try await item.loadTransferable(type: Data.self),
+                      let image = UIImage(data: data) else { return }
+                await MainActor.run { scanImage(image) }
+            } catch {
+                await MainActor.run { self.error = "读取图片失败：\(error.localizedDescription)" }
+            }
+        }
+    }
+
+    private func scanImage(_ image: UIImage) {
+        importBusy = true
+        error = nil
+        notice = nil
+        Task {
+            do {
+                let scanned = try await DrawingScanner.scan(image)
+                await MainActor.run {
+                    apply(spec: scanned.spec, name: scanned.spec.projectName, note: scanned.scaleNote)
+                    importBusy = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.error = "照片识别失败：\(error.localizedDescription)"
+                    importBusy = false
+                }
+            }
+        }
+    }
+
+    private func apply(spec: PartSpec, name: String, note: String) {
+        var p = True3DParams()
+        p.projectName = name.isEmpty ? "导入工程" : name
+        p.height = max(spec.height, 1)
+        p.edgeMode = .none
+        p.edgeSize = 0
+        switch spec.template {
+        case .free:
+            let nodes = spec.nodes
+            guard nodes.count >= 3 else {
+                self.error = "导入的轮廓少于 3 个点，无法生成实体"
+                return
+            }
+            p.baseShape = .profile
+            p.profile = nodes.map { True3DPoint(x: $0.x, y: $0.y) }
+            p.width = max((nodes.map(\.x).max() ?? 0) - (nodes.map(\.x).min() ?? 0), 1)
+            p.depth = max((nodes.map(\.y).max() ?? 0) - (nodes.map(\.y).min() ?? 0), 1)
+        case .circle:
+            p.baseShape = .circle
+            p.width = max(spec.circleD, 1)
+            p.depth = max(spec.circleD, 1)
+        case .slot:
+            p.baseShape = .profile
+            p.profile = stadiumPoints(length: max(spec.slotL, spec.slotW), width: max(spec.slotW, 1))
+            p.width = max(spec.slotL, 1)
+            p.depth = max(spec.slotW, 1)
+        case .rect:
+            p.baseShape = .box
+            p.width = max(spec.rectL, 1)
+            p.depth = max(spec.rectW, 1)
+        }
+        p.features = spec.feats.map(convert)
+        params = p
+        selectedFeatureID = nil
+        rebuild()
+        notice = note
+    }
+
+    private func convert(_ feature: PartFeat) -> True3DFeatureSpec {
+        switch feature.kind {
+        case .hole:
+            var f = True3DFeatureSpec(kind: .hole, x: feature.x, y: feature.y)
+            f.name = feature.name.isEmpty ? "导入孔" : feature.name
+            f.dia = feature.dia
+            f.holeKind = True3DHoleKind(rawValue: feature.resolvedHoleKind.rawValue) ?? .through
+            f.holeDepth = feature.resolvedHoleDepth
+            f.cbDia = feature.cbDia
+            f.cbDepth = feature.cbDepth
+            f.csDia = feature.csDia
+            f.csAngle = feature.csAngle
+            f.topZ = feature.placeZ
+            return f
+        case .pocket:
+            var f = True3DFeatureSpec(kind: .circularPocket, x: feature.x, y: feature.y)
+            f.name = feature.name.isEmpty ? "导入圆腔" : feature.name
+            f.dia = feature.dia
+            f.depth = feature.depth
+            f.topZ = feature.placeZ
+            return f
+        case .rectPocket:
+            var f = True3DFeatureSpec(kind: .rectPocket, x: feature.x, y: feature.y)
+            f.name = feature.name.isEmpty ? "导入方腔" : feature.name
+            f.width = feature.w
+            f.depthY = feature.h
+            f.depth = feature.depth
+            f.topZ = feature.placeZ
+            return f
+        }
+    }
+
+    private func stadiumPoints(length: Double, width: Double) -> [True3DPoint] {
+        let r = width / 2
+        let half = max(length / 2 - r, 0)
+        var pts: [True3DPoint] = []
+        for i in 0...12 {
+            let a = Double(i) / 12 * .pi - .pi / 2
+            pts.append(True3DPoint(x: half + r * cos(a), y: r * sin(a)))
+        }
+        for i in 0...12 {
+            let a = Double(i) / 12 * .pi + .pi / 2
+            pts.append(True3DPoint(x: -half + r * cos(a), y: r * sin(a)))
+        }
+        return pts
     }
 }
 

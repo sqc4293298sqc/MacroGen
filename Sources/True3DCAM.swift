@@ -96,8 +96,8 @@ enum True3DCAM {
         let bottom = bounds.min.z - max(0, cam.stockExtraBottom)
         let top = bounds.max.z
         let baseTop = max(0, model.height)
-        let bossTop = baseTop + (model.bossEnabled ? max(0, model.bossHeight) : 0)
-        let pocketBottom = baseTop - (model.pocketEnabled ? max(0, model.pocketZ) : 0)
+        let bossTop = model.bossFeatures.map { model.bossTop($0) }.max() ?? baseTop
+        let pocketBottom = model.pocketFeatures.map { model.pocketBottom($0) }.min() ?? baseTop
         let effectiveSafeZ = max(cam.safeZ, top + 2)
 
         var segments: [TPSeg] = []
@@ -109,11 +109,11 @@ enum True3DCAM {
             if let loops = loopsAt(result.shape, z: baseTop - 0.02),
                let outer = loops.filter({ !$0.isHole }).max(by: { $0.area < $1.area }) {
                 var obstacles = loops.filter(\.isHole).map(\.points)
-                if model.bossEnabled {
+                for boss in model.bossFeatures {
                     obstacles.append(circlePoints(
-                        cx: model.bossX,
-                        cy: model.bossY,
-                        r: model.bossDiameter / 2 + radius + 0.4
+                        cx: boss.x,
+                        cy: boss.y,
+                        r: boss.dia / 2 + radius + 0.4
                     ))
                 }
                 let faceSegs = faceSegments(
@@ -129,35 +129,41 @@ enum True3DCAM {
             }
         }
 
-        if cam.doFaceBossTop, model.bossEnabled {
-            if let loops = loopsAt(result.shape, z: bossTop - 0.02),
-               let outer = loops.filter({ !$0.isHole }).max(by: { $0.area < $1.area }) {
-                let faceSegs = faceSegments(
-                    outer: outer.points,
-                    obstacles: [],
-                    z: bossTop,
-                    radius: radius,
-                    stepOver: cam.stepOver
-                )
-                segments.append(contentsOf: faceSegs)
-            } else {
-                warnings.append("凸台顶面截面为空，跳过凸台飞面")
+        if cam.doFaceBossTop {
+            for boss in model.bossFeatures {
+                let zTop = model.bossTop(boss)
+                if let loops = loopsAt(result.shape, z: zTop - 0.02),
+                   let outer = loops.filter({ !$0.isHole }).max(by: { $0.area < $1.area }) {
+                    let faceSegs = faceSegments(
+                        outer: outer.points,
+                        obstacles: [],
+                        z: zTop,
+                        radius: radius,
+                        stepOver: cam.stepOver
+                    )
+                    segments.append(contentsOf: faceSegs)
+                } else {
+                    warnings.append("\(boss.name) 顶面截面为空，跳过飞面")
+                }
             }
         }
 
-        if cam.doFacePocketBottom, model.pocketEnabled {
-            if let loops = loopsAt(result.shape, z: pocketBottom + 0.02),
-               let inner = loops.filter(\.isHole).first(where: {
-                   pointInPolygon(CGPoint(x: model.pocketX, y: model.pocketY), $0.points)
-               }) ?? loops.filter(\.isHole).max(by: { $0.area < $1.area }) {
-                let faceSegs = faceSegments(
-                    outer: inner.points,
-                    obstacles: [],
-                    z: pocketBottom,
-                    radius: radius,
-                    stepOver: cam.stepOver
-                )
-                segments.append(contentsOf: faceSegs)
+        if cam.doFacePocketBottom {
+            for pocket in model.pocketFeatures {
+                let zBottom = model.pocketBottom(pocket)
+                if let loops = loopsAt(result.shape, z: zBottom + 0.02),
+                   let inner = loops.filter(\.isHole).first(where: {
+                       pointInPolygon(CGPoint(x: pocket.x, y: pocket.y), $0.points)
+                   }) ?? loops.filter(\.isHole).max(by: { $0.area < $1.area }) {
+                    let faceSegs = faceSegments(
+                        outer: inner.points,
+                        obstacles: [],
+                        z: zBottom,
+                        radius: radius,
+                        stepOver: cam.stepOver
+                    )
+                    segments.append(contentsOf: faceSegs)
+                }
             }
         }
 
@@ -166,8 +172,14 @@ enum True3DCAM {
         levels.insert(top - 0.01)
         levels.insert(bottom + 0.01)
         if baseTop > bottom + 0.02 { levels.insert(baseTop - 0.01) }
-        if model.bossEnabled, bossTop > baseTop + 0.02 { levels.insert(bossTop - 0.01) }
-        if model.pocketEnabled, pocketBottom > bottom + 0.02 { levels.insert(pocketBottom + 0.01) }
+        for boss in model.bossFeatures {
+            let zTop = model.bossTop(boss)
+            if zTop > baseTop + 0.02 { levels.insert(zTop - 0.01) }
+        }
+        for pocket in model.pocketFeatures {
+            let zBottom = model.pocketBottom(pocket)
+            if zBottom > bottom + 0.02 { levels.insert(zBottom + 0.01) }
+        }
 
         var z = top - 0.01
         var guardCount = 0
@@ -255,11 +267,14 @@ enum True3DCAM {
         if radius * 2 >= min(model.width, model.depth) {
             warnings.append("刀具直径接近工件最小边，外形可能被过切")
         }
-        if model.holeEnabled, radius * 2 >= model.holeDiameter {
-            warnings.append("刀具直径不小于孔径，孔内清残无法完整加工")
+        for hole in model.holeFeatures where radius * 2 >= hole.dia {
+            warnings.append("刀具直径不小于孔 \(hole.name) 的直径，孔内清残无法完整加工")
         }
-        if model.pocketEnabled, radius * 2 >= min(model.pocketWidth, model.pocketDepthXY) {
-            warnings.append("刀具直径不小于方腔最小边，方腔内部无法完整清残")
+        for pocket in model.pocketFeatures {
+            let minSize = pocket.kind == .circularPocket ? pocket.dia : min(pocket.width, pocket.depthY)
+            if radius * 2 >= minSize {
+                warnings.append("刀具直径不小于 \(pocket.name) 的最小边，型腔内部无法完整清残")
+            }
         }
         warnings.append("当前为三轴等高线刀路；陡壁用截面偏置，顶面用行切，深腔/孔为逐层清残。上机前请先仿真并确认下刀方式。")
 
