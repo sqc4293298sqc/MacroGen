@@ -40,6 +40,9 @@ func verifyCase(_ name: String, model: True3DParams, cam: True3DCAMParams) {
             print(String(format: "  bbox x[%.1f..%.1f] y[%.1f..%.1f] maxGap=%.1f gaps=%@",
                          xs.min()!, xs.max()!, ys.min()!, ys.max()!, gaps.first ?? 0,
                          gaps.prefix(5).map { String(format: "%.1f", $0) }.joined(separator: ",")))
+            guard xs.min()! >= -70, xs.max()! <= 70, ys.min()! >= -70, ys.max()! <= 70 else {
+                fail("\(name): toolpath outside stock bounds (xs=\(xs.min()!)...\(xs.max()!) ys=\(ys.min()!)...\(ys.max()!))")
+            }
             print("  first=", seg.pts.prefix(3).map { String(format: "(%.1f,%.1f)", $0.x, $0.y) }.joined(separator: " "),
                   "last=", seg.pts.suffix(3).map { String(format: "(%.1f,%.1f)", $0.x, $0.y) }.joined(separator: " "))
         }
