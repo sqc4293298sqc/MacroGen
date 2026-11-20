@@ -39,6 +39,7 @@ enum True3DSketchOperation: String, CaseIterable, Identifiable {
 struct True3DSketchScreen: View {
     let width: Double
     let depth: Double
+    var embedded: Bool = false
     let onCommit: (True3DSketchOutput) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -69,8 +70,10 @@ struct True3DSketchScreen: View {
         .navigationTitle("草图")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button("取消") { dismiss() }
+            if !embedded {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("取消") { dismiss() }
+                }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -475,7 +478,7 @@ struct True3DSketchScreen: View {
             feature.bossHeight = max(extrudeDepth, 0.1)
             onCommit(.feature(feature))
         }
-        dismiss()
+        if !embedded { dismiss() }
     }
 
     private func fmt(_ value: Double) -> String {

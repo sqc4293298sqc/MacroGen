@@ -6,7 +6,25 @@ import PhotosUI
 import UniformTypeIdentifiers
 import OCCTSwift
 
-/// iOS 正式真 3D 建模页：OCCT B-Rep 实体、可编辑特征树、DXF/照片导入、STEP/STL 导出。
+enum True3DWorkbenchStage: String, CaseIterable, Identifiable {
+    case sketch = "草图"
+    case model = "建模"
+    case operation = "工序"
+    case machine = "加工"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .sketch: return "pencil.tip.crop.circle"
+        case .model: return "cube.transparent.2"
+        case .operation: return "square.stack.3d.up"
+        case .machine: return "point.3.connected.trianglepath.dotted"
+        }
+    }
+}
+
+/// 真 3D 工作台：草图 → 建模 → 工序 → 加工 一条线完成。
 struct True3DModelScreen: View {
     @State private var params = True3DParams()
     @State private var scene = SCNScene()
@@ -20,7 +38,11 @@ struct True3DModelScreen: View {
     @State private var isBuilding = false
     @State private var didInitialBuild = false
     @State private var selectedFeatureID: UUID?
-    @State private var showSketch = false
+    @State private var stage: True3DWorkbenchStage = .model
+    @State private var cam = True3DCAMParams()
+    @State private var camResult: True3DCAMResult?
+    @State private var isGeneratingCAM = false
+    @State private var gcodeURL: URL?
     @State private var showImporter = false
     @State private var showCamera = false
     @State private var showPhotoPicker = false
@@ -37,100 +59,55 @@ struct True3DModelScreen: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                header
-
-                True3DSceneView(scene: scene, showWire: showWire)
-                    .frame(height: 420)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(Color.black.opacity(0.08), lineWidth: 1)
-                    )
-
-                statusArea
-                if let notice {
-                    Label(notice, systemImage: "info.circle")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                buildButton
-
-                if let result {
-                    featureTree(result.features)
-                    NavigationLink {
-                        True3DCAMScreen(result: result, model: result.params)
-                    } label: {
-                        HStack {
-                            Label("进入 3D 刀路", systemImage: "point.3.connected.trianglepath.dotted")
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                        }
-                        .font(.system(size: 14, weight: .semibold))
-                        .padding(.vertical, 13)
-                        .padding(.horizontal, 14)
-                        .frame(maxWidth: .infinity)
-                        .background(Color(red: 1.0, green: 0.42, blue: 0.10))
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                    .buttonStyle(.plain)
-                    exportArea
-                }
-
-                parametersArea
-                featureListArea
-
-                Text("真 3D 页面使用 Open CASCADE Technology 8.0.1 的 B-Rep 实体和布尔运算；旧 2.5D 建模/工序入口已移除。")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Text("内核授权：OCCT 8.0.1 / OCCTSwift 3.0.0 · LGPL-2.1")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.secondary.opacity(0.8))
-            }
-            .padding(16)
-            .padding(.bottom, 24)
+        VStack(spacing: 0) {
+            stageBar
+            stageContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .navigationTitle(params.projectName.isEmpty ? "真 3D 建模" : params.projectName)
+        .background(Color(.systemBackground))
+        .navigationTitle(params.projectName.isEmpty ? "真 3D 工作台" : params.projectName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button { showSketch = true } label: {
-                        Label("草图建模", systemImage: "pencil.tip.crop.circle")
-                    }
-                    Button { newBlankProject() } label: {
-                        Label("新建空白工程", systemImage: "doc.badge.plus")
-                    }
-                    Divider()
-                    Button { showImporter = true } label: {
-                        Label("导入 DXF 轮廓", systemImage: "doc.badge.plus")
-                    }
-                    Button { showPhotoPicker = true } label: {
-                        Label("相册识别轮廓", systemImage: "photo")
-                    }
-                    Button { showCamera = true } label: {
-                        Label("拍照识别轮廓", systemImage: "camera")
-                    }
-                    Divider()
-                    Button { saveProject() } label: {
-                        Label("保存工程", systemImage: "square.and.arrow.down")
-                    }
-                    Button { loadProject() } label: {
-                        Label("载入工程", systemImage: "folder")
-                    }
-                    Divider()
-                    Button { rebuild() } label: {
-                        Label("重新生成", systemImage: "arrow.clockwise")
+                    if stage == .model {
+                        Button { stage = .sketch } label: {
+                            Label("回到草图", systemImage: "pencil.tip.crop.circle")
+                        }
+                        Button { newBlankProject() } label: {
+                            Label("新建空白工程", systemImage: "doc.badge.plus")
+                        }
+                        Divider()
+                        Button { showImporter = true } label: {
+                            Label("导入 DXF 轮廓", systemImage: "doc.badge.plus")
+                        }
+                        Button { showPhotoPicker = true } label: {
+                            Label("相册识别轮廓", systemImage: "photo")
+                        }
+                        Button { showCamera = true } label: {
+                            Label("拍照识别轮廓", systemImage: "camera")
+                        }
+                        Divider()
+                        Button { saveProject() } label: {
+                            Label("保存工程", systemImage: "square.and.arrow.down")
+                        }
+                        Button { loadProject() } label: {
+                            Label("载入工程", systemImage: "folder")
+                        }
+                        Divider()
+                        Button { rebuild() } label: {
+                            Label("重新生成", systemImage: "arrow.clockwise")
+                        }
+                    } else if stage == .operation || stage == .machine {
+                        Button { generateCAM() } label: {
+                            Label("重新生成刀路", systemImage: "arrow.clockwise")
+                        }
+                        .disabled(result == nil || isGeneratingCAM)
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
-                .disabled(isBuilding || importBusy)
+                .disabled(isBuilding || importBusy || isGeneratingCAM)
             }
         }
         .task {
@@ -160,13 +137,399 @@ struct True3DModelScreen: View {
                 scanImage(image)
             }
         }
-        .sheet(isPresented: $showSketch) {
-            NavigationStack {
-                True3DSketchScreen(width: params.width, depth: params.depth) { output in
-                    applySketch(output)
+    }
+
+    private var stageBar: some View {
+        HStack(spacing: 0) {
+            ForEach(True3DWorkbenchStage.allCases) { item in
+                Button {
+                    stage = item
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: item.icon)
+                            .font(.system(size: 14, weight: .semibold))
+                        Text(item.rawValue)
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .foregroundStyle(stage == item ? Color(red: 1.0, green: 0.42, blue: 0.10) : Color.primary.opacity(0.62))
+                    .background(
+                        stage == item
+                            ? Color(red: 1.0, green: 0.42, blue: 0.10).opacity(0.10)
+                            : Color.clear
+                    )
                 }
+                .buttonStyle(.plain)
             }
         }
+        .padding(.horizontal, 8)
+        .padding(.top, 5)
+        .padding(.bottom, 4)
+        .background(.bar)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.black.opacity(0.06))
+                .frame(height: 0.5)
+        }
+    }
+
+    @ViewBuilder
+    private var stageContent: some View {
+        switch stage {
+        case .sketch:
+            sketchStage
+        case .model:
+            modelingStage
+        case .operation:
+            operationStage
+        case .machine:
+            machineStage
+        }
+    }
+
+    private var sketchStage: some View {
+        True3DSketchScreen(width: params.width, depth: params.depth, embedded: true) { output in
+            applySketch(output)
+            stage = .model
+        }
+    }
+
+    private var modelingStage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                header
+
+                True3DSceneView(scene: scene, showWire: showWire)
+                    .frame(height: 400)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                    )
+
+                statusArea
+                if let notice {
+                    Label(notice, systemImage: "info.circle")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                buildButton
+
+                if let result {
+                    featureTree(result.features)
+                    Button {
+                        stage = .operation
+                    } label: {
+                        HStack {
+                            Label("进入工序", systemImage: "square.stack.3d.up")
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                        }
+                        .font(.system(size: 14, weight: .semibold))
+                        .padding(.vertical, 13)
+                        .padding(.horizontal, 14)
+                        .frame(maxWidth: .infinity)
+                        .background(Color(red: 1.0, green: 0.42, blue: 0.10))
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+                    exportArea
+                }
+
+                parametersArea
+                featureListArea
+
+                Text("草图 → 建模 → 工序 → 加工 · OCCT 8.0.1 B-Rep 内核")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("内核授权：OCCT 8.0.1 / OCCTSwift 3.0.0 · LGPL-2.1")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondary.opacity(0.8))
+            }
+            .padding(16)
+            .padding(.bottom, 24)
+        }
+    }
+
+    private var operationStage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 8) {
+                    Text("工序")
+                        .font(.system(size: 22, weight: .bold))
+                    Text("CAM")
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color(red: 1.0, green: 0.42, blue: 0.10).opacity(0.12))
+                        .foregroundStyle(Color(red: 0.75, green: 0.26, blue: 0.05))
+                        .clipShape(Capsule())
+                    Spacer()
+                    Text(result == nil ? "先建模" : "实体就绪")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(result == nil ? .orange : .green)
+                }
+
+                Text("选择加工策略和刀具参数。工序按当前 3D 实体截面生成，预览在“加工”页。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let error {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.red)
+                }
+
+                VStack(spacing: 8) {
+                    opToggle("外形分层粗铣", "沿真实截面等高偏置，按层下切", $cam.doRoughing)
+                    opToggle("外形精铣", "最后一层沿侧壁精修", $cam.doFinishing)
+                    opToggle("孔 / 腔逐层清残", "孔、圆腔、方腔、腰槽、草图切除", $cam.doClearInner)
+                    opToggle("基础顶面飞面", "顶面行切，避开凸台和孔", $cam.doFaceBaseTop)
+                    opToggle("凸台顶面飞面", "每个凸台顶面单独行切", $cam.doFaceBossTop)
+                    opToggle("型腔底面飞面", "腔底和孔底清根", $cam.doFacePocketBottom)
+                }
+
+                group("刀具") {
+                    numRow("刀具直径 Ø", $cam.toolDia)
+                    intRow("刀号 T", $cam.toolNo)
+                    intRow("长度补偿 H", $cam.hNo)
+                }
+                group("切削") {
+                    numRow("每层切深 AP", $cam.stepDown)
+                    numRow("行距 AE", $cam.stepOver)
+                    intRow("转速 S", $cam.spindle)
+                    intRow("切削进给 F", $cam.feed)
+                    intRow("下刀进给", $cam.plungeFeed)
+                    numRow("安全高度 Z", $cam.safeZ)
+                }
+                group("毛坯 / 坐标") {
+                    numRow("XY 单边余量", $cam.stockMarginXY)
+                    numRow("底面余量", $cam.stockExtraBottom)
+                    Picker("工件坐标系", selection: $cam.coord) {
+                        ForEach([54, 55, 56, 57, 58, 59], id: \.self) { c in
+                            Text("G\(c)").tag(c)
+                        }
+                    }
+                    numRow("零点偏移 X", $cam.originX)
+                    numRow("零点偏移 Y", $cam.originY)
+                    intRow("程序号 O", $cam.programNo)
+                }
+
+                Button {
+                    generateCAM(switchToMachine: true)
+                } label: {
+                    Label(isGeneratingCAM ? "正在生成刀路…" : "生成刀路并进入加工",
+                          systemImage: "point.3.connected.trianglepath.dotted")
+                        .frame(maxWidth: .infinity)
+                        .font(.system(size: 15, weight: .semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
+                .disabled(result == nil || isGeneratingCAM)
+
+                if result == nil {
+                    Button("回到建模页生成实体") { stage = .model }
+                        .font(.system(size: 12, weight: .semibold))
+                }
+            }
+            .padding(16)
+            .padding(.bottom, 24)
+        }
+    }
+
+    private var machineStage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 8) {
+                    Text("加工")
+                        .font(.system(size: 22, weight: .bold))
+                    Text("3D 刀路")
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color(red: 1.0, green: 0.42, blue: 0.10).opacity(0.12))
+                        .foregroundStyle(Color(red: 0.75, green: 0.26, blue: 0.05))
+                        .clipShape(Capsule())
+                    Spacer()
+                }
+
+                if let error {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let camResult {
+                    True3DPathSimulation(segments: camResult.segments)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                        )
+
+                    HStack(spacing: 0) {
+                        camMetric("切削", String(format: "%.0f mm", camResult.stats.cutLength))
+                        Divider().frame(height: 28)
+                        camMetric("层数", "\(camResult.stats.layerCount)")
+                        Divider().frame(height: 28)
+                        camMetric("路径", "\(camResult.stats.pathCount)")
+                        Divider().frame(height: 28)
+                        camMetric("Z", String(format: "%.1f~%.1f", camResult.stats.zMin, camResult.stats.zMax))
+                    }
+                    .padding(12)
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+
+                    if !camResult.warnings.isEmpty {
+                        VStack(alignment: .leading, spacing: 5) {
+                            ForEach(Array(camResult.warnings.enumerated()), id: \.offset) { _, warning in
+                                Label(warning, systemImage: "exclamationmark.triangle")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.orange)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                    }
+
+                    HStack(spacing: 10) {
+                        Button {
+                            generateCAM(switchToMachine: true)
+                        } label: {
+                            Label("重新生成", systemImage: "arrow.clockwise")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isGeneratingCAM)
+
+                        if let gcodeURL {
+                            ShareLink(item: gcodeURL) {
+                                Label("分享 G 代码", systemImage: "square.and.arrow.up")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+
+                    if let gcodeURL {
+                        NavigationLink {
+                            True3DGCodeScreen(code: camResult.gcode, fileURL: gcodeURL)
+                        } label: {
+                            HStack {
+                                Label("查看完整 G 代码", systemImage: "text.alignleft")
+                                Spacer()
+                                Text("\(camResult.gcode.count) 字符")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                                Image(systemName: "chevron.right")
+                            }
+                            .font(.system(size: 13, weight: .semibold))
+                            .padding(.vertical, 12)
+                            .padding(.horizontal, 12)
+                            .frame(maxWidth: .infinity)
+                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 9) {
+                        Label("刀路还没生成", systemImage: "point.3.connected.trianglepath.dotted")
+                            .font(.system(size: 14, weight: .semibold))
+                        Text("先在“工序”页选策略和刀具，再生成 3D 刀路。")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                        Button {
+                            generateCAM(switchToMachine: true)
+                        } label: {
+                            Label("立即生成刀路", systemImage: "play.fill")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
+                        .disabled(result == nil || isGeneratingCAM)
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                }
+
+                Button {
+                    stage = .operation
+                } label: {
+                    Label("查看 / 修改工序参数", systemImage: "square.stack.3d.up")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+            }
+            .padding(16)
+            .padding(.bottom, 24)
+        }
+    }
+
+    private func camMetric(_ title: String, _ value: String) -> some View {
+        VStack(spacing: 2) {
+            Text(title)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func opToggle(_ title: String, _ detail: String, _ value: Binding<Bool>) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer()
+            Toggle("", isOn: value)
+                .labelsHidden()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func generateCAM(switchToMachine: Bool = true) {
+        guard let result else {
+            error = "请先在建模页生成有效实体"
+            stage = .model
+            return
+        }
+        guard !isGeneratingCAM else { return }
+        error = nil
+        notice = nil
+        isGeneratingCAM = true
+        do {
+            let generated = try True3DCAM.generate(result: result, model: result.params, cam: cam)
+            camResult = generated
+            let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let url = dir.appendingPathComponent("MacroGen-3D-\(cam.programNo).nc")
+            try generated.gcode.write(to: url, atomically: true, encoding: .utf8)
+            gcodeURL = url
+            if switchToMachine { stage = .machine }
+        } catch {
+            self.error = error.localizedDescription
+            camResult = nil
+            gcodeURL = nil
+        }
+        isGeneratingCAM = false
     }
 
     private var header: some View {
@@ -387,8 +750,8 @@ struct True3DModelScreen: View {
                 sectionTitle("特征")
                 Spacer()
                 Menu {
-                    Button { showSketch = true } label: {
-                        Label("草图建模", systemImage: "pencil.tip.crop.circle")
+                    Button { stage = .sketch } label: {
+                        Label("回到草图", systemImage: "pencil.tip.crop.circle")
                     }
                     Divider()
                     Button("孔") { addFeature(.hole) }
@@ -642,6 +1005,7 @@ struct True3DModelScreen: View {
         params.features = []
         selectedFeatureID = nil
         notice = "已新建空白工程：先画草图，或直接添加孔/凸台/型腔"
+        stage = .sketch
         rebuild()
     }
 
@@ -650,6 +1014,8 @@ struct True3DModelScreen: View {
         notice = nil
         result = nil
         scene = SCNScene()
+        camResult = nil
+        gcodeURL = nil
         stepURL = nil
         stlURL = nil
         isBuilding = true
