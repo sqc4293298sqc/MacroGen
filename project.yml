@@ -5,6 +5,11 @@ options:
     iOS: "16.0"
   createIntermediateGroups: true
 
+packages:
+  OCCTSwift:
+    url: https://github.com/SecondMouseAU/OCCTSwift
+    from: 3.0.0
+
 targets:
   MacroGen:
     type: application
@@ -12,12 +17,15 @@ targets:
     sources:
       - path: Sources
       - path: Resources
+    dependencies:
+      - package: OCCTSwift
+        product: OCCTSwift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.sqc.macrogen
         PRODUCT_NAME: MacroGen
-        MARKETING_VERSION: "2.9.23"
-        CURRENT_PROJECT_VERSION: "46"
+        MARKETING_VERSION: "2.9.24"
+        CURRENT_PROJECT_VERSION: "47"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: "宏程序$(MARKETING_VERSION)"
         INFOPLIST_KEY_UILaunchScreen_Generation: YES

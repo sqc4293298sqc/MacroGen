@@ -49,6 +49,14 @@ struct HomeView: View {
                              tint: Color(red: 0.44, green: 0.35, blue: 0.78))
                     }
                     .buttonStyle(.plain)
+
+                    NavigationLink {
+                        OCCTKernelSpikeScreen()
+                    } label: {
+                        Tile(title: "3D内核验证", icon: "cube.transparent.2",
+                             tint: Color(red: 0.10, green: 0.55, blue: 0.50))
+                    }
+                    .buttonStyle(.plain)
                 }
 
                 group("查询 · 工具")
