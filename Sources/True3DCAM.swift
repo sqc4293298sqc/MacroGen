@@ -241,7 +241,7 @@ enum True3DCAM {
             guard let first = seg.pts.first, let last = seg.pts.last else { continue }
             if let pe = previousEnd, let pz = previousZ {
                 if distance(pe, first) > 0.01 {
-                    rapid += Double(hypot(first.x - pe.x, first.y - pe.y))
+                    rapid += sqrt(pow(Double(first.x - pe.x), 2) + pow(Double(first.y - pe.y), 2))
                 }
                 rapid += abs(seg.z - pz) * 2
             }
@@ -627,7 +627,9 @@ enum True3DCAM {
     }
 
     private static func distance(_ a: CGPoint, _ b: CGPoint) -> Double {
-        Double(hypot(a.x - b.x, a.y - b.y))
+        let dx = Double(a.x - b.x)
+        let dy = Double(a.y - b.y)
+        return sqrt(dx * dx + dy * dy)
     }
 
     private static func fmt(_ v: Double, _ digits: Int = 3) -> String {
