@@ -32,6 +32,7 @@ enum True3DHoleKind: String, CaseIterable, Identifiable, Codable {
 enum True3DFeatureKind: String, CaseIterable, Identifiable, Codable {
     case hole = "孔"
     case boss = "凸台"
+    case rectBoss = "矩形凸台"
     case circularPocket = "圆腔"
     case rectPocket = "方腔"
     case slot = "腰形槽"
@@ -72,6 +73,8 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
             name = "通孔"; dia = 10; holeKind = .through; holeDepth = 10
         case .boss:
             name = "凸台"; dia = 20; bossHeight = 6
+        case .rectBoss:
+            name = "矩形凸台"; width = 30; depthY = 20; bossHeight = 6; cornerRadius = 0
         case .circularPocket:
             name = "圆腔"; dia = 24; depth = 5
         case .rectPocket:
@@ -98,6 +101,8 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
             }
         case .boss:
             return "Ø\(fmt(dia)) H\(fmt(bossHeight)) @ \(p)"
+        case .rectBoss:
+            return "\(fmt(width))×\(fmt(depthY)) H\(fmt(bossHeight)) R\(fmt(cornerRadius)) @ \(p)"
         case .circularPocket:
             return "Ø\(fmt(dia)) 深\(fmt(depth)) @ \(p)"
         case .rectPocket:
@@ -307,6 +312,11 @@ enum True3DKernel {
                 throw True3DModelError.featureFailed("\(f.name) 布尔合并失败")
             }
             return fused
+        case .rectBoss:
+            guard let boss = rectBossTool(f, baseHeight: h), let fused = current + boss else {
+                throw True3DModelError.featureFailed("\(f.name) 布尔合并失败")
+            }
+            return fused
         case .circularPocket:
             guard let tool = circularPocketTool(f, baseHeight: h), let cut = current - tool else {
                 throw True3DModelError.featureFailed("\(f.name) 布尔切除失败")
@@ -359,6 +369,23 @@ enum True3DKernel {
                   let combined = main + cone else { return nil }
             return combined
         }
+    }
+
+    private static func rectBossTool(_ f: True3DFeatureSpec, baseHeight h: Double) -> Shape? {
+        let top = f.topZ ?? h
+        let height = max(f.bossHeight, 0.1)
+        let rr = min(max(f.cornerRadius, 0), min(f.width, f.depthY) / 2 - 0.01)
+        if rr > 0.01,
+           let wire = Wire.rectangle(width: f.width, height: f.depthY)?.filletedAll2D(radius: rr),
+           let prism = Shape.extrude(profile: wire, direction: SIMD3<Double>(0, 0, 1), length: height) {
+            return prism.translated(by: SIMD3<Double>(f.x, f.y, top))
+        }
+        return Shape.box(
+            origin: SIMD3<Double>(f.x - f.width / 2, f.y - f.depthY / 2, top),
+            width: f.width,
+            height: f.depthY,
+            depth: height
+        )
     }
 
     private static func circularPocketTool(_ f: True3DFeatureSpec, baseHeight h: Double) -> Shape? {
@@ -489,6 +516,17 @@ enum True3DKernel {
                 guard f.dia > 0.1, f.bossHeight > 0.1 else { throw True3DModelError.invalidParameter("\(f.name) 直径和高度必须大于 0.1 mm") }
                 guard abs(f.x) + r <= p.width / 2 - edgeInset - 0.02,
                       abs(f.y) + r <= p.depth / 2 - edgeInset - 0.02 else {
+                    throw True3DModelError.invalidParameter("\(f.name) 必须完整落在基础块顶面，不能悬出边缘")
+                }
+            case .rectBoss:
+                guard f.width > 0.1, f.depthY > 0.1, f.bossHeight > 0.1 else {
+                    throw True3DModelError.invalidParameter("\(f.name) 长宽和高度必须大于 0.1 mm")
+                }
+                guard f.cornerRadius >= 0, f.cornerRadius < min(f.width, f.depthY) / 2 else {
+                    throw True3DModelError.invalidParameter("\(f.name) 圆角半径过大")
+                }
+                guard abs(f.x) + f.width / 2 <= p.width / 2 - edgeInset - 0.02,
+                      abs(f.y) + f.depthY / 2 <= p.depth / 2 - edgeInset - 0.02 else {
                     throw True3DModelError.invalidParameter("\(f.name) 必须完整落在基础块顶面，不能悬出边缘")
                 }
             case .circularPocket:

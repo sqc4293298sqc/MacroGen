@@ -14,6 +14,10 @@ enum True3DSketchTool: String, CaseIterable, Identifiable {
     case circle = "圆"
     case arc = "圆弧"
     case spline = "样条"
+    case ellipse = "椭圆"
+    case polygon = "多边形"
+    case roundedRect = "圆角矩形"
+    case slot = "腰形"
 
     var id: String { rawValue }
 
@@ -24,6 +28,10 @@ enum True3DSketchTool: String, CaseIterable, Identifiable {
         case .circle: return "circle"
         case .arc: return "circle.dashed"
         case .spline: return "scribble"
+        case .ellipse: return "oval"
+        case .polygon: return "hexagon"
+        case .roundedRect: return "rectangle.roundedtop"
+        case .slot: return "capsule"
         }
     }
 }
@@ -80,6 +88,10 @@ struct True3DSketchScreen: View {
     @State private var canvasSize: CGSize = .zero
     @State private var dragStart: CGPoint?
     @State private var showToolDrawer = false
+    @State private var polygonSides: Int = 6
+    @State private var cornerRadius: Double = 5
+    @State private var slotWidth: Double = 20
+    @State private var offsetDistance: Double = 5
 
     private var baseWidth: CGFloat { CGFloat(max(canvasWidth, 1)) }
     private var baseDepth: CGFloat { CGFloat(max(canvasDepth, 1)) }
@@ -185,6 +197,27 @@ struct True3DSketchScreen: View {
                     .buttonStyle(.bordered)
                 }
 
+                if tool == .polygon {
+                    Stepper("多边形边数 \(polygonSides)", value: $polygonSides, in: 3...12)
+                        .font(.system(size: 11))
+                }
+                if tool == .roundedRect {
+                    HStack {
+                        Text("圆角 R").font(.system(size: 11))
+                        TextField("R", value: $cornerRadius, format: .number.precision(.fractionLength(1)))
+                            .keyboardType(.decimalPad).multilineTextAlignment(.trailing)
+                            .frame(width: 58).textFieldStyle(.roundedBorder)
+                    }
+                }
+                if tool == .slot {
+                    HStack {
+                        Text("槽宽 W").font(.system(size: 11))
+                        TextField("W", value: $slotWidth, format: .number.precision(.fractionLength(1)))
+                            .keyboardType(.decimalPad).multilineTextAlignment(.trailing)
+                            .frame(width: 58).textFieldStyle(.roundedBorder)
+                    }
+                }
+
                 Text("编辑").font(.system(size: 12, weight: .semibold))
                 HStack(spacing: 6) {
                     Button("撤销") { undo() }.buttonStyle(.bordered)
@@ -199,6 +232,24 @@ struct True3DSketchScreen: View {
                     Button("垂直镜像") { mirrorSketch(horizontal: false) }.buttonStyle(.bordered)
                 }
                 .font(.system(size: 10))
+
+                if closed {
+                    Text("轮廓编辑").font(.system(size: 12, weight: .semibold))
+                    HStack(spacing: 6) {
+                        TextField("偏置", value: $offsetDistance, format: .number.precision(.fractionLength(1)))
+                            .keyboardType(.decimalPad).multilineTextAlignment(.trailing)
+                            .frame(width: 54).textFieldStyle(.roundedBorder)
+                        Button("外偏置") { offsetProfile(by: abs(offsetDistance)) }.buttonStyle(.bordered)
+                        Button("内偏置") { offsetProfile(by: -abs(offsetDistance)) }.buttonStyle(.bordered)
+                    }
+                    .font(.system(size: 10))
+                    HStack(spacing: 6) {
+                        Button("圆角 R\(fmt(cornerRadius))") { roundProfileCorners(radius: cornerRadius) }.buttonStyle(.bordered)
+                        Button("反向") { reverseProfile() }.buttonStyle(.bordered)
+                        Button("清除约束") { syncDimensions() }.buttonStyle(.bordered)
+                    }
+                    .font(.system(size: 10))
+                }
             }
             .padding(14)
             .padding(.bottom, 30)
@@ -352,7 +403,7 @@ struct True3DSketchScreen: View {
                             handleArcTap(snapped(b))
                         case .spline:
                             addPolylinePoint(snapped(b), maximumPoints: 32)
-                        case .rectangle, .circle:
+                        case .rectangle, .circle, .ellipse, .polygon, .roundedRect, .slot:
                             let shape = shapePoints(from: a, to: b)
                             guard shape.count >= 3 else {
                                 error = "轮廓太小，至少画 \(String(format: "%.0f", gridStep)) mm"
@@ -609,6 +660,63 @@ struct True3DSketchScreen: View {
             }
         case .arc, .spline:
             return []
+        case .ellipse:
+            let rx = abs(b.x - a.x), ry = abs(b.y - a.y)
+            guard rx > 0.1, ry > 0.1 else { return [] }
+            return (0..<64).map { i in
+                let angle = Double(i) / 64.0 * 2 * .pi
+                return True3DPoint(x: a.x + rx * cos(angle), y: a.y + ry * sin(angle))
+            }
+        case .polygon:
+            let r = hypot(b.x - a.x, b.y - a.y)
+            guard r > 0.1, polygonSides >= 3 else { return [] }
+            let start = atan2(b.y - a.y, b.x - a.x)
+            return (0..<polygonSides).map { i in
+                let angle = start + Double(i) / Double(polygonSides) * 2 * .pi
+                return True3DPoint(x: a.x + r * cos(angle), y: a.y + r * sin(angle))
+            }
+        case .roundedRect:
+            let minX = min(a.x, b.x), maxX = max(a.x, b.x)
+            let minY = min(a.y, b.y), maxY = max(a.y, b.y)
+            let w = maxX - minX, h = maxY - minY
+            guard w > 0.1, h > 0.1 else { return [] }
+            let r = min(max(cornerRadius, 0), min(w, h) / 2 - 0.001)
+            if r < 0.05 {
+                return [
+                    True3DPoint(x: minX, y: minY), True3DPoint(x: maxX, y: minY),
+                    True3DPoint(x: maxX, y: maxY), True3DPoint(x: minX, y: maxY)
+                ]
+            }
+            var result: [True3DPoint] = []
+            let centers = [
+                (True3DPoint(x: maxX - r, y: maxY - r), 0.0),
+                (True3DPoint(x: minX + r, y: maxY - r), Double.pi / 2),
+                (True3DPoint(x: minX + r, y: minY + r), Double.pi),
+                (True3DPoint(x: maxX - r, y: minY + r), 3 * Double.pi / 2)
+            ]
+            for (center, start) in centers {
+                for i in 0...8 {
+                    let angle = start + Double(i) / 8.0 * Double.pi / 2
+                    result.append(True3DPoint(x: center.x + r * cos(angle), y: center.y + r * sin(angle)))
+                }
+            }
+            return result
+        case .slot:
+            let dx = b.x - a.x, dy = b.y - a.y
+            let dist = hypot(dx, dy)
+            let r = min(max(slotWidth, 0.2), 200) / 2
+            guard dist > 0.1 else { return [] }
+            let angle = atan2(dy, dx)
+            var result: [True3DPoint] = []
+            for i in 0...10 {
+                let a1 = angle - Double.pi / 2 + Double(i) / 10.0 * Double.pi
+                result.append(True3DPoint(x: b.x + r * cos(a1), y: b.y + r * sin(a1)))
+            }
+            for i in 0...10 {
+                let a1 = angle + Double.pi / 2 + Double(i) / 10.0 * Double.pi
+                result.append(True3DPoint(x: a.x + r * cos(a1), y: a.y + r * sin(a1)))
+            }
+            return result
         }
     }
 
@@ -738,6 +846,104 @@ struct True3DSketchScreen: View {
                 : True3DPoint(x: $0.x, y: -$0.y)
         }
         error = nil
+    }
+
+    private func offsetProfile(by delta: Double) {
+        guard closed, points.count >= 3, abs(delta) > 0.01 else {
+            error = "先把轮廓闭合，偏置量要大于 0.01 mm"
+            return
+        }
+        let pts = points
+        let n = pts.count
+        let area = signedArea(pts)
+        let orient: Double = area >= 0 ? 1 : -1
+        var lines: [(p: True3DPoint, e: True3DPoint)] = []
+        for i in 0..<n {
+            let a = pts[i], b = pts[(i + 1) % n]
+            let dx = b.x - a.x, dy = b.y - a.y
+            let len = max(hypot(dx, dy), 0.0001)
+            let ex = dx / len, ey = dy / len
+            let outward = True3DPoint(x: orient * ey, y: -orient * ex)
+            lines.append((True3DPoint(x: a.x + outward.x * delta, y: a.y + outward.y * delta), True3DPoint(x: ex, y: ey)))
+        }
+        var result: [True3DPoint] = []
+        for i in 0..<n {
+            let prev = lines[(i - 1 + n) % n]
+            let cur = lines[i]
+            let cross = prev.e.x * cur.e.y - prev.e.y * cur.e.x
+            if abs(cross) < 1e-9 {
+                result.append(True3DPoint(x: cur.p.x, y: cur.p.y))
+                continue
+            }
+            let qx = cur.p.x - prev.p.x, qy = cur.p.y - prev.p.y
+            let t = (qx * cur.e.y - qy * cur.e.x) / cross
+            let x = prev.p.x + prev.e.x * t
+            let y = prev.p.y + prev.e.y * t
+            result.append(True3DPoint(x: x, y: y))
+        }
+        let changed = result.filter { $0.x.isFinite && $0.y.isFinite }
+        guard changed.count == n else {
+            error = "偏置后轮廓自交，减小偏置量"
+            return
+        }
+        ensureCanvasContains(changed)
+        points = changed
+        syncDimensions()
+        error = nil
+    }
+
+    private func roundProfileCorners(radius: Double) {
+        guard closed, points.count >= 3, radius > 0.05 else {
+            error = "圆角半径必须大于 0.05 mm"
+            return
+        }
+        let pts = points
+        let n = pts.count
+        var result: [True3DPoint] = []
+        for i in 0..<n {
+            let prev = pts[(i - 1 + n) % n]
+            let cur = pts[i]
+            let next = pts[(i + 1) % n]
+            let lenPrev = max(hypot(cur.x - prev.x, cur.y - prev.y), 0.0001)
+            let lenNext = max(hypot(next.x - cur.x, next.y - cur.y), 0.0001)
+            let d = min(radius, lenPrev / 2, lenNext / 2)
+            let start = True3DPoint(
+                x: cur.x + (prev.x - cur.x) * d / lenPrev,
+                y: cur.y + (prev.y - cur.y) * d / lenPrev
+            )
+            let end = True3DPoint(
+                x: cur.x + (next.x - cur.x) * d / lenNext,
+                y: cur.y + (next.y - cur.y) * d / lenNext
+            )
+            for j in 0...8 {
+                let t = Double(j) / 8.0
+                let mt = 1 - t
+                result.append(True3DPoint(
+                    x: mt * mt * start.x + 2 * mt * t * cur.x + t * t * end.x,
+                    y: mt * mt * start.y + 2 * mt * t * cur.y + t * t * end.y
+                ))
+            }
+        }
+        ensureCanvasContains(result)
+        points = result
+        syncDimensions()
+        error = nil
+    }
+
+    private func reverseProfile() {
+        guard points.count >= 3 else { return }
+        points.reverse()
+        error = nil
+    }
+
+    private func signedArea(_ pts: [True3DPoint]) -> Double {
+        guard pts.count >= 3 else { return 0 }
+        var sum = 0.0
+        for i in 0..<pts.count {
+            let a = pts[i], b = pts[(i + 1) % pts.count]
+            sum += a.x * b.y - b.x * a.y
+        }
+        return sum / 2
     }
 
     private func closeProfile() {

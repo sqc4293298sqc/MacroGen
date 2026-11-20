@@ -805,6 +805,7 @@ struct True3DModelScreen: View {
                     modelTool("草图", "pencil.tip.crop.circle") { stage = .sketch }
                     modelTool("孔", "circle.dashed") { addFeature(.hole) }
                     modelTool("凸台", "arrow.up.circle") { addFeature(.boss) }
+                    modelTool("矩形凸台", "rectangle") { addFeature(.rectBoss) }
                     modelTool("圆腔", "circle.bottomhalf.filled") { addFeature(.circularPocket) }
                     modelTool("方腔", "rectangle.inset.filled") { addFeature(.rectPocket) }
                     modelTool("腰槽", "capsule") { addFeature(.slot) }
@@ -1073,6 +1074,7 @@ struct True3DModelScreen: View {
                     Divider()
                     Button("孔") { addFeature(.hole) }
                     Button("凸台") { addFeature(.boss) }
+                    Button("矩形凸台") { addFeature(.rectBoss) }
                     Button("圆腔") { addFeature(.circularPocket) }
                     Button("方腔") { addFeature(.rectPocket) }
                     Button("腰形槽") { addFeature(.slot) }
@@ -1185,6 +1187,13 @@ struct True3DModelScreen: View {
                 numRow("高度 H", f.bossHeight)
                 numRow("中心 X", f.x)
                 numRow("中心 Y", f.y)
+            case .rectBoss:
+                numRow("X 长", f.width)
+                numRow("Y 宽", f.depthY)
+                numRow("高度 H", f.bossHeight)
+                numRow("圆角 R", f.cornerRadius)
+                numRow("中心 X", f.x)
+                numRow("中心 Y", f.y)
             case .circularPocket:
                 numRow("直径 Ø", f.dia)
                 numRow("深度", f.depth)
@@ -1280,6 +1289,7 @@ struct True3DModelScreen: View {
         switch kind {
         case .hole: return "circle.circle"
         case .boss: return "cylinder"
+        case .rectBoss: return "rectangle"
         case .circularPocket: return "circle.dashed"
         case .rectPocket: return "square.dashed"
         case .slot: return "capsule"
@@ -1295,6 +1305,9 @@ struct True3DModelScreen: View {
             f.name = "新孔"; f.x = -params.width * 0.25; f.dia = 10
         case .boss:
             f.name = "新凸台"; f.x = params.width * 0.25; f.y = params.depth * 0.15; f.dia = 20; f.bossHeight = 6
+        case .rectBoss:
+            f.name = "新矩形凸台"; f.x = params.width * 0.25; f.y = params.depth * 0.15
+            f.width = 30; f.depthY = 20; f.bossHeight = 6
         case .circularPocket:
             f.name = "新圆腔"; f.x = -params.width * 0.25; f.dia = 20; f.depth = 5
         case .rectPocket:
