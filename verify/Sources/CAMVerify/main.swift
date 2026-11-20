@@ -34,6 +34,15 @@ func verifyCase(_ name: String, model: True3DParams, cam: True3DCAMParams) {
         print("  longest:", longest.map { "z=\(String(format: "%.1f", $0.z)) pts=\($0.pts.count) len=\(String(format: "%.1f", $0.len))" }.joined(separator: " | "))
         let maxPoints = path.segments.map(\.pts.count).max() ?? 0
         print("  maxPointsPerPath=\(maxPoints)")
+        if let seg = longest.first {
+            let xs = seg.pts.map(\.x), ys = seg.pts.map(\.y)
+            let gaps = (1..<seg.pts.count).map { hypot(seg.pts[$0].x - seg.pts[$0-1].x, seg.pts[$0].y - seg.pts[$0-1].y) }.sorted(by: >)
+            print(String(format: "  bbox x[%.1f..%.1f] y[%.1f..%.1f] maxGap=%.1f gaps=%@",
+                         xs.min()!, xs.max()!, ys.min()!, ys.max()!, gaps.first ?? 0,
+                         gaps.prefix(5).map { String(format: "%.1f", $0) }.joined(separator: ",")))
+            print("  first=", seg.pts.prefix(3).map { String(format: "(%.1f,%.1f)", $0.x, $0.y) }.joined(separator: " "),
+                  "last=", seg.pts.suffix(3).map { String(format: "(%.1f,%.1f)", $0.x, $0.y) }.joined(separator: " "))
+        }
     } catch {
         fail("\(name): \(error.localizedDescription)")
     }
