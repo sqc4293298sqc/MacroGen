@@ -57,7 +57,7 @@ struct True3DModelScreen: View {
 
                 parametersArea
 
-                Text("真 3D 页面使用 Open CASCADE Technology 8.0.1 的 B-Rep 实体和布尔运算；现有 2.5D 建模/刀路页面保留，不会被这次升级破坏。")
+                Text("真 3D 页面使用 Open CASCADE Technology 8.0.1 的 B-Rep 实体和布尔运算；旧 2.5D 建模/工序入口已移除，仅保留 2D 单工序快捷编程。")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
