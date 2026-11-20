@@ -302,8 +302,11 @@ struct True3DModelScreen: View {
                 }
 
                 VStack(spacing: 10) {
-                    ForEach($operations) { $operation in
-                        operationCard($operation)
+                    ForEach(operations.indices, id: \.self) { index in
+                        operationCard(Binding(
+                            get: { operations[index] },
+                            set: { operations[index] = $0 }
+                        ))
                     }
                 }
 
@@ -1378,6 +1381,39 @@ struct True3DModelScreen: View {
             pts.append(True3DPoint(x: -half + r * cos(a), y: r * sin(a)))
         }
         return pts
+    }
+    private func fmt(_ value: Double) -> String {
+        if abs(value.rounded() - value) < 0.0001 { return String(format: "%.0f", value) }
+        return String(format: "%.1f", value)
+    }
+
+    private static func defaultOperations() -> [True3DOperation] {
+        var ops: [True3DOperation] = []
+        for kind in True3DOperationKind.allCases {
+            var op = True3DOperation(kind: kind)
+            switch kind {
+            case .faceBase:
+                op.toolDia = 16; op.toolNo = 1; op.stepDown = 2; op.stepOver = 12
+                op.spindle = 3000; op.feed = 800; op.plungeFeed = 250
+            case .rough:
+                op.toolDia = 8; op.toolNo = 2; op.stepDown = 3; op.stepOver = 5
+                op.spindle = 2500; op.feed = 600; op.plungeFeed = 180
+            case .finish:
+                op.toolDia = 4; op.toolNo = 3; op.stepDown = 1; op.stepOver = 2
+                op.spindle = 4000; op.feed = 500; op.plungeFeed = 150
+            case .clearInner:
+                op.toolDia = 3; op.toolNo = 4; op.stepDown = 2; op.stepOver = 2
+                op.spindle = 4500; op.feed = 400; op.plungeFeed = 120
+            case .faceBoss:
+                op.toolDia = 10; op.toolNo = 5; op.stepDown = 2; op.stepOver = 8
+                op.spindle = 3000; op.feed = 700; op.plungeFeed = 200
+            case .facePocket:
+                op.toolDia = 3; op.toolNo = 4; op.stepDown = 2; op.stepOver = 2
+                op.spindle = 4500; op.feed = 400; op.plungeFeed = 120
+            }
+            ops.append(op)
+        }
+        return ops
     }
 }
 
