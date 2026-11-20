@@ -31,4 +31,6 @@ jobs:
 
       - name: Run OCCT 3D CAM verification
         working-directory: verify
+        env:
+          CAM_DEBUG: "1"
         run: swift run -c release CAMVerify
