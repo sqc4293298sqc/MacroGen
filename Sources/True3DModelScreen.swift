@@ -42,6 +42,7 @@ struct True3DModelScreen: View {
     @State private var cam = True3DCAMParams()
     @State private var operations: [True3DOperation] = True3DModelScreen.defaultOperations()
     @State private var camResult: True3DCAMResult?
+    @State private var simulationMode = 0
     @State private var isGeneratingCAM = false
     @State private var gcodeURL: URL?
     @State private var showImporter = false
@@ -388,12 +389,31 @@ struct True3DModelScreen: View {
                 }
 
                 if let camResult {
-                    True3DPathSimulation(segments: camResult.segments)
+                    Picker("模拟视图", selection: $simulationMode) {
+                        Text("刀路轨迹").tag(0)
+                        Text("材料去除").tag(1)
+                    }
+                    .pickerStyle(.segmented)
+
+                    if simulationMode == 0 {
+                        True3DPathSimulation(segments: camResult.segments)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                            )
+                    } else {
+                        True3DStockSimulation(
+                            segments: camResult.segments,
+                            model: result?.params ?? params,
+                            toolRadius: (camResult.runs.map { $0.operation.toolDia }.max() ?? cam.toolDia) / 2
+                        )
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 16, style: .continuous)
                                 .stroke(Color.black.opacity(0.08), lineWidth: 1)
                         )
+                    }
 
                     HStack(spacing: 0) {
                         camMetric("切削", String(format: "%.0f mm", camResult.stats.cutLength))
@@ -406,6 +426,31 @@ struct True3DModelScreen: View {
                     }
                     .padding(12)
                     .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+
+                    if !camResult.runs.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("工序执行结果")
+                                .font(.system(size: 12, weight: .semibold))
+                            ForEach(Array(camResult.runs.enumerated()), id: \.offset) { index, run in
+                                HStack(spacing: 8) {
+                                    Text("\(index + 1)")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .frame(width: 18, height: 18)
+                                        .background(Color(red: 1.0, green: 0.42, blue: 0.10).opacity(0.14), in: Circle())
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(run.operation.kind.rawValue)
+                                            .font(.system(size: 11, weight: .semibold))
+                                        Text("T\(run.operation.toolNo) Ø\(fmt(run.operation.toolDia)) · \(run.segments.count) 段 · \(String(format: "%.0f", run.stats.cutLength)) mm")
+                                            .font(.system(size: 9))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                }
+                            }
+                        }
+                        .padding(10)
+                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                    }
 
                     if !camResult.warnings.isEmpty {
                         VStack(alignment: .leading, spacing: 5) {

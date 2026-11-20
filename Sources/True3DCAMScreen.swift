@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import SceneKit
 
 /// 真 3D 刀路：模型由 OCCT B-Rep 提供，刀路由真实截面偏置/行切生成。
 struct True3DCAMScreen: View {
@@ -552,6 +553,286 @@ struct True3DPathPreview: View {
             traveled += len
         }
         return segments.last?.pts.last
+    }
+}
+
+// MARK: - 材料去除模拟
+
+/// 基于高度图的毛坯去除预览：沿刀路把刀半径覆盖的网格单元降到刀底 Z。
+/// 这不是 B-Rep 布尔仿真，而是用于快速检查过切、残料和刀路覆盖的 3D 近似。
+struct True3DStockSimulation: View {
+    let segments: [TPSeg]
+    let model: True3DParams
+    let toolRadius: Double
+
+    @State private var progress: Double = 0
+    @State private var playing = false
+    @State private var speed: Double = 1
+
+    private let timer = Timer.publish(every: 0.08, on: .main, in: .common).autoconnect()
+
+    private var totalLength: Double {
+        max(segments.reduce(0) { $0 + max($1.len, 0.001) }, 0.001)
+    }
+
+    private var duration: Double {
+        min(max(totalLength / 80.0, 8.0), 40.0)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            True3DStockSceneView(
+                segments: segments,
+                model: model,
+                toolRadius: toolRadius,
+                progress: progress
+            )
+            .frame(height: 300)
+
+            HStack(spacing: 8) {
+                Button {
+                    if progress >= 1 { progress = 0 }
+                    playing.toggle()
+                } label: {
+                    Label(playing ? "暂停" : "去除", systemImage: playing ? "pause.fill" : "play.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 78)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
+
+                Button {
+                    progress = 0
+                    playing = false
+                } label: {
+                    Image(systemName: "gobackward")
+                        .font(.system(size: 13))
+                }
+                .buttonStyle(.bordered)
+
+                Picker("速度", selection: $speed) {
+                    Text("1×").tag(1.0)
+                    Text("4×").tag(4.0)
+                    Text("16×").tag(16.0)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 142)
+
+                Spacer()
+                Text("\(Int(progress * 100))%")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 38, alignment: .trailing)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+
+            Slider(value: $progress, in: 0...1)
+                .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
+                .padding(.horizontal, 12)
+
+            HStack {
+                Text("高度图毛坯 · 刀半径 \(String(format: "%.1f", toolRadius * 2)) mm · 拖拽旋转查看残料")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 9)
+        }
+        .onReceive(timer) { _ in
+            guard playing else { return }
+            let step = 0.08 * speed / duration
+            progress = min(1, progress + step)
+            if progress >= 1 { playing = false }
+        }
+    }
+}
+
+private struct True3DStockSceneView: UIViewRepresentable {
+    let segments: [TPSeg]
+    let model: True3DParams
+    let toolRadius: Double
+    let progress: Double
+
+    func makeUIView(context: Context) -> SCNView {
+        let view = SCNView()
+        view.backgroundColor = UIColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1)
+        view.autoenablesDefaultLighting = false
+        view.allowsCameraControl = true
+        view.antialiasingMode = .multisampling4X
+        view.preferredFramesPerSecond = 60
+        view.isPlaying = true
+
+        let scene = SCNScene()
+        view.scene = scene
+
+        let maxDim = max(model.width, model.depth, model.height, 20)
+        let camera = SCNNode()
+        camera.camera = SCNCamera()
+        camera.camera?.fieldOfView = 45
+        camera.position = SCNVector3(maxDim * 0.9, -maxDim * 1.15, maxDim * 1.25)
+        let lookAt = SCNLookAtConstraint(target: scene.rootNode)
+        lookAt.isGimbalLockEnabled = true
+        camera.constraints = [lookAt]
+        scene.rootNode.addChildNode(camera)
+
+        let key = SCNNode()
+        key.light = SCNLight()
+        key.light?.type = .omni
+        key.light?.intensity = 900
+        key.position = SCNVector3(maxDim * 0.6, -maxDim * 0.7, maxDim * 1.2)
+        scene.rootNode.addChildNode(key)
+
+        let fill = SCNNode()
+        fill.light = SCNLight()
+        fill.light?.type = .ambient
+        fill.light?.intensity = 500
+        scene.rootNode.addChildNode(fill)
+
+        let stock = SCNNode()
+        stock.name = "stock"
+        scene.rootNode.addChildNode(stock)
+
+        stock.geometry = buildGeometry(progress: progress)
+        return view
+    }
+
+    func updateUIView(_ view: SCNView, context: Context) {
+        view.scene?.rootNode.childNode(withName: "stock", recursively: false)?
+            .geometry = buildGeometry(progress: progress)
+    }
+
+    private func buildGeometry(progress: Double) -> SCNGeometry {
+        let nx = 48
+        let ny = 32
+        let extra = 6.0
+        let stockW = model.width + extra * 2
+        let stockD = model.depth + extra * 2
+        let minX = -stockW / 2
+        let minY = -stockD / 2
+        let cellW = stockW / Double(nx)
+        let cellD = stockD / Double(ny)
+        let pathTop = segments.map(\.z).max() ?? model.height
+        let top = max(model.height, pathTop) + 1.5
+        let bottom = min(0, segments.map(\.z).min() ?? 0) - 2
+        let radius = max(toolRadius, 0.5)
+
+        var heights = [Double](repeating: top, count: nx * ny)
+        let total = max(segments.reduce(0) { $0 + max($1.len, 0.001) }, 0.001)
+        let target = max(0, min(progress, 1)) * total
+        var traveled = 0.0
+
+        func stamp(x: Double, y: Double, z: Double) {
+            let ix0 = max(0, Int(floor((x - radius - minX) / cellW)))
+            let ix1 = min(nx - 1, Int(ceil((x + radius - minX) / cellW)))
+            let iy0 = max(0, Int(floor((y - radius - minY) / cellD)))
+            let iy1 = min(ny - 1, Int(ceil((y + radius - minY) / cellD)))
+            guard ix0 <= ix1, iy0 <= iy1 else { return }
+            for iy in iy0...iy1 {
+                for ix in ix0...ix1 {
+                    let cx = minX + (Double(ix) + 0.5) * cellW
+                    let cy = minY + (Double(iy) + 0.5) * cellD
+                    if hypot(cx - x, cy - y) <= radius {
+                        heights[iy * nx + ix] = min(heights[iy * nx + ix], z)
+                    }
+                }
+            }
+        }
+
+        for seg in segments {
+            let len = max(seg.len, 0.001)
+            if traveled >= target { break }
+            let shown = min(1, (target - traveled) / len)
+            let n = max(seg.pts.count - 1, 1)
+            let endPos = shown * Double(n)
+            for i in 0..<min(Int(endPos) + 1, n) {
+                let a = seg.pts[i]
+                let b = seg.pts[i + 1]
+                let dist = hypot(Double(b.x - a.x), Double(b.y - a.y))
+                let steps = max(1, Int(dist / 0.8))
+                for s in 0...steps {
+                    let t = Double(s) / Double(steps)
+                    stamp(
+                        x: Double(a.x) + Double(b.x - a.x) * t,
+                        y: Double(a.y) + Double(b.y - a.y) * t,
+                        z: seg.z
+                    )
+                }
+            }
+            traveled += len
+        }
+
+        var vertices: [SCNVector3] = []
+        vertices.reserveCapacity(nx * ny + (nx + ny) * 4)
+        for iy in 0..<ny {
+            for ix in 0..<nx {
+                let x = minX + (Double(ix) + 0.5) * cellW
+                let y = minY + (Double(iy) + 0.5) * cellD
+                vertices.append(SCNVector3(Float(x), Float(y), Float(heights[iy * nx + ix])))
+            }
+        }
+
+        var indices: [UInt32] = []
+        indices.reserveCapacity((nx - 1) * (ny - 1) * 6)
+        for iy in 0..<(ny - 1) {
+            for ix in 0..<(nx - 1) {
+                let a = UInt32(iy * nx + ix)
+                let b = UInt32(iy * nx + ix + 1)
+                let c = UInt32((iy + 1) * nx + ix)
+                let d = UInt32((iy + 1) * nx + ix + 1)
+                indices.append(contentsOf: [a, b, c, b, d, c])
+            }
+        }
+
+        // 四周侧壁：让毛坯看起来是实体块，而不是一张悬空高度图。
+        func addWall(_ p0: CGPoint, _ p1: CGPoint, _ h0: Double, _ h1: Double) {
+            let i0 = vertices.count
+            let top0 = Float(h0)
+            let top1 = Float(h1)
+            vertices.append(SCNVector3(Float(p0.x), Float(p0.y), Float(bottom)))
+            vertices.append(SCNVector3(Float(p1.x), Float(p1.y), Float(bottom)))
+            vertices.append(SCNVector3(Float(p0.x), Float(p0.y), top0))
+            vertices.append(SCNVector3(Float(p1.x), Float(p1.y), top1))
+            indices.append(contentsOf: [
+                UInt32(i0), UInt32(i0 + 1), UInt32(i0 + 2),
+                UInt32(i0 + 1), UInt32(i0 + 3), UInt32(i0 + 2)
+            ])
+        }
+
+        func point(ix: Int, iy: Int) -> CGPoint {
+            CGPoint(
+                x: minX + (Double(ix) + 0.5) * cellW,
+                y: minY + (Double(iy) + 0.5) * cellD
+            )
+        }
+        for ix in 0..<(nx - 1) {
+            let i0 = ix, i1 = ix + 1
+            addWall(point(ix: i0, iy: 0), point(ix: i1, iy: 0), heights[i0], heights[i1])
+        }
+        for ix in 0..<(nx - 1) {
+            let i0 = (ny - 1) * nx + ix, i1 = i0 + 1
+            addWall(point(ix: ix, iy: ny - 1), point(ix: ix + 1, iy: ny - 1), heights[i0], heights[i1])
+        }
+        for iy in 0..<(ny - 1) {
+            let i0 = iy * nx, i1 = (iy + 1) * nx
+            addWall(point(ix: 0, iy: iy), point(ix: 0, iy: iy + 1), heights[i0], heights[i1])
+        }
+        for iy in 0..<(ny - 1) {
+            let i0 = iy * nx + nx - 1, i1 = (iy + 1) * nx + nx - 1
+            addWall(point(ix: nx - 1, iy: iy), point(ix: nx - 1, iy: iy + 1), heights[i0], heights[i1])
+        }
+
+        let source = SCNGeometrySource(vertices: vertices)
+        let element = SCNGeometryElement(indices: indices, primitiveType: .triangles)
+        let geometry = SCNGeometry(sources: [source], elements: [element])
+        let material = SCNMaterial()
+        material.diffuse.contents = UIColor(red: 0.72, green: 0.74, blue: 0.76, alpha: 1)
+        material.metalness.contents = 0.15
+        material.roughness.contents = 0.75
+        material.isDoubleSided = true
+        geometry.materials = [material]
+        return geometry
     }
 }
 
