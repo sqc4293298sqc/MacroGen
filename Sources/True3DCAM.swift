@@ -311,6 +311,13 @@ enum True3DCAM {
                 isHole: isHole
             ))
         }
+        if ProcessInfo.processInfo.environment["CAM_DEBUG"] == "1" {
+            let desc = result.map { loop -> String in
+                let b = polygonBounds(loop.points)
+                return "\(loop.isHole ? "H" : "O") a=\(String(format: "%.1f", loop.area)) n=\(loop.points.count) x[\(String(format: "%.1f", b.minX))..\(String(format: "%.1f", b.maxX))] y[\(String(format: "%.1f", b.minY))..\(String(format: "%.1f", b.maxY))]"
+            }.joined(separator: " | ")
+            print("SECTION z=\(String(format: "%.2f", z)) wires=\(wires.count) \(desc)")
+        }
         return result
     }
 
@@ -320,6 +327,15 @@ enum True3DCAM {
         let plusLoops = loop.wire.offset(by: d).map { polygons(of: $0) } ?? []
         let minusLoops = loop.wire.offset(by: -d).map { polygons(of: $0) } ?? []
         let baseArea = max(loop.area, 0.01)
+        if ProcessInfo.processInfo.environment["CAM_DEBUG"] == "1" {
+            func b(_ loops: [[CGPoint]]) -> String {
+                loops.map { p in
+                    let x = polygonBounds(p)
+                    return "n=\(p.count) a=\(String(format: "%.1f", abs(polygonArea(p))) x[\(String(format: "%.1f", x.minX))..\(String(format: "%.1f", x.maxX))] y[\(String(format: "%.1f", x.minY))..\(String(format: "%.1f", x.maxY))]"
+                }.joined(separator: "; ")
+            }
+            print("OFFSET baseA=\(String(format: "%.1f", loop.area)) d=\(String(format: "%.1f", d)) expand=\(expand) plus={\(b(plusLoops))} minus={\(b(minusLoops))}")
+        }
 
         func pick(_ loops: [[CGPoint]], larger: Bool) -> [CGPoint]? {
             let candidates = loops.filter { $0.count >= 3 && abs(polygonArea($0)) > 0.01 }
