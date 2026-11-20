@@ -12,6 +12,7 @@ enum True3DSketchTool: String, CaseIterable, Identifiable {
     case polyline = "折线"
     case rectangle = "矩形"
     case circle = "圆"
+    case arc = "圆弧"
 
     var id: String { rawValue }
 
@@ -20,6 +21,7 @@ enum True3DSketchTool: String, CaseIterable, Identifiable {
         case .polyline: return "scribble.variable"
         case .rectangle: return "rectangle"
         case .circle: return "circle"
+        case .arc: return "circle.dashed"
         }
     }
 }
@@ -47,6 +49,7 @@ struct True3DSketchScreen: View {
     @State private var tool: True3DSketchTool = .polyline
     @State private var points: [True3DPoint] = []
     @State private var previewPoints: [True3DPoint] = []
+    @State private var arcPoints: [True3DPoint] = []
     @State private var closed = false
     @State private var gridStep: Double = 5
     @State private var snap = true
@@ -97,6 +100,7 @@ struct True3DSketchScreen: View {
                     Button {
                         tool = item
                         previewPoints = []
+                        arcPoints = []
                     } label: {
                         Label(item.rawValue, systemImage: item.symbol)
                             .font(.system(size: 12, weight: .semibold))
@@ -142,7 +146,9 @@ struct True3DSketchScreen: View {
             }
             .background(Color(red: 0.96, green: 0.97, blue: 0.98))
             .overlay(alignment: .topLeading) {
-                Text(tool == .polyline
+                Text(tool == .arc
+                     ? "点圆心 → 起点 → 终点，自动用弦闭合"
+                     : tool == .polyline
                      ? "逐点点击画折线；点回起点或按“闭合轮廓”结束"
                      : "按住拖动画\(tool.rawValue)，松开生成闭合轮廓")
                     .font(.system(size: 11))
@@ -172,6 +178,8 @@ struct True3DSketchScreen: View {
                         switch tool {
                         case .polyline:
                             addPolylinePoint(snapped(b))
+                        case .arc:
+                            handleArcTap(snapped(b))
                         case .rectangle, .circle:
                             let shape = shapePoints(from: a, to: b)
                             guard shape.count >= 3 else {
@@ -402,7 +410,55 @@ struct True3DSketchScreen: View {
                 let angle = Double(i) / 48.0 * 2 * .pi
                 return True3DPoint(x: a.x + r * cos(angle), y: a.y + r * sin(angle))
             }
+        case .arc:
+            return []
         }
+    }
+
+    /// 三点圆弧：圆心 → 起点 → 终点。生成逆时针圆弧后用弦直接闭合，
+    /// 让圆弧轮廓可以直接作为基础轮廓或拉伸特征。
+    private func handleArcTap(_ p: True3DPoint) {
+        guard !closed else { return }
+        guard p.x >= -width / 2, p.x <= width / 2, p.y >= -depth / 2, p.y <= depth / 2 else {
+            error = "点超出基础块范围"
+            return
+        }
+        arcPoints.append(p)
+        previewPoints = arcPoints
+        guard arcPoints.count == 3 else {
+            error = nil
+            return
+        }
+        let center = arcPoints[0]
+        let start = arcPoints[1]
+        let end = arcPoints[2]
+        let radius = hypot(start.x - center.x, start.y - center.y)
+        guard radius > max(gridStep, 0.5) else {
+            error = "圆弧半径太小"
+            arcPoints = []
+            previewPoints = []
+            return
+        }
+        let a0 = atan2(start.y - center.y, start.x - center.x)
+        let a1 = atan2(end.y - center.y, end.x - center.x)
+        var sweep = a1 - a0
+        if sweep <= 0 { sweep += 2 * .pi }
+        let count = max(16, Int(sweep * radius / 2.0))
+        let arc = (0...count).map { i -> True3DPoint in
+            let a = a0 + sweep * Double(i) / Double(count)
+            return True3DPoint(x: center.x + radius * cos(a), y: center.y + radius * sin(a))
+        }
+        guard arc.allSatisfy({ $0.x >= -width / 2 - 0.1 && $0.x <= width / 2 + 0.1 && $0.y >= -depth / 2 - 0.1 && $0.y <= depth / 2 + 0.1 }) else {
+            error = "圆弧超出基础块范围，缩小半径或移动圆心"
+            arcPoints = []
+            previewPoints = []
+            return
+        }
+        points = arc
+        closed = true
+        arcPoints = []
+        previewPoints = []
+        error = nil
     }
 
     private func addPolylinePoint(_ p: True3DPoint) {
@@ -430,7 +486,10 @@ struct True3DSketchScreen: View {
     }
 
     private func undo() {
-        if closed {
+        if !arcPoints.isEmpty {
+            arcPoints.removeLast()
+            previewPoints = arcPoints
+        } else if closed {
             closed = false
         } else if !points.isEmpty {
             points.removeLast()
@@ -441,6 +500,7 @@ struct True3DSketchScreen: View {
     private func clear() {
         points = []
         previewPoints = []
+        arcPoints = []
         closed = false
         error = nil
     }
