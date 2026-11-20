@@ -13,6 +13,7 @@ enum True3DSketchTool: String, CaseIterable, Identifiable {
     case rectangle = "矩形"
     case circle = "圆"
     case arc = "圆弧"
+    case spline = "样条"
 
     var id: String { rawValue }
 
@@ -22,6 +23,7 @@ enum True3DSketchTool: String, CaseIterable, Identifiable {
         case .rectangle: return "rectangle"
         case .circle: return "circle"
         case .arc: return "circle.dashed"
+        case .spline: return "scribble"
         }
     }
 }
@@ -152,6 +154,8 @@ struct True3DSketchScreen: View {
             .overlay(alignment: .topLeading) {
                 Text(tool == .arc
                      ? "点圆心 → 起点 → 终点，自动用弦闭合"
+                     : tool == .spline
+                     ? "逐点画样条；点回起点或按“闭合轮廓”自动圆滑"
                      : tool == .polyline
                      ? "逐点点击画折线；点回起点或按“闭合轮廓”结束"
                      : "按住拖动画\(tool.rawValue)，松开生成闭合轮廓")
@@ -184,6 +188,8 @@ struct True3DSketchScreen: View {
                             addPolylinePoint(snapped(b))
                         case .arc:
                             handleArcTap(snapped(b))
+                        case .spline:
+                            addPolylinePoint(snapped(b), maximumPoints: 32)
                         case .rectangle, .circle:
                             let shape = shapePoints(from: a, to: b)
                             guard shape.count >= 3 else {
@@ -414,7 +420,7 @@ struct True3DSketchScreen: View {
                 let angle = Double(i) / 48.0 * 2 * .pi
                 return True3DPoint(x: a.x + r * cos(angle), y: a.y + r * sin(angle))
             }
-        case .arc:
+        case .arc, .spline:
             return []
         }
     }
@@ -465,7 +471,7 @@ struct True3DSketchScreen: View {
         error = nil
     }
 
-    private func addPolylinePoint(_ p: True3DPoint) {
+    private func addPolylinePoint(_ p: True3DPoint, maximumPoints: Int = 200) {
         if points.count >= 3, let first = points.first, hypot(p.x - first.x, p.y - first.y) < max(gridStep, 0.5) {
             closed = true
             error = nil
@@ -473,6 +479,10 @@ struct True3DSketchScreen: View {
         }
         guard p.x >= -width / 2, p.x <= width / 2, p.y >= -depth / 2, p.y <= depth / 2 else {
             error = "点超出基础块范围"
+            return
+        }
+        guard points.count < maximumPoints else {
+            error = "点数已达上限，按“闭合轮廓”生成曲线"
             return
         }
         points.append(p)
@@ -506,8 +516,43 @@ struct True3DSketchScreen: View {
             error = "至少需要 3 个点才能闭合"
             return
         }
+        if tool == .spline, !closed {
+            let smoothed = smoothClosed(points, samples: 8)
+            guard smoothed.allSatisfy({ $0.x >= -width / 2 - 0.1 && $0.x <= width / 2 + 0.1 && $0.y >= -depth / 2 - 0.1 && $0.y <= depth / 2 + 0.1 }) else {
+                error = "样条圆滑后超出基础块，缩小控制点范围"
+                return
+            }
+            points = smoothed
+        }
         closed = true
         error = nil
+    }
+
+    /// 闭合 Catmull-Rom 样条，把逐点折线变成连续光滑轮廓。
+    private func smoothClosed(_ points: [True3DPoint], samples: Int) -> [True3DPoint] {
+        guard points.count >= 3 else { return points }
+        let n = points.count
+        var result: [True3DPoint] = []
+        result.reserveCapacity(n * samples)
+        for i in 0..<n {
+            let p0 = points[(i - 1 + n) % n]
+            let p1 = points[i]
+            let p2 = points[(i + 1) % n]
+            let p3 = points[(i + 2) % n]
+            for j in 0..<samples {
+                let t = Double(j) / Double(samples)
+                let t2 = t * t
+                let t3 = t2 * t
+                let x = 0.5 * ((2 * p1.x) + (-p0.x + p2.x) * t
+                    + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2
+                    + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3)
+                let y = 0.5 * ((2 * p1.y) + (-p0.y + p2.y) * t
+                    + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2
+                    + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3)
+                result.append(True3DPoint(x: x, y: y))
+            }
+        }
+        return result
     }
 
     private func undo() {
