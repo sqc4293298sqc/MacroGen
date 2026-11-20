@@ -40,6 +40,7 @@ struct True3DModelScreen: View {
     @State private var selectedFeatureID: UUID?
     @State private var stage: True3DWorkbenchStage = .model
     @State private var cam = True3DCAMParams()
+    @State private var operations: [True3DOperation] = True3DModelScreen.defaultOperations()
     @State private var camResult: True3DCAMResult?
     @State private var isGeneratingCAM = false
     @State private var gcodeURL: URL?
@@ -286,27 +287,44 @@ struct True3DModelScreen: View {
                         .foregroundStyle(.red)
                 }
 
-                VStack(spacing: 8) {
-                    opToggle("外形分层粗铣", "沿真实截面等高偏置，按层下切", $cam.doRoughing)
-                    opToggle("外形精铣", "最后一层沿侧壁精修", $cam.doFinishing)
-                    opToggle("孔 / 腔逐层清残", "孔、圆腔、方腔、腰槽、草图切除", $cam.doClearInner)
-                    opToggle("基础顶面飞面", "顶面行切，避开凸台和孔", $cam.doFaceBaseTop)
-                    opToggle("凸台顶面飞面", "每个凸台顶面单独行切", $cam.doFaceBossTop)
-                    opToggle("型腔底面飞面", "腔底和孔底清根", $cam.doFacePocketBottom)
+                HStack {
+                    Label("工序树", systemImage: "list.number")
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    Menu {
+                        ForEach(True3DOperationKind.allCases) { kind in
+                            Button(kind.rawValue) { appendOperation(kind) }
+                        }
+                    } label: {
+                        Label("添加工序", systemImage: "plus.circle.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
                 }
 
-                group("刀具") {
-                    numRow("刀具直径 Ø", $cam.toolDia)
-                    intRow("刀号 T", $cam.toolNo)
-                    intRow("长度补偿 H", $cam.hNo)
+                VStack(spacing: 10) {
+                    ForEach($operations) { $operation in
+                        operationCard($operation)
+                    }
                 }
-                group("切削") {
-                    numRow("每层切深 AP", $cam.stepDown)
-                    numRow("行距 AE", $cam.stepOver)
-                    intRow("转速 S", $cam.spindle)
-                    intRow("切削进给 F", $cam.feed)
-                    intRow("下刀进给", $cam.plungeFeed)
+
+                if operations.filter(\.enabled).isEmpty {
+                    Label("至少启用一道工序才能生成刀路", systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.orange)
+                }
+
+                group("安全 / 坐标 / 毛坯") {
                     numRow("安全高度 Z", $cam.safeZ)
+                    numRow("XY 单边余量", $cam.stockMarginXY)
+                    numRow("底面余量", $cam.stockExtraBottom)
+                    Picker("工件坐标系", selection: $cam.coord) {
+                        ForEach([54, 55, 56, 57, 58, 59], id: \.self) { c in
+                            Text("G\(c)").tag(c)
+                        }
+                    }
+                    numRow("零点偏移 X", $cam.originX)
+                    numRow("零点偏移 Y", $cam.originY)
+                    intRow("程序号 O", $cam.programNo)
                 }
                 group("毛坯 / 坐标") {
                     numRow("XY 单边余量", $cam.stockMarginXY)
@@ -506,10 +524,94 @@ struct True3DModelScreen: View {
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
     }
 
+    private func appendOperation(_ kind: True3DOperationKind) {
+        var op = True3DOperation(kind: kind)
+        switch kind {
+        case .faceBase:
+            op.toolDia = 16; op.toolNo = 1; op.stepDown = 2; op.stepOver = 12
+            op.spindle = 3000; op.feed = 800; op.plungeFeed = 250
+        case .rough:
+            op.toolDia = 8; op.toolNo = 2; op.stepDown = 3; op.stepOver = 5
+            op.spindle = 2500; op.feed = 600; op.plungeFeed = 180
+        case .finish:
+            op.toolDia = 4; op.toolNo = 3; op.stepDown = 1; op.stepOver = 2
+            op.spindle = 4000; op.feed = 500; op.plungeFeed = 150
+        case .clearInner:
+            op.toolDia = 3; op.toolNo = 4; op.stepDown = 2; op.stepOver = 2
+            op.spindle = 4500; op.feed = 400; op.plungeFeed = 120
+        case .faceBoss:
+            op.toolDia = 10; op.toolNo = 5; op.stepDown = 2; op.stepOver = 8
+            op.spindle = 3000; op.feed = 700; op.plungeFeed = 200
+        case .facePocket:
+            op.toolDia = 3; op.toolNo = 4; op.stepDown = 2; op.stepOver = 2
+            op.spindle = 4500; op.feed = 400; op.plungeFeed = 120
+        }
+        operations.append(op)
+    }
+
+    private func operationCard(_ operation: Binding<True3DOperation>) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Toggle(isOn: operation.enabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(operation.wrappedValue.kind.rawValue)
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("T\(operation.wrappedValue.toolNo) · Ø\(fmt(operation.wrappedValue.toolDia)) · AP\(fmt(operation.wrappedValue.stepDown)) · AE\(fmt(operation.wrappedValue.stepOver))")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+
+                Spacer()
+                Button {
+                    let id = operation.wrappedValue.id
+                    operations.removeAll { $0.id == id }
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+            }
+
+            DisclosureGroup("刀具 / 切削参数") {
+                VStack(spacing: 8) {
+                    HStack(spacing: 8) {
+                        numRow("刀径 Ø", operation.toolDia)
+                        intRow("T", operation.toolNo)
+                    }
+                    HStack(spacing: 8) {
+                        intRow("H", operation.hNo)
+                        intRow("转速 S", operation.spindle)
+                    }
+                    HStack(spacing: 8) {
+                        numRow("切深 AP", operation.stepDown)
+                        numRow("行距 AE", operation.stepOver)
+                    }
+                    HStack(spacing: 8) {
+                        intRow("进给 F", operation.feed)
+                        intRow("下刀 F", operation.plungeFeed)
+                    }
+                }
+                .padding(.top, 8)
+            }
+            .font(.system(size: 12))
+        }
+        .padding(12)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+    }
+
     private func generateCAM(switchToMachine: Bool = true) {
         guard let result else {
             error = "请先在建模页生成有效实体"
             stage = .model
+            return
+        }
+        let enabled = operations.filter(\.enabled)
+        guard !enabled.isEmpty else {
+            error = "至少启用一道工序"
+            stage = .operation
             return
         }
         guard !isGeneratingCAM else { return }
@@ -517,7 +619,9 @@ struct True3DModelScreen: View {
         notice = nil
         isGeneratingCAM = true
         do {
-            let generated = try True3DCAM.generate(result: result, model: result.params, cam: cam)
+            var parameters = cam
+            parameters.operations = enabled
+            let generated = try True3DCAM.generate(result: result, model: result.params, cam: parameters)
             camResult = generated
             let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             let url = dir.appendingPathComponent("MacroGen-3D-\(cam.programNo).nc")

@@ -32,6 +32,53 @@ struct True3DCAMParams: Equatable {
     var doFacePocketBottom: Bool = true
 
     var toolRadius: Double { max(toolDia, 0.1) / 2 }
+
+    /// 非空时按工序树逐道生成，忽略上面的 doXxx 开关和单刀具字段。
+    var operations: [True3DOperation] = []
+}
+
+// MARK: - 工序树
+
+enum True3DOperationKind: String, CaseIterable, Identifiable {
+    case faceBase = "基础顶面飞面"
+    case rough = "外形分层粗铣"
+    case finish = "外形精铣"
+    case clearInner = "孔 / 腔清残"
+    case faceBoss = "凸台顶面飞面"
+    case facePocket = "型腔底面飞面"
+
+    var id: String { rawValue }
+
+    var detail: String {
+        switch self {
+        case .faceBase: return "顶面行切，避开凸台和孔"
+        case .rough: return "沿真实截面等高偏置，按层下切"
+        case .finish: return "最后一层沿侧壁精修"
+        case .clearInner: return "孔、圆腔、方腔、腰槽、草图切除逐层清残"
+        case .faceBoss: return "每个凸台顶面单独行切"
+        case .facePocket: return "腔底和孔底清根"
+        }
+    }
+}
+
+struct True3DOperation: Identifiable, Equatable {
+    var id = UUID()
+    var kind: True3DOperationKind = .rough
+    var enabled = true
+    var toolDia: Double = 6
+    var toolNo: Int = 1
+    var hNo: Int = 1
+    var spindle: Int = 2000
+    var feed: Int = 400
+    var plungeFeed: Int = 120
+    var stepDown: Double = 3
+    var stepOver: Double = 4
+}
+
+struct True3DCAMRun {
+    let operation: True3DOperation
+    let segments: [TPSeg]
+    let stats: True3DCAMStats
 }
 
 struct True3DCAMStats {
@@ -49,6 +96,7 @@ struct True3DCAMResult {
     let gcode: String
     let stats: True3DCAMStats
     let warnings: [String]
+    var runs: [True3DCAMRun] = []
 }
 
 enum True3DCAMError: LocalizedError {
@@ -82,6 +130,10 @@ enum True3DCAM {
         model: True3DParams,
         cam: True3DCAMParams
     ) throws -> True3DCAMResult {
+        let enabledOperations = cam.operations.filter(\.enabled)
+        if !enabledOperations.isEmpty {
+            return try generateOperations(result: result, model: model, cam: cam, operations: enabledOperations)
+        }
         guard cam.toolDia > 0.2, cam.spindle > 0, cam.feed > 0, cam.plungeFeed > 0 else {
             throw True3DCAMError.invalidTool
         }
@@ -290,6 +342,94 @@ enum True3DCAM {
             gcode: gcode,
             stats: stats,
             warnings: warnings
+        )
+    }
+
+    // MARK: 多工序
+
+    private static func generateOperations(
+        result: True3DResult,
+        model: True3DParams,
+        cam: True3DCAMParams,
+        operations: [True3DOperation]
+    ) throws -> True3DCAMResult {
+        var allSegments: [TPSeg] = []
+        var runs: [True3DCAMRun] = []
+        var warnings: [String] = []
+        var stats = True3DCAMStats()
+        var layerKeys = Set<Int>()
+
+        for operation in operations {
+            var single = cam
+            single.operations = []
+            single.doRoughing = false
+            single.doFinishing = false
+            single.doClearInner = false
+            single.doFaceBaseTop = false
+            single.doFaceBossTop = false
+            single.doFacePocketBottom = false
+            switch operation.kind {
+            case .faceBase: single.doFaceBaseTop = true
+            case .rough: single.doRoughing = true
+            case .finish: single.doFinishing = true
+            case .clearInner: single.doClearInner = true
+            case .faceBoss: single.doFaceBossTop = true
+            case .facePocket: single.doFacePocketBottom = true
+            }
+            single.toolDia = operation.toolDia
+            single.toolNo = operation.toolNo
+            single.hNo = operation.hNo
+            single.spindle = operation.spindle
+            single.feed = operation.feed
+            single.plungeFeed = operation.plungeFeed
+            single.stepDown = operation.stepDown
+            single.stepOver = operation.stepOver
+
+            let runResult: True3DCAMResult
+            do {
+                runResult = try generate(result: result, model: model, cam: single)
+            } catch let error as True3DCAMError {
+                if case .emptyToolpath = error {
+                    warnings.append("[\(operation.kind.rawValue)] 没有可用刀路，已跳过")
+                    continue
+                }
+                throw error
+            }
+
+            allSegments.append(contentsOf: runResult.segments)
+            for warning in runResult.warnings {
+                let tagged = "[\(operation.kind.rawValue)] \(warning)"
+                if !warnings.contains(tagged) { warnings.append(tagged) }
+            }
+            stats.cutLength += runResult.stats.cutLength
+            stats.rapidLength += runResult.stats.rapidLength
+            stats.pathCount += runResult.stats.pathCount
+            stats.sectionCount += runResult.stats.sectionCount
+            stats.zMin = runs.isEmpty ? runResult.stats.zMin : min(stats.zMin, runResult.stats.zMin)
+            stats.zMax = runs.isEmpty ? runResult.stats.zMax : max(stats.zMax, runResult.stats.zMax)
+            for seg in runResult.segments { layerKeys.insert(Int((seg.z * 1000).rounded())) }
+            stats.layerCount = layerKeys.count
+            runs.append(True3DCAMRun(operation: operation, segments: runResult.segments, stats: runResult.stats))
+        }
+
+        guard !allSegments.isEmpty else { throw True3DCAMError.emptyToolpath }
+        guard let bounds = result.shape.bounds else { throw True3DCAMError.invalidModel }
+        let safeZ = max(cam.safeZ, bounds.max.z + 2)
+        warnings.append("共 \(runs.count) 道工序 / \(Set(runs.map { $0.operation.toolNo }).count) 把刀；换刀和 Z 轴回零请按机床实际配置确认。")
+        let gcode = makeMultiGCode(
+            runs: runs,
+            cam: cam,
+            safeZ: safeZ,
+            bounds: bounds,
+            stats: stats,
+            warnings: warnings
+        )
+        return True3DCAMResult(
+            segments: allSegments,
+            gcode: gcode,
+            stats: stats,
+            warnings: warnings,
+            runs: runs
         )
     }
 
@@ -541,6 +681,91 @@ enum True3DCAM {
         }
         let pool = side.isEmpty ? candidates : side
         return pool.min { abs(abs(polygonArea($0)) - expected) < abs(abs(polygonArea($1)) - expected) }
+    }
+
+    // MARK: 多工序 G 代码
+
+    private static func makeMultiGCode(
+        runs: [True3DCAMRun],
+        cam: True3DCAMParams,
+        safeZ: Double,
+        bounds: (min: SIMD3<Double>, max: SIMD3<Double>),
+        stats: True3DCAMStats,
+        warnings: [String]
+    ) -> String {
+        var lines: [String] = []
+        lines.append("%")
+        lines.append("O\(cam.programNo) (MACROGEN TRUE3D MULTI-OP)")
+        lines.append("( 由 MacroGen 真3D B-Rep 工序树生成 )")
+        lines.append("( 共 \(runs.count) 道工序，总刀路 \(fmt(stats.cutLength, 1))mm，层数 \(stats.layerCount) )")
+        lines.append("( 毛坯范围 X\(fmt(bounds.min.x, 2))~\(fmt(bounds.max.x, 2)) Y\(fmt(bounds.min.y, 2))~\(fmt(bounds.max.y, 2)) Z\(fmt(bounds.min.z, 2))~\(fmt(bounds.max.z, 2)) )")
+        if !warnings.isEmpty {
+            lines.append("( 注意: \(warnings[0]) )")
+        }
+        lines.append("G17 G21 G40 G49 G80 G90 G\(cam.coord)")
+        if abs(cam.originX) > 1e-9 || abs(cam.originY) > 1e-9 {
+            lines.append("G52 X\(fmt(cam.originX)) Y\(fmt(cam.originY)) (零点偏移)")
+        }
+
+        for (index, run) in runs.enumerated() {
+            let op = run.operation
+            lines.append("( ---- 工序 \(index + 1): \(op.kind.rawValue) ---- )")
+            lines.append("( 刀Ø\(fmt(op.toolDia, 2)) 每层\(fmt(op.stepDown, 2)) 行距\(fmt(op.stepOver, 2)) 转速\(op.spindle) 进给\(op.feed) )")
+            lines.append("T\(op.toolNo) M6")
+            lines.append("G43 H\(op.hNo) Z\(fmt(safeZ, 1))")
+            lines.append("M3 S\(op.spindle)")
+            lines.append("M8")
+            appendSegmentLines(
+                run.segments,
+                feed: op.feed,
+                plungeFeed: op.plungeFeed,
+                safeZ: safeZ,
+                lines: &lines
+            )
+            lines.append("G0 Z\(fmt(safeZ, 1))")
+            lines.append("M5")
+            lines.append("M9")
+        }
+
+        if abs(cam.originX) > 1e-9 || abs(cam.originY) > 1e-9 {
+            lines.append("G52 X0 Y0")
+        }
+        lines.append("G28 G91 Z0")
+        lines.append("G28 G91 Y0")
+        lines.append("G90")
+        lines.append("M30")
+        lines.append("%")
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    private static func appendSegmentLines(
+        _ segments: [TPSeg],
+        feed: Int,
+        plungeFeed: Int,
+        safeZ: Double,
+        lines: inout [String]
+    ) {
+        var lastPoint: CGPoint?
+        var lastZ: Double?
+        for seg in segments {
+            guard let first = seg.pts.first, let last = seg.pts.last else { continue }
+            let needsRapid: Bool
+            if let lp = lastPoint, let lz = lastZ {
+                needsRapid = distance(lp, first) > 0.01 || abs(lz - seg.z) > 0.001
+            } else {
+                needsRapid = true
+            }
+            if needsRapid {
+                lines.append("G0 Z\(fmt(safeZ, 1))")
+                lines.append("G0 X\(fmt(Double(first.x))) Y\(fmt(Double(first.y)))")
+                lines.append("G1 Z\(fmt(seg.z)) F\(plungeFeed)")
+            }
+            for p in seg.pts.dropFirst() {
+                lines.append("G1 X\(fmt(Double(p.x))) Y\(fmt(Double(p.y))) F\(feed)")
+            }
+            lastPoint = last
+            lastZ = seg.z
+        }
     }
 
     // MARK: G 代码
