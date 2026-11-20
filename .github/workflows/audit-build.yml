@@ -1,9 +1,11 @@
 name: audit-build
 
 on:
-  push:
-    branches: [ fix3 ]
   workflow_dispatch:
+
+concurrency:
+  group: audit-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
