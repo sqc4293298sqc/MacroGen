@@ -225,8 +225,12 @@ enum True3DKernel {
         guard let mesh = current.mesh(linearDeflection: 0.18, angularDeflection: 0.35) else {
             throw True3DModelError.meshFailed
         }
-        let b = current.bounds
-        let size = b.map { ($0.max.x - $0.min.x, $0.max.y - $0.min.y, $0.max.z - $0.min.z) } ?? (input.width, input.depth, input.height)
+        let size: (Double, Double, Double)
+        if let b = current.bounds {
+            size = (b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z)
+        } else {
+            size = (input.width, input.depth, input.height)
+        }
         return True3DResult(
             shape: current,
             mesh: mesh,
@@ -313,9 +317,9 @@ enum True3DKernel {
         let top = f.topZ ?? h
         let r = f.dia / 2
         switch f.holeKind {
-        case .through, .thread:
+        case .through:
             return Shape.cylinder(at: SIMD2<Double>(f.x, f.y), bottomZ: -1, radius: r, height: top + 2)
-        case .blind:
+        case .blind, .thread:
             let d = min(max(f.holeDepth, 0.1), max(top + 1, 0.2))
             return Shape.cylinder(at: SIMD2<Double>(f.x, f.y), bottomZ: top - d, radius: r, height: d + 1)
         case .counterbore:

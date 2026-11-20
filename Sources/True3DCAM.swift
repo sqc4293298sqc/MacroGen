@@ -96,8 +96,6 @@ enum True3DCAM {
         let bottom = bounds.min.z - max(0, cam.stockExtraBottom)
         let top = bounds.max.z
         let baseTop = max(0, model.height)
-        let bossTop = model.bossFeatures.map { model.bossTop($0) }.max() ?? baseTop
-        let pocketBottom = model.pocketFeatures.map { model.pocketBottom($0) }.min() ?? baseTop
         let effectiveSafeZ = max(cam.safeZ, top + 2)
 
         var segments: [TPSeg] = []
