@@ -597,6 +597,13 @@ struct True3DModelScreen: View {
         operations.append(op)
     }
 
+    private func moveOperation(_ id: UUID, by delta: Int) {
+        guard let index = operations.firstIndex(where: { $0.id == id }) else { return }
+        let target = index + delta
+        guard target >= 0, target < operations.count else { return }
+        operations.swapAt(index, target)
+    }
+
     private func operationCard(_ operation: Binding<True3DOperation>) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
@@ -612,15 +619,27 @@ struct True3DModelScreen: View {
                 .toggleStyle(.switch)
 
                 Spacer()
-                Button {
-                    let id = operation.wrappedValue.id
-                    operations.removeAll { $0.id == id }
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 3) {
+                    Button { moveOperation(operation.wrappedValue.id, by: -1) } label: {
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .buttonStyle(.borderless)
+                    Button { moveOperation(operation.wrappedValue.id, by: 1) } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .buttonStyle(.borderless)
+                    Button {
+                        let id = operation.wrappedValue.id
+                        operations.removeAll { $0.id == id }
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
                 }
-                .buttonStyle(.borderless)
             }
 
             DisclosureGroup("刀具 / 切削参数") {

@@ -84,6 +84,10 @@ struct True3DSketchScreen: View {
                     Button("清空草图") { clear() }
                     Divider()
                     Button("闭合轮廓") { closeProfile() }
+                    Divider()
+                    Button("旋转 90°") { rotateSketch() }
+                    Button("水平镜像") { mirrorSketch(horizontal: true) }
+                    Button("垂直镜像") { mirrorSketch(horizontal: false) }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -473,6 +477,27 @@ struct True3DSketchScreen: View {
         }
         points.append(p)
         closed = false
+        error = nil
+    }
+
+    private func rotateSketch() {
+        guard !points.isEmpty else { return }
+        let rotated = points.map { True3DPoint(x: -$0.y, y: $0.x) }
+        guard rotated.allSatisfy({ $0.x >= -width / 2 - 0.1 && $0.x <= width / 2 + 0.1 && $0.y >= -depth / 2 - 0.1 && $0.y <= depth / 2 + 0.1 }) else {
+            error = "旋转后超出基础块范围"
+            return
+        }
+        points = rotated
+        error = nil
+    }
+
+    private func mirrorSketch(horizontal: Bool) {
+        guard !points.isEmpty else { return }
+        points = points.map {
+            horizontal
+                ? True3DPoint(x: -$0.x, y: $0.y)
+                : True3DPoint(x: $0.x, y: -$0.y)
+        }
         error = nil
     }
 
