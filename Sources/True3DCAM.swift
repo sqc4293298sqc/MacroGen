@@ -348,7 +348,7 @@ enum True3DCAM {
             func b(_ loops: [[CGPoint]]) -> String {
                 loops.map { p in
                     let x = polygonBounds(p)
-                    return "n=\(p.count) a=\(String(format: "%.1f", abs(polygonArea(p))) x[\(String(format: "%.1f", x.minX))..\(String(format: "%.1f", x.maxX))] y[\(String(format: "%.1f", x.minY))..\(String(format: "%.1f", x.maxY))]"
+                    return "n=\(p.count) a=\(String(format: "%.1f", abs(polygonArea(p)))) x[\(String(format: "%.1f", x.minX))..\(String(format: "%.1f", x.maxX))] y[\(String(format: "%.1f", x.minY))..\(String(format: "%.1f", x.maxY))]"
                 }.joined(separator: "; ")
             }
             print("OFFSET baseA=\(String(format: "%.1f", loop.area)) d=\(String(format: "%.1f", d)) expand=\(expand) plus=\(b(plusLoops)) minus=\(b(minusLoops))")
