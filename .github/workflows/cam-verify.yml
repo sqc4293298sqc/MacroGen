@@ -21,7 +21,7 @@ jobs:
       - name: Fetch OCCTSwift 3.0.0 and kernel
         run: |
           rm -rf verify/OCCTSwift
-          git clone --depth 1 --branch 3.0.0 https://github.com/SecondMouseAU/OCCTSwift.git verify/OCCTSwift
+          git clone --depth 1 --branch v3.0.0 https://github.com/SecondMouseAU/OCCTSwift.git verify/OCCTSwift
           mkdir -p verify/OCCTSwift/Libraries
           curl -L --retry 3 --retry-delay 3             -o /tmp/OCCT.xcframework.zip             https://github.com/SecondMouseAU/OCCTSwift/releases/download/v3.0.0/OCCT.xcframework.zip
           rm -rf /tmp/OCCTUnzip
