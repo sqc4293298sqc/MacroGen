@@ -286,11 +286,12 @@ enum True3DCAM {
 
         var raw: [(wire: Wire, points: [CGPoint], area: Double)] = []
         for wire in wires {
-            let p = polygon(of: wire)
-            guard p.count >= 3 else { continue }
-            let a = abs(polygonArea(p))
-            guard a > 0.01 else { continue }
-            raw.append((wire, p, a))
+            for p in polygons(of: wire) {
+                guard p.count >= 3 else { continue }
+                let a = abs(polygonArea(p))
+                guard a > 0.01 else { continue }
+                raw.append((wire, p, a))
+            }
         }
         guard !raw.isEmpty else { return nil }
 
@@ -316,65 +317,104 @@ enum True3DCAM {
     private static func offset(_ loop: CamLoop, by distance: Double, expand: Bool) -> [CGPoint]? {
         let d = abs(distance)
         guard d > 0.01 else { return loop.points }
-        let plus = loop.wire.offset(by: d)
-        let minus = loop.wire.offset(by: -d)
-        let plusPoly = plus.map { polygon(of: $0) }
-        let minusPoly = minus.map { polygon(of: $0) }
-
-        let plusArea = plusPoly.map { abs(polygonArea($0)) } ?? 0
-        let minusArea = minusPoly.map { abs(polygonArea($0)) } ?? 0
+        let plusLoops = loop.wire.offset(by: d).map { polygons(of: $0) } ?? []
+        let minusLoops = loop.wire.offset(by: -d).map { polygons(of: $0) } ?? []
         let baseArea = max(loop.area, 0.01)
 
-        if expand {
-            if plusArea > baseArea + 0.01 { return plusPoly }
-            if minusArea > baseArea + 0.01 { return minusPoly }
-        } else {
-            if minusArea > 0.01, minusArea < baseArea - 0.01 { return minusPoly }
-            if plusArea > 0.01, plusArea < baseArea - 0.01 { return plusPoly }
+        func pick(_ loops: [[CGPoint]], larger: Bool) -> [CGPoint]? {
+            let candidates = loops.filter { $0.count >= 3 && abs(polygonArea($0)) > 0.01 }
+            guard !candidates.isEmpty else { return nil }
+            if larger {
+                let best = candidates.max { abs(polygonArea($0)) < abs(polygonArea($1)) }!
+                return abs(polygonArea(best)) > baseArea + 0.01 ? best : nil
+            } else {
+                let best = candidates.min { abs(polygonArea($0)) < abs(polygonArea($1)) }!
+                let area = abs(polygonArea(best))
+                return area > 0.01 && area < baseArea - 0.01 ? best : nil
+            }
         }
-        // 某些截面偏置后面积变化不明显，仍取第一个有效轮廓，避免整层丢失。
-        if let p = plusPoly, p.count >= 3, abs(polygonArea(p)) > 0.01 { return p }
-        if let p = minusPoly, p.count >= 3, abs(polygonArea(p)) > 0.01 { return p }
+
+        if expand {
+            if let p = pick(plusLoops, larger: true) { return p }
+            if let p = pick(minusLoops, larger: true) { return p }
+        } else {
+            if let p = pick(minusLoops, larger: false) { return p }
+            if let p = pick(plusLoops, larger: false) { return p }
+        }
+        // 某些截面偏置后面积变化不明显，仍取一个有效轮廓，避免整层丢失。
+        if let p = plusLoops.first(where: { $0.count >= 3 && abs(polygonArea($0)) > 0.01 }) { return p }
+        if let p = minusLoops.first(where: { $0.count >= 3 && abs(polygonArea($0)) > 0.01 }) { return p }
         return nil
     }
 
+    /// 将截面 wire 拆成若干条有序闭环/开环折线。
+    ///
+    /// `BRepTools_WireExplorer` 在部分 OCCT 偏移结果上返回 0 条边，旧实现退化为
+    /// 逐边拼接，点序会乱跳，导致 G 代码里出现横穿工件的长直线。这里统一取
+    /// 每条边的离散折线，再按端点最近邻串接，既能保留边序，也能处理反向边。
+    private static func polygons(of wire: Wire) -> [[CGPoint]] {
+        var pieces: [[CGPoint]] = []
+        for polyline in wire.allEdgePolylines(deflection: 0.05) {
+            var pts: [CGPoint] = []
+            for p in polyline {
+                let cg = CGPoint(x: p.x, y: p.y)
+                if let last = pts.last, distance(last, cg) < 0.0005 { continue }
+                pts.append(cg)
+            }
+            if pts.count >= 2 { pieces.append(pts) }
+        }
+
+        // 极少数 wire 无法转成 shape 时，退回 orderedEdge API。
+        if pieces.isEmpty, wire.orderedEdgeCount > 0 {
+            for i in 0..<wire.orderedEdgeCount {
+                guard let raw = wire.orderedEdgePoints(at: i), raw.count >= 2 else { continue }
+                pieces.append(raw.map { CGPoint(x: $0.x, y: $0.y) })
+            }
+        }
+
+        var unused = pieces
+        var loops: [[CGPoint]] = []
+        while !unused.isEmpty {
+            var chain = unused.removeFirst()
+            var isClosed = chain.count > 2
+                && distance(chain[0], chain[chain.count - 1]) < 0.05
+            while !isClosed {
+                guard let end = chain.last else { break }
+                var best: (index: Int, distance: Double, reverse: Bool)?
+                for (index, piece) in unused.enumerated() {
+                    let dStart = distance(end, piece[0])
+                    let dEnd = distance(end, piece[piece.count - 1])
+                    let d = min(dStart, dEnd)
+                    if best == nil || d < best!.distance {
+                        best = (index, d, dEnd < dStart)
+                    }
+                }
+                guard let best, best.distance < 0.5 else { break }
+                let next = unused.remove(at: best.index)
+                var ordered = best.reverse ? Array(next.reversed()) : next
+                if let last = chain.last, !ordered.isEmpty, distance(last, ordered[0]) < 0.0005 {
+                    ordered.removeFirst()
+                }
+                chain.append(contentsOf: ordered)
+                isClosed = chain.count > 2
+                    && distance(chain[0], chain[chain.count - 1]) < 0.05
+            }
+
+            // 首尾已经重合的闭环保留首点作为收刀点，让 G 代码真正闭合。
+            if chain.count > 3, distance(chain[0], chain[chain.count - 1]) < 0.05 {
+                chain[chain.count - 1] = chain[0]
+            }
+            let cleaned = dedupe(chain)
+            if cleaned.count >= 3, abs(polygonArea(cleaned)) > 0.01 {
+                loops.append(cleaned)
+            }
+        }
+        return loops
+    }
+
     private static func polygon(of wire: Wire) -> [CGPoint] {
-        var points: [CGPoint] = []
-        let edgeCount = wire.orderedEdgeCount
-        if edgeCount > 0 {
-            for i in 0..<edgeCount {
-                guard let edgePoints = wire.orderedEdgePoints(at: i) else { continue }
-                let ordered: [SIMD3<Double>]
-                if let last = points.last,
-                   let first = edgePoints.first,
-                   let end = edgePoints.last,
-                   distance(last, CGPoint(x: first.x, y: first.y)) > 0.05,
-                   distance(last, CGPoint(x: end.x, y: end.y)) < 0.05 {
-                    ordered = Array(edgePoints.reversed())
-                } else {
-                    ordered = edgePoints
-                }
-                for p in ordered {
-                    let cg = CGPoint(x: p.x, y: p.y)
-                    if let last = points.last, distance(last, cg) < 0.0005 { continue }
-                    points.append(cg)
-                }
-            }
-        }
-        if points.isEmpty {
-            for polyline in wire.allEdgePolylines(deflection: 0.05) {
-                for p in polyline {
-                    let cg = CGPoint(x: p.x, y: p.y)
-                    if let last = points.last, distance(last, cg) < 0.0005 { continue }
-                    points.append(cg)
-                }
-            }
-        }
-        if points.count > 1, let first = points.first, let last = points.last,
-           distance(first, last) < 0.01 {
-            points.removeLast()
-        }
-        return points
+        let loops = polygons(of: wire)
+        return loops.max { abs(polygonArea($0)) < abs(polygonArea($1)) } ?? []
     }
 
     private static func appendPath(_ points: [CGPoint], z: Double, into segments: inout [TPSeg]) {
@@ -518,9 +558,7 @@ enum True3DCAM {
             if let last = out.last, distance(last, p) < 0.0005 { continue }
             out.append(p)
         }
-        if out.count > 1, let first = out.first, let last = out.last, distance(first, last) < 0.01 {
-            out.removeLast()
-        }
+        // 不删除首尾重合点：闭环刀路需要最后一个点回到起点，G 代码才会闭合。
         return out
     }
 
