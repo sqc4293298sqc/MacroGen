@@ -20,6 +20,7 @@ struct True3DModelScreen: View {
     @State private var isBuilding = false
     @State private var didInitialBuild = false
     @State private var selectedFeatureID: UUID?
+    @State private var showSketch = false
     @State private var showImporter = false
     @State private var showCamera = false
     @State private var showPhotoPicker = false
@@ -99,6 +100,13 @@ struct True3DModelScreen: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    Button { showSketch = true } label: {
+                        Label("草图建模", systemImage: "pencil.tip.crop.circle")
+                    }
+                    Button { newBlankProject() } label: {
+                        Label("新建空白工程", systemImage: "doc.badge.plus")
+                    }
+                    Divider()
                     Button { showImporter = true } label: {
                         Label("导入 DXF 轮廓", systemImage: "doc.badge.plus")
                     }
@@ -152,6 +160,13 @@ struct True3DModelScreen: View {
                 scanImage(image)
             }
         }
+        .sheet(isPresented: $showSketch) {
+            NavigationStack {
+                True3DSketchScreen(width: params.width, depth: params.depth) { output in
+                    applySketch(output)
+                }
+            }
+        }
     }
 
     private var header: some View {
@@ -167,7 +182,7 @@ struct True3DModelScreen: View {
                     .foregroundStyle(Color(red: 0.08, green: 0.42, blue: 0.38))
                     .clipShape(Capsule())
             }
-            Text("实体布尔 · 多孔/凸台/型腔/腰槽 · 特征树 · DXF/照片 · STEP/STL")
+            Text("草图拉伸/切除 · 实体布尔 · 多孔/凸台/型腔/腰槽 · DXF/照片 · STEP/STL")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
         }
@@ -372,6 +387,10 @@ struct True3DModelScreen: View {
                 sectionTitle("特征")
                 Spacer()
                 Menu {
+                    Button { showSketch = true } label: {
+                        Label("草图建模", systemImage: "pencil.tip.crop.circle")
+                    }
+                    Divider()
                     Button("孔") { addFeature(.hole) }
                     Button("凸台") { addFeature(.boss) }
                     Button("圆腔") { addFeature(.circularPocket) }
@@ -502,6 +521,14 @@ struct True3DModelScreen: View {
                 numRow("深度", f.depth)
                 numRow("中心 X", f.x)
                 numRow("中心 Y", f.y)
+            case .profileBoss:
+                Text("草图轮廓：\(f.wrappedValue.profile.count) 个点")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                numRow("拉伸高度", f.bossHeight)
+            case .profileCut:
+                Text("草图轮廓：\(f.wrappedValue.profile.count) 个点")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                numRow("切除深度", f.depth)
             }
             topZEditor(f)
         }
@@ -562,6 +589,8 @@ struct True3DModelScreen: View {
         case .circularPocket: return "circle.dashed"
         case .rectPocket: return "square.dashed"
         case .slot: return "capsule"
+        case .profileBoss: return "square.3.layers.3d"
+        case .profileCut: return "square.3.layers.3d.down.right"
         }
     }
 
@@ -578,9 +607,42 @@ struct True3DModelScreen: View {
             f.name = "新方腔"; f.x = params.width * 0.25; f.y = -params.depth * 0.2; f.width = 24; f.depthY = 18
         case .slot:
             f.name = "新腰形槽"; f.x = 0; f.y = -params.depth * 0.25; f.width = 40; f.depthY = 12
+        case .profileBoss, .profileCut:
+            return
         }
         params.features.append(f)
         selectedFeatureID = f.id
+    }
+
+    private func applySketch(_ output: True3DSketchOutput) {
+        switch output {
+        case .base(let points):
+            let xs = points.map(\.x)
+            let ys = points.map(\.y)
+            params.baseShape = .profile
+            params.profile = points
+            params.edgeMode = .none
+            params.edgeSize = 0
+            if let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max() {
+                params.width = max(maxX - minX, 1)
+                params.depth = max(maxY - minY, 1)
+            }
+            notice = "已用草图轮廓替换基础形状；可在“基础块”里设置 Z 高"
+        case .feature(let feature):
+            params.features.append(feature)
+            selectedFeatureID = feature.id
+            notice = "已添加 \(feature.name)，点“生成实体”查看结果"
+        }
+        rebuild()
+    }
+
+    private func newBlankProject() {
+        params = True3DParams()
+        params.projectName = "未命名工程"
+        params.features = []
+        selectedFeatureID = nil
+        notice = "已新建空白工程：先画草图，或直接添加孔/凸台/型腔"
+        rebuild()
     }
 
     private func rebuild() {

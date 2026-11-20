@@ -35,6 +35,8 @@ enum True3DFeatureKind: String, CaseIterable, Identifiable, Codable {
     case circularPocket = "圆腔"
     case rectPocket = "方腔"
     case slot = "腰形槽"
+    case profileBoss = "草图凸台"
+    case profileCut = "草图切除"
     var id: String { rawValue }
 }
 
@@ -58,6 +60,8 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
     var csAngle: Double? = nil
     var topZ: Double? = nil
     var cornerRadius: Double = 0
+    /// 草图拉伸特征的闭合轮廓，坐标是基础块坐标系（mm）。
+    var profile: [True3DPoint] = []
 
     init(kind: True3DFeatureKind = .hole, x: Double = 0, y: Double = 0) {
         self.kind = kind
@@ -74,6 +78,10 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
             name = "方腔"; width = 24; depthY = 18; depth = 5; cornerRadius = 0
         case .slot:
             name = "腰形槽"; width = 40; depthY = 12; depth = 5
+        case .profileBoss:
+            name = "草图凸台"; bossHeight = 5
+        case .profileCut:
+            name = "草图切除"; depth = 5
         }
     }
 
@@ -96,6 +104,10 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
             return "\(fmt(width))×\(fmt(depthY)) 深\(fmt(depth)) R\(fmt(cornerRadius)) @ \(p)"
         case .slot:
             return "\(fmt(width))×\(fmt(depthY)) 深\(fmt(depth)) @ \(p)"
+        case .profileBoss:
+            return "\(profile.count) 点轮廓 H\(fmt(bossHeight))"
+        case .profileCut:
+            return "\(profile.count) 点轮廓 深\(fmt(depth))"
         }
     }
 }
@@ -124,8 +136,8 @@ struct True3DParams: Equatable, Codable {
     static var defaultFeatures: [True3DFeatureSpec] { makeDefaultTrue3DFeatures() }
 
     var activeFeatures: [True3DFeatureSpec] { features.filter { !$0.suppressed } }
-    var bossFeatures: [True3DFeatureSpec] { activeFeatures.filter { $0.kind == .boss } }
-    var pocketFeatures: [True3DFeatureSpec] { activeFeatures.filter { $0.kind == .circularPocket || $0.kind == .rectPocket || $0.kind == .slot } }
+    var bossFeatures: [True3DFeatureSpec] { activeFeatures.filter { $0.kind == .boss || $0.kind == .profileBoss } }
+    var pocketFeatures: [True3DFeatureSpec] { activeFeatures.filter { $0.kind == .circularPocket || $0.kind == .rectPocket || $0.kind == .slot || $0.kind == .profileCut } }
     var holeFeatures: [True3DFeatureSpec] { activeFeatures.filter { $0.kind == .hole } }
 
     func bossTop(_ f: True3DFeatureSpec) -> Double { (f.topZ ?? height) + max(f.bossHeight, 0) }
@@ -310,6 +322,16 @@ enum True3DKernel {
                 throw True3DModelError.featureFailed("\(f.name) 布尔切除失败")
             }
             return cut
+        case .profileBoss:
+            guard let tool = profileTool(f, baseHeight: h, isBoss: true), let fused = current + tool else {
+                throw True3DModelError.featureFailed("\(f.name) 草图拉伸合并失败，轮廓可能不自交或不在实体上")
+            }
+            return fused
+        case .profileCut:
+            guard let tool = profileTool(f, baseHeight: h, isBoss: false), let cut = current - tool else {
+                throw True3DModelError.featureFailed("\(f.name) 草图切除失败，轮廓可能不自交或切不到实体")
+            }
+            return cut
         }
     }
 
@@ -388,6 +410,26 @@ enum True3DKernel {
             result = u
         }
         return result
+    }
+
+    private static func profileTool(_ f: True3DFeatureSpec, baseHeight h: Double, isBoss: Bool) -> Shape? {
+        guard f.profile.count >= 3 else { return nil }
+        let pts = f.profile.map { SIMD2<Double>($0.x, $0.y) }
+        guard let wire = Wire.polygon(pts, closed: true) else { return nil }
+        let top = f.topZ ?? h
+        let length: Double
+        let z: Double
+        if isBoss {
+            length = max(f.bossHeight, 0.1)
+            z = top
+        } else {
+            length = max(f.depth, 0.1) + 1
+            z = top - max(f.depth, 0.1)
+        }
+        guard let prism = Shape.extrude(profile: wire, direction: SIMD3<Double>(0, 0, 1), length: length) else {
+            return nil
+        }
+        return prism.translated(by: SIMD3<Double>(0, 0, z))
     }
 
     private static func baseDetail(_ p: True3DParams) -> String {
@@ -475,6 +517,27 @@ enum True3DKernel {
                 guard abs(f.x) + f.width / 2 <= p.width / 2 - 0.02,
                       abs(f.y) + f.depthY / 2 <= p.depth / 2 - 0.02 else {
                     throw True3DModelError.invalidParameter("\(f.name) 超出基础块范围")
+                }
+            case .profileBoss, .profileCut:
+                guard f.profile.count >= 3,
+                      f.profile.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else {
+                    throw True3DModelError.invalidParameter("\(f.name) 草图轮廓至少需要 3 个有效点")
+                }
+                let xs = f.profile.map(\.x), ys = f.profile.map(\.y)
+                guard let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max() else {
+                    throw True3DModelError.invalidParameter("\(f.name) 草图轮廓无效")
+                }
+                guard maxX - minX > 0.1, maxY - minY > 0.1 else {
+                    throw True3DModelError.invalidParameter("\(f.name) 草图轮廓太小")
+                }
+                guard minX >= -p.width / 2 + 0.02, maxX <= p.width / 2 - 0.02,
+                      minY >= -p.depth / 2 + 0.02, maxY <= p.depth / 2 - 0.02 else {
+                    throw True3DModelError.invalidParameter("\(f.name) 草图轮廓超出基础块范围")
+                }
+                if f.kind == .profileBoss {
+                    guard f.bossHeight > 0.05 else { throw True3DModelError.invalidParameter("\(f.name) 拉伸高度必须大于 0.05 mm") }
+                } else {
+                    guard f.depth > 0.05, f.depth <= p.height else { throw True3DModelError.invalidParameter("\(f.name) 切除深度不合理") }
                 }
             }
         }

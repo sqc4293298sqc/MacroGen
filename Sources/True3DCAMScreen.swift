@@ -27,8 +27,7 @@ struct True3DCAMScreen: View {
                 }
 
                 if let camResult {
-                    True3DPathPreview(segments: camResult.segments)
-                        .frame(height: 300)
+                    True3DPathSimulation(segments: camResult.segments)
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -303,10 +302,138 @@ struct True3DCAMScreen: View {
     }
 }
 
-// MARK: - 2D 俯视预览
+// MARK: - 2D 俯视预览 / 刀路模拟
+
+struct True3DPathSimulation: View {
+    let segments: [TPSeg]
+
+    @State private var progress: Double = 0
+    @State private var playing = false
+    @State private var speed: Double = 1
+
+    private let timer = Timer.publish(every: 0.08, on: .main, in: .common).autoconnect()
+
+    private var totalLength: Double {
+        max(segments.reduce(0) { $0 + max($1.len, 0.001) }, 0.001)
+    }
+
+    /// 1× 速度下走完整条程序所需秒数；长程序自动压缩到 45 秒内。
+    private var duration: Double {
+        min(max(totalLength / 100.0, 8.0), 45.0)
+    }
+
+    private var currentState: (index: Int, z: Double, x: Double, y: Double)? {
+        guard !segments.isEmpty else { return nil }
+        let target = max(0, min(progress, 1)) * totalLength
+        var traveled = 0.0
+        for (index, seg) in segments.enumerated() {
+            let length = max(seg.len, 0.001)
+            if target <= traveled + length, let first = seg.pts.first {
+                let fraction = max(0, min((target - traveled) / length, 1))
+                let pts = seg.pts
+                let n = max(pts.count - 1, 1)
+                let pos = fraction * Double(n)
+                let i = min(Int(pos), n - 1)
+                let t = pos - Double(i)
+                let a = pts[i]
+                let b = pts[min(i + 1, n)]
+                return (
+                    index,
+                    seg.z,
+                    Double(a.x) + (Double(b.x) - Double(a.x)) * t,
+                    Double(a.y) + (Double(b.y) - Double(a.y)) * t
+                )
+            }
+            traveled += length
+        }
+        if let last = segments.last, let p = last.pts.last {
+            return (segments.count - 1, last.z, Double(p.x), Double(p.y))
+        }
+        return nil
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            True3DPathPreview(segments: segments, progress: progress)
+                .frame(height: 300)
+
+            HStack(spacing: 8) {
+                Button {
+                    if progress >= 1 { progress = 0 }
+                    playing.toggle()
+                } label: {
+                    Label(playing ? "暂停" : "播放", systemImage: playing ? "pause.fill" : "play.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 78)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
+
+                Button {
+                    progress = 0
+                    playing = false
+                } label: {
+                    Image(systemName: "gobackward")
+                        .font(.system(size: 13))
+                }
+                .buttonStyle(.bordered)
+
+                Picker("速度", selection: $speed) {
+                    Text("1×").tag(1.0)
+                    Text("4×").tag(4.0)
+                    Text("16×").tag(16.0)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 142)
+
+                Spacer()
+
+                Text("\(Int(progress * 100))%")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 38, alignment: .trailing)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+
+            Slider(value: $progress, in: 0...1)
+                .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
+                .padding(.horizontal, 12)
+
+            HStack(spacing: 12) {
+                if let state = currentState {
+                    Label(String(format: "X %.2f  Y %.2f", state.x, state.y),
+                          systemImage: "scope")
+                    Label(String(format: "Z %.2f", state.z), systemImage: "arrow.up.and.down")
+                    Text("第 \(state.index + 1)/\(segments.count) 段")
+                } else {
+                    Text("没有可模拟的刀路")
+                }
+                Spacer()
+                Text("俯视 · 橙线为已走刀路")
+                    .foregroundStyle(.secondary)
+            }
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 9)
+        }
+        .onReceive(timer) { _ in
+            guard playing else { return }
+            let step = 0.08 * speed / duration
+            progress = min(1, progress + step)
+            if progress >= 1 { playing = false }
+        }
+    }
+}
 
 struct True3DPathPreview: View {
     let segments: [TPSeg]
+    var progress: Double? = nil
+
+    private var totalLength: Double {
+        max(segments.reduce(0) { $0 + max($1.len, 0.001) }, 0.001)
+    }
 
     var body: some View {
         Canvas { context, size in
@@ -339,12 +466,60 @@ struct True3DPathPreview: View {
 
             context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(red: 0.96, green: 0.97, blue: 0.98)))
 
-            for seg in segments {
-                guard let first = seg.pts.first else { continue }
+            func strokeSegment(_ seg: TPSeg, fraction: Double, color: Color, lineWidth: CGFloat) {
+                guard let first = seg.pts.first else { return }
+                let clamped = max(0, min(fraction, 1))
                 var path = Path()
                 path.move(to: map(first))
-                for p in seg.pts.dropFirst() { path.addLine(to: map(p)) }
-                context.stroke(path, with: .color(Color(red: 1.0, green: 0.45, blue: 0.10)), lineWidth: 1.1)
+                if clamped >= 1 {
+                    for p in seg.pts.dropFirst() { path.addLine(to: map(p)) }
+                } else {
+                    let n = max(seg.pts.count - 1, 1)
+                    let pos = clamped * Double(n)
+                    let complete = Int(pos)
+                    if complete > 0 {
+                        for i in 1...complete { path.addLine(to: map(seg.pts[min(i, n)])) }
+                    }
+                    if complete < n {
+                        let t = pos - Double(complete)
+                        let a = seg.pts[complete]
+                        let b = seg.pts[min(complete + 1, n)]
+                        let p = CGPoint(
+                            x: a.x + (b.x - a.x) * CGFloat(t),
+                            y: a.y + (b.y - a.y) * CGFloat(t)
+                        )
+                        path.addLine(to: map(p))
+                    }
+                }
+                context.stroke(path, with: .color(color), lineWidth: lineWidth)
+            }
+
+            // 全路径底图
+            for seg in segments {
+                strokeSegment(seg, fraction: 1, color: Color(red: 1.0, green: 0.45, blue: 0.10).opacity(0.16), lineWidth: 1.0)
+            }
+
+            let shown = progress ?? 1
+            var consumed = max(0, min(shown, 1)) * totalLength
+            for seg in segments {
+                let len = max(seg.len, 0.001)
+                if consumed <= 0 {
+                    if progress == nil { strokeSegment(seg, fraction: 1, color: Color(red: 1.0, green: 0.45, blue: 0.10), lineWidth: 1.6) }
+                } else if consumed >= len {
+                    strokeSegment(seg, fraction: 1, color: Color(red: 1.0, green: 0.45, blue: 0.10), lineWidth: 1.6)
+                    consumed -= len
+                } else {
+                    strokeSegment(seg, fraction: consumed / len, color: Color(red: 1.0, green: 0.45, blue: 0.10), lineWidth: 1.6)
+                    consumed = 0
+                }
+            }
+
+            // 刀具位置
+            if let progress, progress < 1, let state = currentPoint(at: progress) {
+                let p = map(state)
+                let rect = CGRect(x: p.x - 5, y: p.y - 5, width: 10, height: 10)
+                context.fill(Path(ellipseIn: rect), with: .color(.white))
+                context.stroke(Path(ellipseIn: rect), with: .color(Color(red: 0.9, green: 0.22, blue: 0.03)), lineWidth: 2)
             }
         }
         .overlay(alignment: .bottomTrailing) {
@@ -358,6 +533,26 @@ struct True3DPathPreview: View {
                 .padding(8)
         }
     }
+
+    private func currentPoint(at progress: Double) -> CGPoint? {
+        let target = max(0, min(progress, 1)) * totalLength
+        var traveled = 0.0
+        for seg in segments {
+            let len = max(seg.len, 0.001)
+            if target <= traveled + len, let first = seg.pts.first {
+                let fraction = max(0, min((target - traveled) / len, 1))
+                let n = max(seg.pts.count - 1, 1)
+                let pos = fraction * Double(n)
+                let i = min(Int(pos), n - 1)
+                let t = pos - Double(i)
+                let a = seg.pts[i]
+                let b = seg.pts[min(i + 1, n)]
+                return CGPoint(x: a.x + (b.x - a.x) * CGFloat(t), y: a.y + (b.y - a.y) * CGFloat(t))
+            }
+            traveled += len
+        }
+        return segments.last?.pts.last
+    }
 }
 
 // MARK: - G 代码页
@@ -368,30 +563,53 @@ struct True3DGCodeScreen: View {
     @State private var copied = false
 
     var body: some View {
-        ScrollView {
-            Text(code)
-                .font(.system(size: 12, design: .monospaced))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(14)
-        }
-        .background(Color(uiColor: .secondarySystemBackground))
-        .navigationTitle("3D G 代码")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    UIPasteboard.general.string = code
-                    copied = true
-                } label: {
-                    Label(copied ? "已复制" : "复制", systemImage: copied ? "checkmark" : "doc.on.doc")
+        True3DCodeTextView(text: code)
+            .ignoresSafeArea(.container, edges: .bottom)
+            .navigationTitle("3D G 代码")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        UIPasteboard.general.string = code
+                        copied = true
+                    } label: {
+                        Label(copied ? "已复制" : "复制", systemImage: copied ? "checkmark" : "doc.on.doc")
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    ShareLink(item: fileURL) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
                 }
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                ShareLink(item: fileURL) {
-                    Image(systemName: "square.and.arrow.up")
-                }
-            }
+    }
+}
+
+/// 用 UITextView 而不是 SwiftUI Text 承载完整 G 代码。
+/// SwiftUI 的 Text 会对整段字符串做排版，几万行时主线程会卡死；UITextView 的
+/// TextKit 滚动容器可以按需布局，几十万字符也能正常打开。
+private struct True3DCodeTextView: UIViewRepresentable {
+    let text: String
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.isScrollEnabled = true
+        view.alwaysBounceVertical = true
+        view.backgroundColor = .secondarySystemBackground
+        view.textColor = .label
+        view.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        view.textContainerInset = UIEdgeInsets(top: 14, left: 10, bottom: 24, right: 10)
+        view.textContainer.lineFragmentPadding = 0
+        view.contentInsetAdjustmentBehavior = .never
+        view.text = text
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        if view.text != text {
+            view.text = text
         }
     }
 }
