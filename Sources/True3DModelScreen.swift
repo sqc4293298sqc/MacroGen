@@ -43,6 +43,7 @@ struct True3DModelScreen: View {
     @State private var operations: [True3DOperation] = True3DModelScreen.defaultOperations()
     @State private var camResult: True3DCAMResult?
     @State private var simulationMode = 0
+    @State private var showModelDrawer = false
     @State private var isGeneratingCAM = false
     @State private var gcodeURL: URL?
     @State private var showImporter = false
@@ -61,15 +62,34 @@ struct True3DModelScreen: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            stageBar
-            stageContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        ZStack(alignment: .trailing) {
+            VStack(spacing: 0) {
+                stageBar
+                stageContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            if showModelDrawer, stage == .model {
+                Color.black.opacity(0.22)
+                    .ignoresSafeArea()
+                    .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { showModelDrawer = false } }
+                modelDrawer
+                    .frame(width: min(330, UIScreen.main.bounds.width * 0.82))
+                    .transition(.move(edge: .trailing))
+            }
         }
         .background(Color(.systemBackground))
         .navigationTitle(params.projectName.isEmpty ? "真 3D 工作台" : params.projectName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                if stage == .model {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.2)) { showModelDrawer.toggle() }
+                    } label: {
+                        Label("特征面板", systemImage: "sidebar.right")
+                    }
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     if stage == .model {
@@ -191,7 +211,15 @@ struct True3DModelScreen: View {
     }
 
     private var sketchStage: some View {
-        True3DSketchScreen(width: params.width, depth: params.depth, embedded: true) { output in
+        True3DSketchScreen(
+            width: params.width,
+            depth: params.depth,
+            embedded: true,
+            onBaseChange: { w, d in
+                params.width = max(w, 1)
+                params.depth = max(d, 1)
+            }
+        ) { output in
             applySketch(output)
             stage = .model
         }
@@ -241,8 +269,14 @@ struct True3DModelScreen: View {
                     exportArea
                 }
 
-                parametersArea
-                featureListArea
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) { showModelDrawer = true }
+                } label: {
+                    Label("打开特征 / 参数抽屉", systemImage: "sidebar.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
 
                 Text("草图 → 建模 → 工序 → 加工 · OCCT 8.0.1 B-Rep 内核")
                     .font(.system(size: 12))
@@ -256,6 +290,33 @@ struct True3DModelScreen: View {
             .padding(16)
             .padding(.bottom, 24)
         }
+    }
+
+    private var modelDrawer: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("建模面板")
+                        .font(.system(size: 18, weight: .bold))
+                    Spacer()
+                    Button {
+                        withAnimation(.easeOut(duration: 0.2)) { showModelDrawer = false }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                parametersArea
+                featureListArea
+            }
+            .padding(14)
+            .padding(.bottom, 30)
+        }
+        .background(.regularMaterial)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(Color.black.opacity(0.12)).frame(width: 0.5)
+        }
+        .ignoresSafeArea(edges: .bottom)
     }
 
     private var operationStage: some View {
@@ -685,22 +746,33 @@ struct True3DModelScreen: View {
         error = nil
         notice = nil
         isGeneratingCAM = true
-        do {
-            var parameters = cam
-            parameters.operations = enabled
-            let generated = try True3DCAM.generate(result: result, model: result.params, cam: parameters)
-            camResult = generated
-            let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            let url = dir.appendingPathComponent("MacroGen-3D-\(cam.programNo).nc")
-            try generated.gcode.write(to: url, atomically: true, encoding: .utf8)
-            gcodeURL = url
-            if switchToMachine { stage = .machine }
-        } catch {
-            self.error = error.localizedDescription
-            camResult = nil
-            gcodeURL = nil
+        var parameters = cam
+        parameters.operations = enabled
+        let modelResult = result
+        let programNo = cam.programNo
+        Task {
+            do {
+                let generated = try await Task.detached(priority: .userInitiated) {
+                    try True3DCAM.generate(result: modelResult, model: modelResult.params, cam: parameters)
+                }.value
+                let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                let url = dir.appendingPathComponent("MacroGen-3D-\(programNo).nc")
+                try generated.gcode.write(to: url, atomically: true, encoding: .utf8)
+                await MainActor.run {
+                    self.camResult = generated
+                    self.gcodeURL = url
+                    self.isGeneratingCAM = false
+                    if switchToMachine { self.stage = .machine }
+                }
+            } catch {
+                await MainActor.run {
+                    self.error = error.localizedDescription
+                    self.camResult = nil
+                    self.gcodeURL = nil
+                    self.isGeneratingCAM = false
+                }
+            }
         }
-        isGeneratingCAM = false
     }
 
     private var header: some View {
@@ -930,6 +1002,8 @@ struct True3DModelScreen: View {
                     Button("圆腔") { addFeature(.circularPocket) }
                     Button("方腔") { addFeature(.rectPocket) }
                     Button("腰形槽") { addFeature(.slot) }
+                    Divider()
+                    Button("3×3 孔阵列") { addHolePattern() }
                 } label: {
                     Label("添加", systemImage: "plus.circle")
                         .font(.system(size: 12, weight: .semibold))
@@ -1160,7 +1234,36 @@ struct True3DModelScreen: View {
         selectedFeatureID = f.id
     }
 
+    private func addHolePattern() {
+        let rows = 3
+        let cols = 3
+        let pitchX = min(max(params.width / 4, 12), 40)
+        let pitchY = min(max(params.depth / 4, 12), 32)
+        let startX = -pitchX * Double(cols - 1) / 2
+        let startY = -pitchY * Double(rows - 1) / 2
+        for r in 0..<rows {
+            for c in 0..<cols {
+                var f = True3DFeatureSpec(kind: .hole)
+                f.name = "阵列孔 \(r + 1)-\(c + 1)"
+                f.x = startX + Double(c) * pitchX
+                f.y = startY + Double(r) * pitchY
+                f.dia = 6
+                f.holeKind = .through
+                params.features.append(f)
+            }
+        }
+        selectedFeatureID = params.features.last?.id
+        notice = "已添加 3×3 孔阵列，点“生成实体”查看"
+    }
+
     private func applySketch(_ output: True3DSketchOutput) {
+        if params.features.count == 3,
+           params.features.contains(where: { $0.name == "通孔" }),
+           params.features.contains(where: { $0.name == "凸台" }),
+           params.features.contains(where: { $0.name == "方腔" }) {
+            params.features = []
+        }
+        var message = ""
         switch output {
         case .base(let points):
             let xs = points.map(\.x)
@@ -1173,13 +1276,14 @@ struct True3DModelScreen: View {
                 params.width = max(maxX - minX, 1)
                 params.depth = max(maxY - minY, 1)
             }
-            notice = "已用草图轮廓替换基础形状；可在“基础块”里设置 Z 高"
+            message = "已用草图轮廓替换基础形状；Z 高在建模页设置"
         case .feature(let feature):
             params.features.append(feature)
             selectedFeatureID = feature.id
-            notice = "已添加 \(feature.name)，点“生成实体”查看结果"
+            message = "已添加 \(feature.name)，正在重建实体"
         }
         rebuild()
+        notice = message
     }
 
     private func newBlankProject() {

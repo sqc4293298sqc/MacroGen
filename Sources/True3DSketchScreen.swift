@@ -41,10 +41,26 @@ enum True3DSketchOperation: String, CaseIterable, Identifiable {
 /// 2D 草图：在基础块顶面网格上画折线 / 矩形 / 圆，闭合后直接拉伸凸台或切除，
 /// 也可以把闭合轮廓设成基础轮廓。坐标单位 mm，原点在基础块中心。
 struct True3DSketchScreen: View {
-    let width: Double
-    let depth: Double
     var embedded: Bool = false
+    var onBaseChange: ((Double, Double) -> Void)? = nil
     let onCommit: (True3DSketchOutput) -> Void
+
+    @State private var canvasWidth: Double
+    @State private var canvasDepth: Double
+
+    init(
+        width: Double,
+        depth: Double,
+        embedded: Bool = false,
+        onBaseChange: ((Double, Double) -> Void)? = nil,
+        onCommit: @escaping (True3DSketchOutput) -> Void
+    ) {
+        self.embedded = embedded
+        self.onBaseChange = onBaseChange
+        self.onCommit = onCommit
+        _canvasWidth = State(initialValue: max(width, 1))
+        _canvasDepth = State(initialValue: max(depth, 1))
+    }
 
     @Environment(\.dismiss) private var dismiss
 
@@ -64,12 +80,13 @@ struct True3DSketchScreen: View {
     @State private var canvasSize: CGSize = .zero
     @State private var dragStart: CGPoint?
 
-    private var baseWidth: CGFloat { CGFloat(max(width, 1)) }
-    private var baseDepth: CGFloat { CGFloat(max(depth, 1)) }
+    private var baseWidth: CGFloat { CGFloat(max(canvasWidth, 1)) }
+    private var baseDepth: CGFloat { CGFloat(max(canvasDepth, 1)) }
 
     var body: some View {
         VStack(spacing: 0) {
             topBar
+            baseBar
             sketchCanvas
             summaryBar
             bottomBar
@@ -146,6 +163,48 @@ struct True3DSketchScreen: View {
         .background(.bar)
     }
 
+    // MARK: 基础块缩放
+
+    private var baseBar: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "cube")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            Text("基础块")
+                .font(.system(size: 11, weight: .semibold))
+            TextField("宽", value: $canvasWidth, format: .number.precision(.fractionLength(1)))
+                .keyboardType(.decimalPad)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 62)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12))
+            Text("×")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            TextField("深", value: $canvasDepth, format: .number.precision(.fractionLength(1)))
+                .keyboardType(.decimalPad)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 62)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12))
+            Button("应用") {
+                canvasWidth = max(canvasWidth, 1)
+                canvasDepth = max(canvasDepth, 1)
+                onBaseChange?(canvasWidth, canvasDepth)
+                error = nil
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .buttonStyle(.bordered)
+            Spacer(minLength: 4)
+            Text("画超范围自动扩")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+
     // MARK: 画布
 
     private var sketchCanvas: some View {
@@ -201,6 +260,7 @@ struct True3DSketchScreen: View {
                                 error = "轮廓太小，至少画 \(String(format: "%.0f", gridStep)) mm"
                                 return
                             }
+                            ensureCanvasContains(shape)
                             points = shape
                             closed = true
                             error = nil
@@ -458,10 +518,7 @@ struct True3DSketchScreen: View {
     /// 让圆弧轮廓可以直接作为基础轮廓或拉伸特征。
     private func handleArcTap(_ p: True3DPoint) {
         guard !closed else { return }
-        guard p.x >= -width / 2, p.x <= width / 2, p.y >= -depth / 2, p.y <= depth / 2 else {
-            error = "点超出基础块范围"
-            return
-        }
+        ensureCanvasContains([p])
         arcPoints.append(p)
         previewPoints = arcPoints
         guard arcPoints.count == 3 else {
@@ -487,12 +544,7 @@ struct True3DSketchScreen: View {
             let a = a0 + sweep * Double(i) / Double(count)
             return True3DPoint(x: center.x + radius * cos(a), y: center.y + radius * sin(a))
         }
-        guard arc.allSatisfy({ $0.x >= -width / 2 - 0.1 && $0.x <= width / 2 + 0.1 && $0.y >= -depth / 2 - 0.1 && $0.y <= depth / 2 + 0.1 }) else {
-            error = "圆弧超出基础块范围，缩小半径或移动圆心"
-            arcPoints = []
-            previewPoints = []
-            return
-        }
+        ensureCanvasContains(arc)
         points = arc
         closed = true
         arcPoints = []
@@ -506,10 +558,7 @@ struct True3DSketchScreen: View {
             error = nil
             return
         }
-        guard p.x >= -width / 2, p.x <= width / 2, p.y >= -depth / 2, p.y <= depth / 2 else {
-            error = "点超出基础块范围"
-            return
-        }
+        ensureCanvasContains([p])
         guard points.count < maximumPoints else {
             error = "点数已达上限，按“闭合轮廓”生成曲线"
             return
@@ -517,6 +566,15 @@ struct True3DSketchScreen: View {
         points.append(p)
         closed = false
         error = nil
+    }
+
+    private func ensureCanvasContains(_ pts: [True3DPoint]) {
+        guard let maxX = pts.map({ abs($0.x) }).max(),
+              let maxY = pts.map({ abs($0.y) }).max() else { return }
+        let neededW = ceil((maxX * 2 + 6) / 10) * 10
+        let neededD = ceil((maxY * 2 + 6) / 10) * 10
+        if neededW > canvasWidth { canvasWidth = max(neededW, 20) }
+        if neededD > canvasDepth { canvasDepth = max(neededD, 20) }
     }
 
     private func syncDimensions() {
@@ -540,10 +598,7 @@ struct True3DSketchScreen: View {
         let scaled = points.map {
             True3DPoint(x: cx + ($0.x - cx) * sx, y: cy + ($0.y - cy) * sy)
         }
-        guard scaled.allSatisfy({ $0.x >= -width / 2 - 0.1 && $0.x <= width / 2 + 0.1 && $0.y >= -depth / 2 - 0.1 && $0.y <= depth / 2 + 0.1 }) else {
-            error = "目标尺寸超出基础块范围"
-            return
-        }
+        ensureCanvasContains(scaled)
         points = scaled
         error = nil
     }
@@ -572,10 +627,7 @@ struct True3DSketchScreen: View {
     private func rotateSketch() {
         guard !points.isEmpty else { return }
         let rotated = points.map { True3DPoint(x: -$0.y, y: $0.x) }
-        guard rotated.allSatisfy({ $0.x >= -width / 2 - 0.1 && $0.x <= width / 2 + 0.1 && $0.y >= -depth / 2 - 0.1 && $0.y <= depth / 2 + 0.1 }) else {
-            error = "旋转后超出基础块范围"
-            return
-        }
+        ensureCanvasContains(rotated)
         points = rotated
         error = nil
     }
@@ -597,10 +649,7 @@ struct True3DSketchScreen: View {
         }
         if tool == .spline, !closed {
             let smoothed = smoothClosed(points, samples: 8)
-            guard smoothed.allSatisfy({ $0.x >= -width / 2 - 0.1 && $0.x <= width / 2 + 0.1 && $0.y >= -depth / 2 - 0.1 && $0.y <= depth / 2 + 0.1 }) else {
-                error = "样条圆滑后超出基础块，缩小控制点范围"
-                return
-            }
+            ensureCanvasContains(smoothed)
             points = smoothed
         }
         closed = true
@@ -676,6 +725,7 @@ struct True3DSketchScreen: View {
             return
         }
 
+        onBaseChange?(canvasWidth, canvasDepth)
         switch operation {
         case .base:
             onCommit(.base(points))
