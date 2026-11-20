@@ -7,7 +7,7 @@ let package = Package(
     name: "CAMVerify",
     platforms: [.macOS(.v12)],
     dependencies: [
-        .package(url: "https://github.com/SecondMouseAU/OCCTSwift", from: "3.0.0")
+        .package(path: "OCCTSwift")
     ],
     targets: [
         .executableTarget(
