@@ -33,6 +33,9 @@ enum True3DFeatureKind: String, CaseIterable, Identifiable, Codable {
     case hole = "孔"
     case boss = "凸台"
     case rectBoss = "矩形凸台"
+    case shell = "抽壳"
+    case revolveBoss = "旋转凸台"
+    case revolveCut = "旋转切除"
     case circularPocket = "圆腔"
     case rectPocket = "方腔"
     case slot = "腰形槽"
@@ -63,6 +66,8 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
     var cornerRadius: Double = 0
     /// 草图拉伸特征的闭合轮廓，坐标是基础块坐标系（mm）。
     var profile: [True3DPoint] = []
+    /// 旋转特征的角度（度）。
+    var angle: Double = 360
 
     init(kind: True3DFeatureKind = .hole, x: Double = 0, y: Double = 0) {
         self.kind = kind
@@ -75,6 +80,16 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
             name = "凸台"; dia = 20; bossHeight = 6
         case .rectBoss:
             name = "矩形凸台"; width = 30; depthY = 20; bossHeight = 6; cornerRadius = 0
+        case .shell:
+            name = "抽壳"; depth = 2
+        case .revolveBoss:
+            name = "旋转凸台"; angle = 360; bossHeight = 8
+            profile = [True3DPoint(x: 10, y: -10), True3DPoint(x: 24, y: -10),
+                       True3DPoint(x: 24, y: 10), True3DPoint(x: 10, y: 10)]
+        case .revolveCut:
+            name = "旋转切除"; angle = 360; depth = 4
+            profile = [True3DPoint(x: 14, y: -6), True3DPoint(x: 20, y: -6),
+                       True3DPoint(x: 20, y: 6), True3DPoint(x: 14, y: 6)]
         case .circularPocket:
             name = "圆腔"; dia = 24; depth = 5
         case .rectPocket:
@@ -103,6 +118,12 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
             return "Ø\(fmt(dia)) H\(fmt(bossHeight)) @ \(p)"
         case .rectBoss:
             return "\(fmt(width))×\(fmt(depthY)) H\(fmt(bossHeight)) R\(fmt(cornerRadius)) @ \(p)"
+        case .shell:
+            return "壁厚 \(fmt(abs(depth))"
+        case .revolveBoss:
+            return "\(profile.count) 点旋转 \(fmt(angle))° H\(fmt(bossHeight))"
+        case .revolveCut:
+            return "\(profile.count) 点旋转切除 \(fmt(angle))°"
         case .circularPocket:
             return "Ø\(fmt(dia)) 深\(fmt(depth)) @ \(p)"
         case .rectPocket:
@@ -317,6 +338,21 @@ enum True3DKernel {
                 throw True3DModelError.featureFailed("\(f.name) 布尔合并失败")
             }
             return fused
+        case .shell:
+            guard let shelled = current.shelled(thickness: -abs(f.depth), openFaces: current.upwardFaces()) else {
+                throw True3DModelError.featureFailed("\(f.name) 抽壳失败：壁厚可能过大，或顶面被特征打断")
+            }
+            return shelled
+        case .revolveBoss:
+            guard let tool = revolveTool(f, baseHeight: h), let fused = current + tool else {
+                throw True3DModelError.featureFailed("\(f.name) 旋转合并失败：轮廓必须位于 X≥0 的半平面")
+            }
+            return fused
+        case .revolveCut:
+            guard let tool = revolveTool(f, baseHeight: h), let cut = current - tool else {
+                throw True3DModelError.featureFailed("\(f.name) 旋转切除失败：轮廓必须位于 X≥0 的半平面")
+            }
+            return cut
         case .circularPocket:
             guard let tool = circularPocketTool(f, baseHeight: h), let cut = current - tool else {
                 throw True3DModelError.featureFailed("\(f.name) 布尔切除失败")
@@ -386,6 +422,21 @@ enum True3DKernel {
             height: f.depthY,
             depth: height
         )
+    }
+
+    private static func revolveTool(_ f: True3DFeatureSpec, baseHeight h: Double) -> Shape? {
+        let pts = f.profile
+        guard pts.count >= 3, pts.allSatisfy({ $0.x >= -0.001 }) else { return nil }
+        let wirePts = pts.map { SIMD3<Double>(max($0.x, 0.0), 0, $0.y + h) }
+        guard let wire = Wire.polygon3D(wirePts) else { return nil }
+        let angle = min(max(f.angle, 0.1), 360) * .pi / 180
+        guard let solid = Shape.revolve(
+            profile: wire,
+            axisOrigin: SIMD3<Double>(0, 0, 0),
+            axisDirection: SIMD3<Double>(0, 0, 1),
+            angle: angle
+        ) else { return nil }
+        return solid
     }
 
     private static func circularPocketTool(_ f: True3DFeatureSpec, baseHeight h: Double) -> Shape? {
@@ -528,6 +579,22 @@ enum True3DKernel {
                 guard abs(f.x) + f.width / 2 <= p.width / 2 - edgeInset - 0.02,
                       abs(f.y) + f.depthY / 2 <= p.depth / 2 - edgeInset - 0.02 else {
                     throw True3DModelError.invalidParameter("\(f.name) 必须完整落在基础块顶面，不能悬出边缘")
+                }
+            case .shell:
+                guard f.depth > 0.05, f.depth < min(p.width, p.depth, p.height) / 2 else {
+                    throw True3DModelError.invalidParameter("\(f.name) 壁厚必须大于 0.05，且小于最小外形的一半")
+                }
+            case .revolveBoss, .revolveCut:
+                guard f.profile.count >= 3, f.profile.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.x >= 0.01 }) else {
+                    throw True3DModelError.invalidParameter("\(f.name) 旋转轮廓需要至少 3 个点，且 X 必须大于 0")
+                }
+                guard f.angle > 0.1, f.angle <= 360 else {
+                    throw True3DModelError.invalidParameter("\(f.name) 旋转角度必须在 0.1°～360°")
+                }
+                if f.kind == .revolveBoss {
+                    guard f.bossHeight > 0.1 else { throw True3DModelError.invalidParameter("\(f.name) 高度必须大于 0.1 mm") }
+                } else {
+                    guard f.depth > 0.05 else { throw True3DModelError.invalidParameter("\(f.name) 切除深度必须大于 0.05 mm") }
                 }
             case .circularPocket:
                 guard f.dia > 0.1, f.depth > 0.05, f.depth <= p.height else {

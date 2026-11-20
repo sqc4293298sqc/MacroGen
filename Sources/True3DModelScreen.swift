@@ -814,6 +814,9 @@ struct True3DModelScreen: View {
                     modelTool("孔", "circle.dashed") { addFeature(.hole) }
                     modelTool("凸台", "arrow.up.circle") { addFeature(.boss) }
                     modelTool("矩形凸台", "rectangle") { addFeature(.rectBoss) }
+                    modelTool("抽壳", "cube.transparent") { addFeature(.shell) }
+                    modelTool("旋转凸台", "rotate.3d") { addFeature(.revolveBoss) }
+                    modelTool("旋转切除", "rotate.3d.fill") { addFeature(.revolveCut) }
                     modelTool("圆腔", "circle.bottomhalf.filled") { addFeature(.circularPocket) }
                     modelTool("方腔", "rectangle.inset.filled") { addFeature(.rectPocket) }
                     modelTool("腰槽", "capsule") { addFeature(.slot) }
@@ -1084,6 +1087,9 @@ struct True3DModelScreen: View {
                     Button("孔") { addFeature(.hole) }
                     Button("凸台") { addFeature(.boss) }
                     Button("矩形凸台") { addFeature(.rectBoss) }
+                    Button("抽壳") { addFeature(.shell) }
+                    Button("旋转凸台") { addFeature(.revolveBoss) }
+                    Button("旋转切除") { addFeature(.revolveCut) }
                     Button("圆腔") { addFeature(.circularPocket) }
                     Button("方腔") { addFeature(.rectPocket) }
                     Button("腰形槽") { addFeature(.slot) }
@@ -1261,6 +1267,19 @@ struct True3DModelScreen: View {
                 numRow("圆角 R", f.cornerRadius)
                 numRow("中心 X", f.x)
                 numRow("中心 Y", f.y)
+            case .shell:
+                numRow("壁厚", f.depth)
+                Text("开口面：当前实体所有朝上的面")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            case .revolveBoss, .revolveCut:
+                Text("旋转轮廓：\(f.wrappedValue.profile.count) 点，X 为半径、Y 为轴向")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                numRow("角度 °", f.angle)
+                if f.wrappedValue.kind == .revolveBoss {
+                    numRow("高度 H", f.bossHeight)
+                } else {
+                    numRow("切除深度", f.depth)
+                }
             case .circularPocket:
                 numRow("直径 Ø", f.dia)
                 numRow("深度", f.depth)
@@ -1357,6 +1376,9 @@ struct True3DModelScreen: View {
         case .hole: return "circle.circle"
         case .boss: return "cylinder"
         case .rectBoss: return "rectangle"
+        case .shell: return "cube.transparent"
+        case .revolveBoss: return "rotate.3d"
+        case .revolveCut: return "rotate.3d.fill"
         case .circularPocket: return "circle.dashed"
         case .rectPocket: return "square.dashed"
         case .slot: return "capsule"
@@ -1375,6 +1397,14 @@ struct True3DModelScreen: View {
         case .rectBoss:
             f.name = "新矩形凸台"; f.x = params.width * 0.25; f.y = params.depth * 0.15
             f.width = 30; f.depthY = 20; f.bossHeight = 6
+        case .shell:
+            f.name = "抽壳"; f.depth = min(2, min(params.width, params.depth, params.height) / 4)
+        case .revolveBoss:
+            f = True3DFeatureSpec(kind: .revolveBoss)
+            f.name = "旋转凸台"
+        case .revolveCut:
+            f = True3DFeatureSpec(kind: .revolveCut)
+            f.name = "旋转切除"
         case .circularPocket:
             f.name = "新圆腔"; f.x = -params.width * 0.25; f.dia = 20; f.depth = 5
         case .rectPocket:
