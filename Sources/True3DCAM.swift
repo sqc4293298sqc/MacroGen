@@ -345,29 +345,31 @@ enum True3DCAM {
             print("OFFSET baseA=\(String(format: "%.1f", loop.area)) d=\(String(format: "%.1f", d)) expand=\(expand) plus=\(b(plusLoops)) minus=\(b(minusLoops))")
         }
 
-        func pick(_ loops: [[CGPoint]], larger: Bool) -> [CGPoint]? {
+        let basePerimeter = polylineLength(loop.points)
+        // 用面积增量挑选正确的偏置闭环，而不是简单取最大/最小。
+        // OCCT 的 MakeOffset 偶尔会在结果里附带一条包围盒级别的平面边界线，
+        // 若按“最大面积”取环，就会误选成一条几百毫米的空走圆。
+        func pick(_ loops: [[CGPoint]], expanding: Bool) -> [CGPoint]? {
             let candidates = loops.filter { $0.count >= 3 && abs(polygonArea($0)) > 0.01 }
             guard !candidates.isEmpty else { return nil }
-            if larger {
-                let best = candidates.max { abs(polygonArea($0)) < abs(polygonArea($1)) }!
-                return abs(polygonArea(best)) > baseArea + 0.01 ? best : nil
-            } else {
-                let best = candidates.min { abs(polygonArea($0)) < abs(polygonArea($1)) }!
-                let area = abs(polygonArea(best))
-                return area > 0.01 && area < baseArea - 0.01 ? best : nil
+            let expected = expanding
+                ? baseArea + basePerimeter * d + .pi * d * d
+                : max(0.01, baseArea - basePerimeter * d + .pi * d * d)
+            let side = candidates.filter {
+                let a = abs(polygonArea($0))
+                return expanding ? a > baseArea + 0.01 : (a < baseArea - 0.01)
             }
+            let pool = side.isEmpty ? candidates : side
+            return pool.min { abs(abs(polygonArea($0)) - expected) < abs(abs(polygonArea($1)) - expected) }
         }
 
         if expand {
-            if let p = pick(plusLoops, larger: true) { return p }
-            if let p = pick(minusLoops, larger: true) { return p }
+            if let p = pick(plusLoops, expanding: true) { return p }
+            if let p = pick(minusLoops, expanding: true) { return p }
         } else {
-            if let p = pick(minusLoops, larger: false) { return p }
-            if let p = pick(plusLoops, larger: false) { return p }
+            if let p = pick(minusLoops, expanding: false) { return p }
+            if let p = pick(plusLoops, expanding: false) { return p }
         }
-        // 某些截面偏置后面积变化不明显，仍取一个有效轮廓，避免整层丢失。
-        if let p = plusLoops.first(where: { $0.count >= 3 && abs(polygonArea($0)) > 0.01 }) { return p }
-        if let p = minusLoops.first(where: { $0.count >= 3 && abs(polygonArea($0)) > 0.01 }) { return p }
         return nil
     }
 
