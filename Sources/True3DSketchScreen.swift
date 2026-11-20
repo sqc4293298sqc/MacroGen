@@ -269,26 +269,17 @@ struct True3DSketchScreen: View {
     private var topBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(True3DSketchTool.allCases) { item in
-                    Button {
-                        tool = item
-                        previewPoints = []
-                        arcPoints = []
-                    } label: {
-                        Label(item.rawValue, systemImage: item.symbol)
-                            .font(.system(size: 12, weight: .semibold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 7)
-                            .background(
-                                tool == item
-                                    ? Color(red: 1.0, green: 0.42, blue: 0.10)
-                                    : Color(.secondarySystemBackground),
-                                in: Capsule()
-                            )
-                            .foregroundStyle(tool == item ? .white : .primary)
-                    }
-                    .buttonStyle(.plain)
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) { showToolDrawer = true }
+                } label: {
+                    Label("工具 · \(tool.rawValue)", systemImage: "square.grid.2x2")
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(Color(red: 1.0, green: 0.42, blue: 0.10), in: Capsule())
+                        .foregroundStyle(.white)
                 }
+                .buttonStyle(.plain)
 
                 Divider().frame(height: 22)
 
