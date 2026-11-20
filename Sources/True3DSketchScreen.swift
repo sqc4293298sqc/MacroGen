@@ -52,6 +52,8 @@ struct True3DSketchScreen: View {
     @State private var points: [True3DPoint] = []
     @State private var previewPoints: [True3DPoint] = []
     @State private var arcPoints: [True3DPoint] = []
+    @State private var dimensionW: Double = 0
+    @State private var dimensionH: Double = 0
     @State private var closed = false
     @State private var gridStep: Double = 5
     @State private var snap = true
@@ -74,6 +76,9 @@ struct True3DSketchScreen: View {
         }
         .navigationTitle("草图")
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: closed) { newValue in
+            if newValue { syncDimensions() }
+        }
         .toolbar {
             if !embedded {
                 ToolbarItem(placement: .topBarLeading) {
@@ -307,6 +312,8 @@ struct True3DSketchScreen: View {
                 if closed {
                     points = []
                     closed = false
+                    dimensionW = 0
+                    dimensionH = 0
                 } else {
                     closeProfile()
                 }
@@ -326,6 +333,28 @@ struct True3DSketchScreen: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            if closed {
+                HStack(spacing: 6) {
+                    Text("尺寸").font(.system(size: 10)).foregroundStyle(.secondary)
+                    TextField("宽", value: $dimensionW, format: .number.precision(.fractionLength(1)))
+                        .keyboardType(.decimalPad)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 52)
+                        .textFieldStyle(.roundedBorder)
+                    Text("×").font(.system(size: 10)).foregroundStyle(.secondary)
+                    TextField("高", value: $dimensionH, format: .number.precision(.fractionLength(1)))
+                        .keyboardType(.decimalPad)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 52)
+                        .textFieldStyle(.roundedBorder)
+                    Button("应用") { applyDimensions() }
+                        .font(.system(size: 11, weight: .semibold))
+                        .buttonStyle(.bordered)
+                    Button("水平/垂直") { applyOrthoConstraints() }
+                        .font(.system(size: 11, weight: .semibold))
+                        .buttonStyle(.bordered)
+                }
             }
             HStack(spacing: 10) {
                 Picker("操作", selection: $operation) {
@@ -487,6 +516,56 @@ struct True3DSketchScreen: View {
         }
         points.append(p)
         closed = false
+        error = nil
+    }
+
+    private func syncDimensions() {
+        guard let box = bounds else { return }
+        dimensionW = box.maxX - box.minX
+        dimensionH = box.maxY - box.minY
+    }
+
+    private func applyDimensions() {
+        guard let box = bounds else { return }
+        let sourceW = box.maxX - box.minX
+        let sourceH = box.maxY - box.minY
+        guard sourceW > 0.01, sourceH > 0.01, dimensionW > 0.1, dimensionH > 0.1 else {
+            error = "尺寸必须大于 0.1 mm"
+            return
+        }
+        let cx = (box.minX + box.maxX) / 2
+        let cy = (box.minY + box.maxY) / 2
+        let sx = dimensionW / sourceW
+        let sy = dimensionH / sourceH
+        let scaled = points.map {
+            True3DPoint(x: cx + ($0.x - cx) * sx, y: cy + ($0.y - cy) * sy)
+        }
+        guard scaled.allSatisfy({ $0.x >= -width / 2 - 0.1 && $0.x <= width / 2 + 0.1 && $0.y >= -depth / 2 - 0.1 && $0.y <= depth / 2 + 0.1 }) else {
+            error = "目标尺寸超出基础块范围"
+            return
+        }
+        points = scaled
+        error = nil
+    }
+
+    private func applyOrthoConstraints() {
+        guard points.count >= 3 else { return }
+        var adjusted = points
+        for i in 1..<adjusted.count {
+            let prev = adjusted[i - 1]
+            let cur = adjusted[i]
+            let dx = abs(cur.x - prev.x)
+            let dy = abs(cur.y - prev.y)
+            if dx < 1e-6 { continue }
+            if dy < 1e-6 { continue }
+            if dx < dy * 0.5 {
+                adjusted[i].x = prev.x
+            } else if dy < dx * 0.5 {
+                adjusted[i].y = prev.y
+            }
+        }
+        points = adjusted
+        syncDimensions()
         error = nil
     }
 
