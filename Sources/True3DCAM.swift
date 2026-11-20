@@ -337,8 +337,10 @@ enum True3DCAM {
         // 用面做多环偏置：Wire.offset 只返回结果里的第一条 wire，
         // 当 OCCT 同时产生正确轮廓和包围盒边界线时会直接丢掉正确环。
         let offsetFace = Shape.face(from: loop.wire, planar: true)
-        let plusWires = offsetFace?.multiOffsetWires(offsets: [d]) ?? loop.wire.offset(by: d).map { [$0] } ?? []
-        let minusWires = offsetFace?.multiOffsetWires(offsets: [-d]) ?? loop.wire.offset(by: -d).map { [$0] } ?? []
+        var plusWires = offsetFace?.multiOffsetWires(offsets: [d]) ?? []
+        var minusWires = offsetFace?.multiOffsetWires(offsets: [-d]) ?? []
+        if plusWires.isEmpty { plusWires = loop.wire.offset(by: d).map { [$0] } ?? [] }
+        if minusWires.isEmpty { minusWires = loop.wire.offset(by: -d).map { [$0] } ?? [] }
         let plusLoops = plusWires.flatMap { polygons(of: $0) }
         let minusLoops = minusWires.flatMap { polygons(of: $0) }
         let baseArea = max(loop.area, 0.01)
@@ -504,8 +506,10 @@ enum True3DCAM {
         let wire = Wire.polygon(points.map { SIMD2<Double>(Double($0.x), Double($0.y)) }, closed: true)
         guard let wire else { return nil }
         let face = Shape.face(from: wire, planar: true)
-        let plusWires = face?.multiOffsetWires(offsets: [d]) ?? wire.offset(by: d).map { [$0] } ?? []
-        let minusWires = face?.multiOffsetWires(offsets: [-d]) ?? wire.offset(by: -d).map { [$0] } ?? []
+        var plusWires = face?.multiOffsetWires(offsets: [d]) ?? []
+        var minusWires = face?.multiOffsetWires(offsets: [-d]) ?? []
+        if plusWires.isEmpty { plusWires = wire.offset(by: d).map { [$0] } ?? [] }
+        if minusWires.isEmpty { minusWires = wire.offset(by: -d).map { [$0] } ?? [] }
         let plusLoops = plusWires.flatMap { polygons(of: $0) }
         let minusLoops = minusWires.flatMap { polygons(of: $0) }
         let baseArea = max(abs(polygonArea(points)), 0.01)
