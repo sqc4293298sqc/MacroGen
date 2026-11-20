@@ -30,6 +30,10 @@ func verifyCase(_ name: String, model: True3DParams, cam: True3DCAMParams) {
             "layers=\(path.stats.layerCount) cut=\(String(format: "%.1f", path.stats.cutLength))mm " +
             "gcode=\(path.gcode.count) chars"
         )
+        let longest = path.segments.sorted { $0.len > $1.len }.prefix(5)
+        print("  longest:", longest.map { "z=\(String(format: "%.1f", $0.z)) pts=\($0.pts.count) len=\(String(format: "%.1f", $0.len))" }.joined(separator: " | "))
+        let maxPoints = path.segments.map(\.pts.count).max() ?? 0
+        print("  maxPointsPerPath=\(maxPoints)")
     } catch {
         fail("\(name): \(error.localizedDescription)")
     }
