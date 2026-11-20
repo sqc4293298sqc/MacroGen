@@ -44,6 +44,13 @@ struct True3DModelScreen: View {
     @State private var camResult: True3DCAMResult?
     @State private var simulationMode = 0
     @State private var showModelDrawer = false
+    @State private var patternRows = 3
+    @State private var patternCols = 3
+    @State private var patternPitchX: Double = 20
+    @State private var patternPitchY: Double = 16
+    @State private var patternHoleDia: Double = 6
+    @State private var circularCount = 6
+    @State private var circularRadius: Double = 32
     @State private var isGeneratingCAM = false
     @State private var gcodeURL: URL?
     @State private var showImporter = false
@@ -312,6 +319,7 @@ struct True3DModelScreen: View {
                 }
                 parametersArea
                 featureListArea
+                patternArea
             }
             .padding(14)
             .padding(.bottom, 30)
@@ -809,7 +817,8 @@ struct True3DModelScreen: View {
                     modelTool("圆腔", "circle.bottomhalf.filled") { addFeature(.circularPocket) }
                     modelTool("方腔", "rectangle.inset.filled") { addFeature(.rectPocket) }
                     modelTool("腰槽", "capsule") { addFeature(.slot) }
-                    modelTool("3×3 孔阵", "square.grid.3x3") { addHolePattern() }
+                    modelTool("矩形孔阵", "square.grid.3x3") { addHolePattern() }
+                    modelTool("圆周孔阵", "circle.grid.3x3") { addCircularHolePattern() }
                     modelTool("特征面板", "sidebar.right") { showModelDrawer = true }
                 }
             }
@@ -1154,6 +1163,64 @@ struct True3DModelScreen: View {
         )
     }
 
+    private var patternArea: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("阵列 / 镜像")
+            HStack(spacing: 8) {
+                Stepper("行 \(patternRows)", value: $patternRows, in: 1...8)
+                    .font(.system(size: 11))
+                Stepper("列 \(patternCols)", value: $patternCols, in: 1...8)
+                    .font(.system(size: 11))
+            }
+            numRow("X 孔距", $patternPitchX)
+            numRow("Y 孔距", $patternPitchY)
+            numRow("阵列孔径", $patternHoleDia)
+            Button {
+                addHolePattern()
+            } label: {
+                Label("生成矩形孔阵", systemImage: "square.grid.3x3")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
+
+            Divider()
+            HStack {
+                Stepper("圆周 \(circularCount)", value: $circularCount, in: 3...24)
+                    .font(.system(size: 11))
+                Spacer()
+                Text("Ø\(fmt(patternHoleDia))")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            numRow("圆周半径", $circularRadius)
+            Button {
+                addCircularHolePattern()
+            } label: {
+                Label("生成圆周孔阵", systemImage: "circle.grid.3x3")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+
+            if let selectedFeatureID,
+               let feature = params.features.first(where: { $0.id == selectedFeatureID }) {
+                Divider()
+                Text("选中：\(feature.name)")
+                    .font(.system(size: 11, weight: .semibold))
+                HStack(spacing: 6) {
+                    Button("复制") { duplicateFeature(feature.id) }.buttonStyle(.bordered)
+                    Button("镜像 X") { mirrorFeature(feature.id) }.buttonStyle(.bordered)
+                    Button("上移") { moveFeature(feature.id, by: -1) }.buttonStyle(.bordered)
+                    Button("下移") { moveFeature(feature.id, by: 1) }.buttonStyle(.bordered)
+                }
+                .font(.system(size: 10))
+            }
+        }
+        .padding(12)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+    }
+
     @ViewBuilder
     private func featureEditor(_ f: Binding<True3DFeatureSpec>) -> some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1324,10 +1391,13 @@ struct True3DModelScreen: View {
     }
 
     private func addHolePattern() {
-        let rows = 3
-        let cols = 3
-        let pitchX = min(max(params.width / 4, 12), 40)
-        let pitchY = min(max(params.depth / 4, 12), 32)
+        let rows = max(1, min(patternRows, 8))
+        let cols = max(1, min(patternCols, 8))
+        let dia = max(patternHoleDia, 0.5)
+        let maxPitchX = max((params.width - dia - 2) / Double(max(cols - 1, 1)), 1)
+        let maxPitchY = max((params.depth - dia - 2) / Double(max(rows - 1, 1)), 1)
+        let pitchX = min(max(patternPitchX, dia + 0.5), maxPitchX)
+        let pitchY = min(max(patternPitchY, dia + 0.5), maxPitchY)
         let startX = -pitchX * Double(cols - 1) / 2
         let startY = -pitchY * Double(rows - 1) / 2
         for r in 0..<rows {
@@ -1336,14 +1406,70 @@ struct True3DModelScreen: View {
                 f.name = "阵列孔 \(r + 1)-\(c + 1)"
                 f.x = startX + Double(c) * pitchX
                 f.y = startY + Double(r) * pitchY
-                f.dia = 6
+                f.dia = dia
                 f.holeKind = .through
                 params.features.append(f)
             }
         }
         selectedFeatureID = params.features.last?.id
         rebuild()
-        notice = "已添加 3×3 孔阵列，可在特征面板里改孔距和孔径"
+        notice = "已添加 \(rows)×\(cols) 孔阵列，间距 \(fmt(pitchX))×\(fmt(pitchY)) mm"
+    }
+
+    private func addCircularHolePattern() {
+        let count = max(3, min(circularCount, 24))
+        let dia = max(patternHoleDia, 0.5)
+        let maxR = min(params.width, params.depth) / 2 - dia - 1
+        guard maxR > 2 else {
+            error = "基础块太小，放不下圆周阵列"
+            return
+        }
+        let radius = min(max(circularRadius, 2), maxR)
+        for i in 0..<count {
+            let angle = Double(i) / Double(count) * 2 * .pi
+            var f = True3DFeatureSpec(kind: .hole)
+            f.name = "圆周孔 \(i + 1)"
+            f.x = radius * cos(angle)
+            f.y = radius * sin(angle)
+            f.dia = dia
+            f.holeKind = .through
+            params.features.append(f)
+        }
+        selectedFeatureID = params.features.last?.id
+        rebuild()
+        notice = "已添加 \(count) 孔圆周阵列，R\(fmt(radius))"
+    }
+
+    private func duplicateFeature(_ id: UUID) {
+        guard var feature = params.features.first(where: { $0.id == id }) else { return }
+        feature.id = UUID()
+        feature.name += " 副本"
+        feature.x += min(max(feature.width, feature.dia) / 2 + 2, 20)
+        params.features.append(feature)
+        selectedFeatureID = feature.id
+        rebuild()
+        notice = "已复制 \(feature.name)"
+    }
+
+    private func mirrorFeature(_ id: UUID) {
+        guard var feature = params.features.first(where: { $0.id == id }) else { return }
+        feature.id = UUID()
+        feature.name += " 镜像"
+        feature.x = -feature.x
+        feature.profile = feature.profile.map { True3DPoint(x: -$0.x, y: $0.y) }
+        params.features.append(feature)
+        selectedFeatureID = feature.id
+        rebuild()
+        notice = "已沿 X=0 镜像 \(feature.name)"
+    }
+
+    private func moveFeature(_ id: UUID, by delta: Int) {
+        guard let index = params.features.firstIndex(where: { $0.id == id }) else { return }
+        let target = index + delta
+        guard target >= 0, target < params.features.count else { return }
+        params.features.swapAt(index, target)
+        rebuild()
+        notice = "已\(delta < 0 ? "上移" : "下移")特征"
     }
 
     private func applySketch(_ output: True3DSketchOutput) {
