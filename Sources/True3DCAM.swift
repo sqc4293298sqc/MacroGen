@@ -633,6 +633,12 @@ enum True3DCAM {
     }
 
     private static func fmt(_ v: Double, _ digits: Int = 3) -> String {
-        GCodeGenerator.fmt(v, digits)
+        let f = NumberFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.numberStyle = .decimal
+        f.usesGroupingSeparator = false
+        f.minimumFractionDigits = digits
+        f.maximumFractionDigits = digits
+        return f.string(from: NSNumber(value: v)) ?? String(v)
     }
 }

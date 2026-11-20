@@ -1,0 +1,23 @@
+name: cam-verify
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: macos-26-intel
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Assemble verification sources
+        run: |
+          mkdir -p verify/Sources/CAMVerify
+          cp Sources/True3DModel.swift verify/Sources/CAMVerify/
+          cp Sources/True3DCAM.swift verify/Sources/CAMVerify/
+          cp Sources/ToolpathTypes.swift verify/Sources/CAMVerify/
+
+      - name: Run OCCT 3D CAM verification
+        working-directory: verify
+        run: swift run -c release CAMVerify
