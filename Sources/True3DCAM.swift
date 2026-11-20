@@ -147,7 +147,9 @@ enum True3DCAM {
 
         if cam.doFacePocketBottom, model.pocketEnabled {
             if let loops = loopsAt(result.shape, z: pocketBottom + 0.02),
-               let inner = loops.filter(\.isHole).max(by: { $0.area < $1.area }) {
+               let inner = loops.filter(\.isHole).first(where: {
+                   pointInPolygon(CGPoint(x: model.pocketX, y: model.pocketY), $0.points)
+               }) ?? loops.filter(\.isHole).max(by: { $0.area < $1.area }) {
                 let faceSegs = faceSegments(
                     outer: inner.points,
                     obstacles: [],
