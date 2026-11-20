@@ -35,14 +35,6 @@ struct HomeView: View {
                     }
 
                     NavigationLink {
-                        StudioScreen()
-                    } label: {
-                        Tile(title: "2.5D建模", icon: "cube.transparent",
-                             tint: Color(red: 1.0, green: 0.42, blue: 0.10))
-                    }
-                    .buttonStyle(.plain)
-
-                    NavigationLink {
                         TextEngraveScreen()
                     } label: {
                         Tile(title: "汉字刻字", icon: "textformat",

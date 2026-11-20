@@ -7,8 +7,7 @@ import OCCTSwift
 ///
 /// 这一页不是 2.5D 画布：基础板、圆角、通孔、凸台、方腔全部由 OCCT
 /// 生成实体并做布尔运算，再三角化给 SceneKit 显示。
-/// 先用它验证 iOS 上的内核、布尔和圆角是否可靠，再决定是否替换
-/// `StudioScreen` 的建模层。
+/// 先用它验证 iOS 上的内核、布尔和圆角是否可靠，正式入口已切到 `True3DModelScreen`。
 struct OCCTKernelSpikeScreen: View {
     @State private var scene = SCNScene()
     @State private var stats: KernelDemoStats?
@@ -48,7 +47,7 @@ struct OCCTKernelSpikeScreen: View {
                     }
                 }
 
-                Text("这是 OCCT 真 B-Rep 验证页，暂不替换现有建模/刀路页面。确认圆角、布尔和三角化稳定后，再把 PartSpec 的建模层切到内核。")
+                Text("这是 OCCT 真 B-Rep 验证页；正式建模和 3D 刀路入口已经接到“真3D建模”。")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

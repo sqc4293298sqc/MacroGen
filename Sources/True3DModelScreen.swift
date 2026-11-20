@@ -35,6 +35,23 @@ struct True3DModelScreen: View {
 
                 if let result {
                     featureTree(result.features)
+                    NavigationLink {
+                        True3DCAMScreen(result: result, model: params)
+                    } label: {
+                        HStack {
+                            Label("进入 3D 刀路", systemImage: "point.3.connected.trianglepath.dotted")
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                        }
+                        .font(.system(size: 14, weight: .semibold))
+                        .padding(.vertical, 13)
+                        .padding(.horizontal, 14)
+                        .frame(maxWidth: .infinity)
+                        .background(Color(red: 1.0, green: 0.42, blue: 0.10))
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
                     exportArea
                 }
 
