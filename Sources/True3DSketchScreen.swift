@@ -51,7 +51,7 @@ struct True3DSketchScreen: View {
     @State private var snap = true
     @State private var showGrid = true
     @State private var operation: True3DSketchOperation = .boss
-    @State private var depth: Double = 5
+    @State private var extrudeDepth: Double = 5
     @State private var error: String?
     @State private var canvasSize: CGSize = .zero
     @State private var dragStart: CGPoint?
@@ -320,7 +320,7 @@ struct True3DSketchScreen: View {
                         Text(operation == .boss ? "高度" : "深度")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
-                        TextField("5", value: $depth, format: .number.precision(.fractionLength(1)))
+                        TextField("5", value: $extrudeDepth, format: .number.precision(.fractionLength(1)))
                             .keyboardType(.decimalPad)
                             .multilineTextAlignment(.trailing)
                             .frame(width: 58)
@@ -471,8 +471,8 @@ struct True3DSketchScreen: View {
             var feature = True3DFeatureSpec(kind: operation == .boss ? .profileBoss : .profileCut)
             feature.name = operation == .boss ? "草图凸台" : "草图切除"
             feature.profile = points
-            feature.depth = max(depth, 0.1)
-            feature.bossHeight = max(depth, 0.1)
+            feature.depth = max(extrudeDepth, 0.1)
+            feature.bossHeight = max(extrudeDepth, 0.1)
             onCommit(.feature(feature))
         }
         dismiss()
