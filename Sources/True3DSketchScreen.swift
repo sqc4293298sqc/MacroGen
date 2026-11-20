@@ -79,17 +79,28 @@ struct True3DSketchScreen: View {
     @State private var error: String?
     @State private var canvasSize: CGSize = .zero
     @State private var dragStart: CGPoint?
+    @State private var showToolDrawer = false
 
     private var baseWidth: CGFloat { CGFloat(max(canvasWidth, 1)) }
     private var baseDepth: CGFloat { CGFloat(max(canvasDepth, 1)) }
 
     var body: some View {
-        VStack(spacing: 0) {
-            topBar
-            baseBar
-            sketchCanvas
-            summaryBar
-            bottomBar
+        ZStack(alignment: .trailing) {
+            VStack(spacing: 0) {
+                topBar
+                baseBar
+                sketchCanvas
+                summaryBar
+                bottomBar
+            }
+            if showToolDrawer {
+                Color.black.opacity(0.20)
+                    .ignoresSafeArea()
+                    .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { showToolDrawer = false } }
+                sketchDrawer
+                    .frame(width: 300)
+                    .transition(.move(edge: .trailing))
+            }
         }
         .navigationTitle("草图")
         .navigationBarTitleDisplayMode(.inline)
@@ -100,6 +111,13 @@ struct True3DSketchScreen: View {
             if !embedded {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("取消") { dismiss() }
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) { showToolDrawer.toggle() }
+                } label: {
+                    Image(systemName: "sidebar.right")
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -117,6 +135,80 @@ struct True3DSketchScreen: View {
                 }
             }
         }
+    }
+
+    private var sketchDrawer: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("草图工具")
+                        .font(.system(size: 18, weight: .bold))
+                    Spacer()
+                    Button {
+                        withAnimation(.easeOut(duration: 0.2)) { showToolDrawer = false }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }
+                }
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    ForEach(True3DSketchTool.allCases) { item in
+                        Button {
+                            tool = item
+                            previewPoints = []
+                            arcPoints = []
+                            showToolDrawer = false
+                        } label: {
+                            Label(item.rawValue, systemImage: item.symbol)
+                                .font(.system(size: 12, weight: .semibold))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                                .background(tool == item ? Color(red: 1.0, green: 0.42, blue: 0.10) : Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 9))
+                                .foregroundStyle(tool == item ? .white : .primary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                Text("基础块尺寸").font(.system(size: 12, weight: .semibold))
+                HStack(spacing: 7) {
+                    TextField("宽", value: $canvasWidth, format: .number.precision(.fractionLength(1)))
+                        .keyboardType(.decimalPad).multilineTextAlignment(.trailing)
+                        .frame(width: 64).textFieldStyle(.roundedBorder)
+                    Text("×").font(.system(size: 10)).foregroundStyle(.secondary)
+                    TextField("深", value: $canvasDepth, format: .number.precision(.fractionLength(1)))
+                        .keyboardType(.decimalPad).multilineTextAlignment(.trailing)
+                        .frame(width: 64).textFieldStyle(.roundedBorder)
+                    Button("应用") {
+                        onBaseChange?(max(canvasWidth,1), max(canvasDepth,1))
+                    }
+                    .font(.system(size: 11, weight: .semibold))
+                    .buttonStyle(.bordered)
+                }
+
+                Text("编辑").font(.system(size: 12, weight: .semibold))
+                HStack(spacing: 6) {
+                    Button("撤销") { undo() }.buttonStyle(.bordered)
+                    Button("闭合") { closeProfile() }.buttonStyle(.bordered)
+                    Button("清空") { clear() }.buttonStyle(.bordered)
+                }
+                .font(.system(size: 11))
+
+                HStack(spacing: 6) {
+                    Button("旋转90°") { rotateSketch() }.buttonStyle(.bordered)
+                    Button("水平镜像") { mirrorSketch(horizontal: true) }.buttonStyle(.bordered)
+                    Button("垂直镜像") { mirrorSketch(horizontal: false) }.buttonStyle(.bordered)
+                }
+                .font(.system(size: 10))
+            }
+            .padding(14)
+            .padding(.bottom, 30)
+        }
+        .background(.regularMaterial)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(Color.black.opacity(0.12)).frame(width: 0.5)
+        }
+        .ignoresSafeArea(edges: .bottom)
     }
 
     // MARK: 顶部工具条
