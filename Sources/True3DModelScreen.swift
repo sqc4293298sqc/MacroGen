@@ -388,10 +388,10 @@ struct True3DModelScreen: View {
                     .font(.system(size: 12)).foregroundStyle(.secondary)
             }
             VStack(spacing: 0) {
-                ForEach($params.features) { $feature in
-                    featureRow($feature)
-                    if selectedFeatureID == feature.wrappedValue.id {
-                        featureEditor($feature)
+                ForEach(params.features) { feature in
+                    featureRow(feature)
+                    if selectedFeatureID == feature.id {
+                        featureEditor(featureBinding(for: feature))
                             .padding(.horizontal, 12)
                             .padding(.bottom, 10)
                     }
@@ -402,32 +402,32 @@ struct True3DModelScreen: View {
         }
     }
 
-    private func featureRow(_ feature: Binding<True3DFeatureSpec>) -> some View {
+    private func featureRow(_ feature: True3DFeatureSpec) -> some View {
         HStack(spacing: 9) {
             Button {
-                selectedFeatureID = selectedFeatureID == feature.wrappedValue.id ? nil : feature.wrappedValue.id
+                selectedFeatureID = selectedFeatureID == feature.id ? nil : feature.id
             } label: {
-                Image(systemName: icon(for: feature.wrappedValue.kind))
+                Image(systemName: icon(for: feature.kind))
                     .font(.system(size: 16))
-                    .foregroundStyle(feature.wrappedValue.suppressed ? Color.secondary : Color(red: 0.10, green: 0.55, blue: 0.50))
+                    .foregroundStyle(feature.suppressed ? Color.secondary : Color(red: 0.10, green: 0.55, blue: 0.50))
                     .frame(width: 26)
             }
             .buttonStyle(.plain)
             VStack(alignment: .leading, spacing: 2) {
-                Text(feature.wrappedValue.name)
+                Text(feature.name)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(feature.wrappedValue.suppressed ? .secondary : .primary)
-                Text(feature.wrappedValue.detail)
+                    .foregroundStyle(feature.suppressed ? .secondary : .primary)
+                Text(feature.detail)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
             }
             Spacer()
-            Toggle("", isOn: feature.suppressed).labelsHidden().scaleEffect(0.8)
+            Toggle("", isOn: featureBinding(for: feature).suppressed).labelsHidden().scaleEffect(0.8)
             Button(role: .destructive) {
-                params.features.removeAll { $0.id == feature.wrappedValue.id }
-                if selectedFeatureID == feature.wrappedValue.id { selectedFeatureID = nil }
+                params.features.removeAll { $0.id == feature.id }
+                if selectedFeatureID == feature.id { selectedFeatureID = nil }
             } label: {
                 Image(systemName: "trash").font(.system(size: 12))
             }
@@ -436,6 +436,19 @@ struct True3DModelScreen: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
+    }
+
+    private func featureBinding(for feature: True3DFeatureSpec) -> Binding<True3DFeatureSpec> {
+        Binding(
+            get: {
+                params.features.first(where: { $0.id == feature.id }) ?? feature
+            },
+            set: { newValue in
+                if let index = params.features.firstIndex(where: { $0.id == feature.id }) {
+                    params.features[index] = newValue
+                }
+            }
+        )
     }
 
     @ViewBuilder
