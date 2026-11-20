@@ -499,23 +499,28 @@ enum True3DCAM {
 
     private static func offsetPolygon(_ points: [CGPoint], by distance: Double) -> [CGPoint]? {
         guard points.count >= 3 else { return nil }
+        let d = abs(distance)
+        guard d > 0.01 else { return points }
         let wire = Wire.polygon(points.map { SIMD2<Double>(Double($0.x), Double($0.y)) }, closed: true)
         guard let wire else { return nil }
+        let face = Shape.face(from: wire, planar: true)
+        let plusWires = face?.multiOffsetWires(offsets: [d]) ?? wire.offset(by: d).map { [$0] } ?? []
+        let minusWires = face?.multiOffsetWires(offsets: [-d]) ?? wire.offset(by: -d).map { [$0] } ?? []
+        let plusLoops = plusWires.flatMap { polygons(of: $0) }
+        let minusLoops = minusWires.flatMap { polygons(of: $0) }
         let baseArea = max(abs(polygonArea(points)), 0.01)
-        let plus = wire.offset(by: abs(distance)).map { polygon(of: $0) }
-        let minus = wire.offset(by: -abs(distance)).map { polygon(of: $0) }
-        let plusArea = plus.map { abs(polygonArea($0)) } ?? 0
-        let minusArea = minus.map { abs(polygonArea($0)) } ?? 0
-        if distance > 0 {
-            if plusArea > baseArea + 0.01 { return plus }
-            if minusArea > baseArea + 0.01 { return minus }
-        } else {
-            if minusArea > 0.01, minusArea < baseArea - 0.01 { return minus }
-            if plusArea > 0.01, plusArea < baseArea - 0.01 { return plus }
+        let basePerimeter = polylineLength(points)
+        let expected = distance > 0
+            ? baseArea + basePerimeter * d + .pi * d * d
+            : max(0.01, baseArea - basePerimeter * d + .pi * d * d)
+        let candidates = (distance > 0 ? plusLoops + minusLoops : minusLoops + plusLoops)
+            .filter { $0.count >= 3 && abs(polygonArea($0)) > 0.01 }
+        let side = candidates.filter {
+            let a = abs(polygonArea($0))
+            return distance > 0 ? a > baseArea + 0.01 : a < baseArea - 0.01
         }
-        if let p = plus, p.count >= 3, abs(polygonArea(p)) > 0.01 { return p }
-        if let p = minus, p.count >= 3, abs(polygonArea(p)) > 0.01 { return p }
-        return nil
+        let pool = side.isEmpty ? candidates : side
+        return pool.min { abs(abs(polygonArea($0)) - expected) < abs(abs(polygonArea($1)) - expected) }
     }
 
     // MARK: G 代码
