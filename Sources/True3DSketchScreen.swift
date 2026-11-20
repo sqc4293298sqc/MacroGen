@@ -18,6 +18,7 @@ enum True3DSketchTool: String, CaseIterable, Identifiable {
     case polygon = "多边形"
     case roundedRect = "圆角矩形"
     case slot = "腰形"
+    case editPoint = "编辑点"
 
     var id: String { rawValue }
 
@@ -32,6 +33,7 @@ enum True3DSketchTool: String, CaseIterable, Identifiable {
         case .polygon: return "hexagon"
         case .roundedRect: return "rectangle.roundedtop"
         case .slot: return "capsule"
+        case .editPoint: return "hand.point.up.left"
         }
     }
 }
@@ -92,6 +94,7 @@ struct True3DSketchScreen: View {
     @State private var cornerRadius: Double = 5
     @State private var slotWidth: Double = 20
     @State private var offsetDistance: Double = 5
+    @State private var editingPointIndex: Int?
 
     private var baseWidth: CGFloat { CGFloat(max(canvasWidth, 1)) }
     private var baseDepth: CGFloat { CGFloat(max(canvasDepth, 1)) }
@@ -371,6 +374,8 @@ struct True3DSketchScreen: View {
                      ? "逐点画样条；点回起点或按“闭合轮廓”自动圆滑"
                      : tool == .polyline
                      ? "逐点点击画折线；点回起点或按“闭合轮廓”结束"
+                     : tool == .editPoint
+                     ? "拖动已有控制点修改轮廓；松手即更新尺寸"
                      : "按住拖动画\(tool.rawValue)，松开生成闭合轮廓")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
@@ -382,21 +387,37 @@ struct True3DSketchScreen: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
+                        let b = worldPoint(value.location, in: geo.size)
+                        if tool == .editPoint {
+                            guard closed else { return }
+                            if dragStart == nil {
+                                dragStart = value.startLocation
+                                editingPointIndex = nearestPointIndex(to: b)
+                            }
+                            if let index = editingPointIndex, index < points.count {
+                                points[index] = snapped(b)
+                                ensureCanvasContains(points)
+                            }
+                            return
+                        }
                         guard tool != .polyline, !closed else { return }
                         if dragStart == nil { dragStart = value.startLocation }
                         let a = worldPoint(value.startLocation, in: geo.size)
-                        let b = worldPoint(value.location, in: geo.size)
                         previewPoints = shapePoints(from: a, to: b)
                     }
                     .onEnded { value in
                         defer {
                             dragStart = nil
                             previewPoints = []
+                            editingPointIndex = nil
                         }
+                        if tool == .editPoint { syncDimensions(); error = nil; return }
                         guard !closed else { return }
                         let a = worldPoint(value.startLocation, in: geo.size)
                         let b = worldPoint(value.location, in: geo.size)
                         switch tool {
+                        case .editPoint:
+                            break
                         case .polyline:
                             addPolylinePoint(snapped(b))
                         case .arc:
@@ -628,6 +649,17 @@ struct True3DSketchScreen: View {
         )
     }
 
+    private func nearestPointIndex(to p: True3DPoint) -> Int? {
+        guard !points.isEmpty else { return nil }
+        var best: (Int, Double)?
+        for (i, q) in points.enumerated() {
+            let d = hypot(q.x - p.x, q.y - p.y)
+            if best == nil || d < best!.1 { best = (i, d) }
+        }
+        guard let best, best.1 <= max(gridStep, 2) else { return nil }
+        return best.0
+    }
+
     private func snapped(_ p: True3DPoint) -> True3DPoint {
         guard snap else { return p }
         let g = max(gridStep, 0.1)
@@ -658,7 +690,7 @@ struct True3DSketchScreen: View {
                 let angle = Double(i) / 48.0 * 2 * .pi
                 return True3DPoint(x: a.x + r * cos(angle), y: a.y + r * sin(angle))
             }
-        case .arc, .spline:
+        case .arc, .spline, .editPoint:
             return []
         case .ellipse:
             let rx = abs(b.x - a.x), ry = abs(b.y - a.y)
