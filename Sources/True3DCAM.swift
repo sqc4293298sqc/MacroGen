@@ -503,7 +503,10 @@ enum True3DCAM {
         guard points.count >= 3 else { return nil }
         let d = abs(distance)
         guard d > 0.01 else { return points }
-        let wire = Wire.polygon(points.map { SIMD2<Double>(Double($0.x), Double($0.y)) }, closed: true)
+        let ring = points.count > 1 && distance(points[0], points[points.count - 1]) < 0.01
+            ? Array(points.dropLast())
+            : points
+        let wire = Wire.polygon(ring.map { SIMD2<Double>(Double($0.x), Double($0.y)) }, closed: true)
         guard let wire else { return nil }
         let face = Shape.face(from: wire, planar: true)
         var plusWires = face?.multiOffsetWires(offsets: [d]) ?? []
