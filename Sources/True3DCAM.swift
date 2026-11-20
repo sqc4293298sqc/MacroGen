@@ -499,11 +499,11 @@ enum True3DCAM {
         return result
     }
 
-    private static func offsetPolygon(_ points: [CGPoint], by distance: Double) -> [CGPoint]? {
+    private static func offsetPolygon(_ points: [CGPoint], by offset: Double) -> [CGPoint]? {
         guard points.count >= 3 else { return nil }
-        let d = abs(distance)
+        let d = abs(offset)
         guard d > 0.01 else { return points }
-        let ring = points.count > 1 && distance(points[0], points[points.count - 1]) < 0.01
+        let ring = points.count > 1 && hypot(points[0].x - points[points.count - 1].x, points[0].y - points[points.count - 1].y) < 0.01
             ? Array(points.dropLast())
             : points
         let wire = Wire.polygon(ring.map { SIMD2<Double>(Double($0.x), Double($0.y)) }, closed: true)
@@ -517,14 +517,14 @@ enum True3DCAM {
         let minusLoops = minusWires.flatMap { polygons(of: $0) }
         let baseArea = max(abs(polygonArea(points)), 0.01)
         let basePerimeter = polylineLength(points)
-        let expected = distance > 0
+        let expected = offset > 0
             ? baseArea + basePerimeter * d + .pi * d * d
             : max(0.01, baseArea - basePerimeter * d + .pi * d * d)
-        let candidates = (distance > 0 ? plusLoops + minusLoops : minusLoops + plusLoops)
+        let candidates = (offset > 0 ? plusLoops + minusLoops : minusLoops + plusLoops)
             .filter { $0.count >= 3 && abs(polygonArea($0)) > 0.01 }
         let side = candidates.filter {
             let a = abs(polygonArea($0))
-            return distance > 0 ? a > baseArea + 0.01 : a < baseArea - 0.01
+            return offset > 0 ? a > baseArea + 0.01 : a < baseArea - 0.01
         }
         let pool = side.isEmpty ? candidates : side
         return pool.min { abs(abs(polygonArea($0)) - expected) < abs(abs(polygonArea($1)) - expected) }
