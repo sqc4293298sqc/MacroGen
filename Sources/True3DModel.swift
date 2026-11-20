@@ -119,7 +119,7 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
         case .rectBoss:
             return "\(fmt(width))×\(fmt(depthY)) H\(fmt(bossHeight)) R\(fmt(cornerRadius)) @ \(p)"
         case .shell:
-            return "壁厚 \(fmt(abs(depth))"
+            return "壁厚 \(fmt(abs(depth)))"
         case .revolveBoss:
             return "\(profile.count) 点旋转 \(fmt(angle))° H\(fmt(bossHeight))"
         case .revolveCut:
