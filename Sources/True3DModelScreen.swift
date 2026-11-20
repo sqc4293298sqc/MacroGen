@@ -229,6 +229,7 @@ struct True3DModelScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header
+                modelToolBar
 
                 True3DSceneView(scene: scene, showWire: showWire)
                     .frame(height: 400)
@@ -239,6 +240,9 @@ struct True3DModelScreen: View {
                     )
 
                 statusArea
+                if !params.features.isEmpty {
+                    inlineFeatureStrip
+                }
                 if let notice {
                     Label(notice, systemImage: "info.circle")
                         .font(.system(size: 12))
@@ -794,6 +798,40 @@ struct True3DModelScreen: View {
         }
     }
 
+    private var modelToolBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 7) {
+                    modelTool("草图", "pencil.tip.crop.circle") { stage = .sketch }
+                    modelTool("孔", "circle.dashed") { addFeature(.hole) }
+                    modelTool("凸台", "arrow.up.circle") { addFeature(.boss) }
+                    modelTool("圆腔", "circle.bottomhalf.filled") { addFeature(.circularPocket) }
+                    modelTool("方腔", "rectangle.inset.filled") { addFeature(.rectPocket) }
+                    modelTool("腰槽", "capsule") { addFeature(.slot) }
+                    modelTool("3×3 孔阵", "square.grid.3x3") { addHolePattern() }
+                    modelTool("特征面板", "sidebar.right") { showModelDrawer = true }
+                }
+            }
+            .disabled(isBuilding || importBusy)
+            Text("先选草图轮廓或直接加特征，再点“生成实体”；所有参数在抽屉里精调。")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        }
+    }
+
+    private func modelTool(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color(red: 1.0, green: 0.42, blue: 0.10).opacity(0.10), in: Capsule())
+                .foregroundStyle(Color(red: 0.85, green: 0.30, blue: 0.05))
+        }
+        .buttonStyle(.plain)
+    }
+
     @ViewBuilder
     private var statusArea: some View {
         if let error {
@@ -843,6 +881,42 @@ struct True3DModelScreen: View {
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var inlineFeatureStrip: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("当前特征 \(params.features.count)")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Button("编辑全部") { showModelDrawer = true }
+                    .font(.system(size: 11, weight: .semibold))
+                    .buttonStyle(.borderless)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(params.features) { feature in
+                        HStack(spacing: 5) {
+                            Image(systemName: icon(for: feature.kind))
+                                .font(.system(size: 10))
+                            Text(feature.name)
+                                .font(.system(size: 10, weight: .semibold))
+                            Text(feature.detail)
+                                .font(.system(size: 9))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color(.secondarySystemBackground), in: Capsule())
+                        .onTapGesture {
+                            selectedFeatureID = feature.id
+                            showModelDrawer = true
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1232,6 +1306,8 @@ struct True3DModelScreen: View {
         }
         params.features.append(f)
         selectedFeatureID = f.id
+        rebuild()
+        notice = "已添加 \(f.name)，可在特征面板里改尺寸"
     }
 
     private func addHolePattern() {
@@ -1253,7 +1329,8 @@ struct True3DModelScreen: View {
             }
         }
         selectedFeatureID = params.features.last?.id
-        notice = "已添加 3×3 孔阵列，点“生成实体”查看"
+        rebuild()
+        notice = "已添加 3×3 孔阵列，可在特征面板里改孔距和孔径"
     }
 
     private func applySketch(_ output: True3DSketchOutput) {

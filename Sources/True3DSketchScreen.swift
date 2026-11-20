@@ -88,7 +88,6 @@ struct True3DSketchScreen: View {
         ZStack(alignment: .trailing) {
             VStack(spacing: 0) {
                 topBar
-                baseBar
                 sketchCanvas
                 summaryBar
                 bottomBar
@@ -248,6 +247,13 @@ struct True3DSketchScreen: View {
                 Text("格 \(String(format: "%.0f", gridStep))")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) { showToolDrawer = true }
+                } label: {
+                    Label("基础 \(fmt(canvasWidth))×\(fmt(canvasDepth))", systemImage: "cube")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
