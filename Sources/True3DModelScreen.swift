@@ -932,6 +932,18 @@ struct True3DModelScreen: View {
         }
     }
 
+    private func intRow(_ title: String, _ value: Binding<Int>) -> some View {
+        HStack(spacing: 8) {
+            Text(title).font(.system(size: 12))
+            Spacer()
+            TextField("0", value: value, format: .number)
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 82)
+                .textFieldStyle(.roundedBorder)
+        }
+    }
+
     private func optRow(_ title: String, _ value: Binding<Double?>, fallback: Double) -> some View {
         numRow(title, Binding(
             get: { value.wrappedValue ?? fallback },
