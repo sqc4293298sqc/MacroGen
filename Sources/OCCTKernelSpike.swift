@@ -244,7 +244,7 @@ struct OCCTKernelSpikeScreen: View {
         buildScene(shape: finished, mesh: mesh)
     }
 
-    private func buildScene(shape: Shape, mesh: Mesh) {
+    private func buildScene(shape: OCCTSwift.Shape, mesh: OCCTSwift.Mesh) {
         let newScene = SCNScene()
         newScene.background.contents = UIColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1)
 
