@@ -17,6 +17,11 @@ struct True3DModelScreen: View {
     @State private var isBuilding = false
     @State private var didInitialBuild = false
 
+    private var isDirty: Bool {
+        guard let result else { return false }
+        return result.params != params
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -36,7 +41,7 @@ struct True3DModelScreen: View {
                 if let result {
                     featureTree(result.features)
                     NavigationLink {
-                        True3DCAMScreen(result: result, model: params)
+                        True3DCAMScreen(result: result, model: result.params)
                     } label: {
                         HStack {
                             Label("进入 3D 刀路", systemImage: "point.3.connected.trianglepath.dotted")
@@ -135,6 +140,12 @@ struct True3DModelScreen: View {
                         .font(.system(size: 12))
                         .toggleStyle(.switch)
                         .fixedSize()
+                }
+                if isDirty {
+                    Label("参数已修改，当前显示仍是上次生成的实体；请点“生成实体”更新", systemImage: "exclamationmark.arrow.triangle.2.circlepath")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .padding(12)
@@ -284,7 +295,11 @@ struct True3DModelScreen: View {
 
             group("通孔") {
                 Toggle("启用通孔", isOn: $params.holeEnabled)
-                if params.holeEnabled { numRow("孔径 Ø", $params.holeDiameter) }
+                if params.holeEnabled {
+                    numRow("孔径 Ø", $params.holeDiameter)
+                    numRow("中心 X", $params.holeX)
+                    numRow("中心 Y", $params.holeY)
+                }
             }
 
             group("凸台") {
@@ -348,6 +363,7 @@ struct True3DModelScreen: View {
     private func rebuild() {
         error = nil
         result = nil
+        scene = SCNScene()
         stepURL = nil
         stlURL = nil
         isBuilding = true
@@ -397,7 +413,8 @@ struct True3DModelScreen: View {
         wireNode.isHidden = !showWire
         modelRoot.addChildNode(wireNode)
 
-        let maxSize = max(params.width, params.depth, params.height, 20)
+        let model = result.params
+        let maxSize = max(model.width, model.depth, model.height, 20)
         let camera = SCNNode()
         camera.camera = SCNCamera()
         camera.camera?.fieldOfView = 38
@@ -405,7 +422,7 @@ struct True3DModelScreen: View {
         camera.camera?.zFar = 10000
         camera.position = SCNVector3(Float(maxSize * 1.55), Float(maxSize * 1.35), Float(maxSize * 1.55))
         let target = SCNNode()
-        target.position = SCNVector3(0, Float(params.height / 2), 0)
+        target.position = SCNVector3(0, Float(model.height / 2), 0)
         newScene.rootNode.addChildNode(target)
         camera.constraints = [SCNLookAtConstraint(target: target)]
         newScene.rootNode.addChildNode(camera)
