@@ -37,7 +37,7 @@ struct HomeView: View {
                     NavigationLink {
                         StudioScreen()
                     } label: {
-                        Tile(title: "建模编程", icon: "cube.transparent",
+                        Tile(title: "2.5D建模", icon: "cube.transparent",
                              tint: Color(red: 1.0, green: 0.42, blue: 0.10))
                     }
                     .buttonStyle(.plain)
@@ -51,9 +51,9 @@ struct HomeView: View {
                     .buttonStyle(.plain)
 
                     NavigationLink {
-                        OCCTKernelSpikeScreen()
+                        True3DModelScreen()
                     } label: {
-                        Tile(title: "3D内核验证", icon: "cube.transparent.2",
+                        Tile(title: "真3D建模", icon: "cube.transparent.2",
                              tint: Color(red: 0.10, green: 0.55, blue: 0.50))
                     }
                     .buttonStyle(.plain)
