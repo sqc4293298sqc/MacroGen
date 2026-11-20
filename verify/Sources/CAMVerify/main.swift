@@ -50,6 +50,19 @@ func verifyCase(_ name: String, model: True3DParams, cam: True3DCAMParams) {
 
 var base = True3DParams()
 var cam = True3DCAMParams()
+// Debug: isolate the base outer contour and avoid inner clearing / face rows.
+base.bossEnabled = false
+base.holeEnabled = false
+base.pocketEnabled = false
+cam.doFaceBaseTop = false
+cam.doFaceBossTop = false
+cam.doFacePocketBottom = false
+cam.doClearInner = false
+cam.doRoughing = false
+verifyCase("simple-base-outline", model: base, cam: cam)
+
+base = True3DParams()
+cam = True3DCAMParams()
 verifyCase("default-boss-hole-pocket", model: base, cam: cam)
 
 base.bossEnabled = false

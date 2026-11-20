@@ -283,6 +283,14 @@ enum True3DCAM {
     private static func loopsAt(_ shape: Shape, z: Double) -> [CamLoop]? {
         let wires = shape.sectionWiresAtZ(z, tolerance: 1e-5)
         guard !wires.isEmpty else { return nil }
+        if ProcessInfo.processInfo.environment["CAM_DEBUG"] == "1", abs(z - 9.99) < 0.02 {
+            for (i, wire) in wires.enumerated() {
+                let pieces = wire.allEdgePolylines(deflection: 0.05)
+                let all = pieces.flatMap { $0 }
+                let b = all.isEmpty ? (minX: 0.0, maxX: 0.0, minY: 0.0, maxY: 0.0) : polygonBounds(all.map { CGPoint(x: $0.x, y: $0.y) })
+                print("RAW i=\(i) edges=\(wire.orderedEdgeCount) polylines=\(pieces.count) pts=\(all.count) x[\(String(format: "%.1f", b.minX))..\(String(format: "%.1f", b.maxX))] y[\(String(format: "%.1f", b.minY))..\(String(format: "%.1f", b.maxY))]")
+            }
+        }
 
         var raw: [(wire: Wire, points: [CGPoint], area: Double)] = []
         for wire in wires {
@@ -327,7 +335,7 @@ enum True3DCAM {
         let plusLoops = loop.wire.offset(by: d).map { polygons(of: $0) } ?? []
         let minusLoops = loop.wire.offset(by: -d).map { polygons(of: $0) } ?? []
         let baseArea = max(loop.area, 0.01)
-        if ProcessInfo.processInfo.environment["CAM_DEBUG"] == "1" {
+        if ProcessInfo.processInfo.environment["CAM_DEBUG"] == "1", d < 10 {
             func b(_ loops: [[CGPoint]]) -> String {
                 loops.map { p in
                     let x = polygonBounds(p)
