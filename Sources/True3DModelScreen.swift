@@ -34,6 +34,12 @@ struct True3DAssemblyComponent: Identifiable, Equatable {
     var y: Double = 0
     var z: Double = 0
     var rotationZ: Double = 0
+    var colorIndex: Int = 0
+    var part: True3DParams = True3DParams()
+
+    var summary: String {
+        "\(part.features.count) 特征 · \(String(format: "%.0f", part.width))×\(String(format: "%.0f", part.depth))×\(String(format: "%.0f", part.height))"
+    }
 }
 
 struct True3DModelScreen: View {
@@ -75,6 +81,8 @@ struct True3DModelScreen: View {
     @State private var assemblyY: Double = 0
     @State private var assemblyZ: Double = 0
     @State private var assemblyRotation: Double = 0
+    @State private var assemblyEditingID: UUID?
+    @State private var assemblyError: String?
 
     private var isDirty: Bool {
         guard let result else { return false }
@@ -159,7 +167,7 @@ struct True3DModelScreen: View {
         .onChange(of: stage) { newStage in
             if newStage == .assembly {
                 if assemblyComponents.isEmpty, result != nil {
-                    assemblyComponents = [True3DAssemblyComponent(name: "零件 1")]
+                    assemblyComponents = [True3DAssemblyComponent(name: "零件 1", colorIndex: 0, part: params)]
                 }
                 rebuildAssemblyScene()
             }
@@ -263,6 +271,28 @@ struct True3DModelScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header
+                if let editingID = assemblyEditingID,
+                   let component = assemblyComponents.first(where: { $0.id == editingID }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "square.stack.3d.up.fill")
+                            .foregroundStyle(Color(red: 0.10, green: 0.55, blue: 0.50))
+                        Text("正在编辑装配零件：\(component.name)")
+                            .font(.system(size: 11, weight: .semibold))
+                        Spacer()
+                        Button("保存回装配") { saveAssemblyPart() }
+                            .font(.system(size: 11, weight: .semibold))
+                            .buttonStyle(.borderedProminent)
+                            .tint(Color(red: 0.10, green: 0.55, blue: 0.50))
+                        Button("取消") {
+                            assemblyEditingID = nil
+                            stage = .assembly
+                        }
+                        .font(.system(size: 11))
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(9)
+                    .background(Color(red: 0.10, green: 0.55, blue: 0.50).opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+                }
                 modelToolBar
 
                 True3DSceneView(scene: scene, showWire: showWire)
@@ -398,28 +428,42 @@ struct True3DModelScreen: View {
                         assemblyField("Z", value: $assemblyZ)
                         assemblyField("Rz°", value: $assemblyRotation)
                     }
-                    Button {
-                        let name = "零件 \(assemblyComponents.count + 1)"
-                        assemblyComponents.append(True3DAssemblyComponent(
-                            name: name, x: assemblyX, y: assemblyY,
-                            z: assemblyZ, rotationZ: assemblyRotation
-                        ))
-                        rebuildAssemblyScene()
-                    } label: {
-                        Label("添加当前实体副本", systemImage: "plus.square.on.square")
-                            .font(.system(size: 12, weight: .semibold))
-                            .frame(maxWidth: .infinity)
+                    HStack(spacing: 8) {
+                        Button {
+                            addAssemblyPart(from: params)
+                        } label: {
+                            Label("添加当前零件快照", systemImage: "plus.square.on.square")
+                                .font(.system(size: 11, weight: .semibold))
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
+
+                        Button {
+                            addBlankAssemblyPart()
+                        } label: {
+                            Label("新建空白零件", systemImage: "doc.badge.plus")
+                                .font(.system(size: 11, weight: .semibold))
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
 
                     ForEach($assemblyComponents) { $component in
                         VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Image(systemName: "cube")
+                            HStack(spacing: 6) {
+                                Circle()
+                                    .fill(assemblyColor(component.colorIndex))
+                                    .frame(width: 8, height: 8)
                                 TextField("名称", text: $component.name)
                                     .font(.system(size: 12, weight: .semibold))
+                                Text(component.summary)
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.secondary)
                                 Spacer()
+                                Button("编辑") { editAssemblyPart(component) }
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .buttonStyle(.bordered)
                                 Button {
                                     assemblyComponents.removeAll { $0.id == component.id }
                                     rebuildAssemblyScene()
@@ -452,6 +496,57 @@ struct True3DModelScreen: View {
         .onChange(of: assemblyComponents) { _ in rebuildAssemblyScene() }
     }
 
+    private func assemblyColor(_ index: Int) -> UIColor {
+        let palette: [UIColor] = [
+            UIColor(red: 0.46, green: 0.58, blue: 0.70, alpha: 1),
+            UIColor(red: 0.78, green: 0.52, blue: 0.30, alpha: 1),
+            UIColor(red: 0.34, green: 0.62, blue: 0.48, alpha: 1),
+            UIColor(red: 0.68, green: 0.45, blue: 0.62, alpha: 1),
+            UIColor(red: 0.70, green: 0.65, blue: 0.34, alpha: 1)
+        ]
+        return palette[abs(index) % palette.count]
+    }
+
+    private func addAssemblyPart(from part: True3DParams) {
+        let name = "零件 \(assemblyComponents.count + 1)"
+        assemblyComponents.append(True3DAssemblyComponent(
+            name: name, x: assemblyX, y: assemblyY,
+            z: assemblyZ, rotationZ: assemblyRotation,
+            colorIndex: assemblyComponents.count, part: part
+        ))
+        rebuildAssemblyScene()
+    }
+
+    private func addBlankAssemblyPart() {
+        var blank = True3DParams()
+        blank.projectName = "零件 \(assemblyComponents.count + 1)"
+        blank.features = []
+        addAssemblyPart(from: blank)
+    }
+
+    private func editAssemblyPart(_ component: True3DAssemblyComponent) {
+        params = component.part
+        selectedFeatureID = nil
+        assemblyEditingID = component.id
+        stage = .model
+        rebuild()
+    }
+
+    private func saveAssemblyPart() {
+        guard let id = assemblyEditingID,
+              let index = assemblyComponents.firstIndex(where: { $0.id == id }) else {
+            assemblyEditingID = nil
+            return
+        }
+        assemblyComponents[index].part = params
+        if !params.projectName.isEmpty {
+            assemblyComponents[index].name = params.projectName
+        }
+        assemblyEditingID = nil
+        rebuildAssemblyScene()
+        stage = .assembly
+    }
+
     private func assemblyField(_ label: String, value: Binding<Double>) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label).font(.system(size: 9)).foregroundStyle(.secondary)
@@ -465,22 +560,36 @@ struct True3DModelScreen: View {
     }
 
     private func rebuildAssemblyScene() {
-        guard let result else { assemblyScene = SCNScene(); return }
+        guard !assemblyComponents.isEmpty else {
+            assemblyScene = SCNScene()
+            assemblyError = nil
+            return
+        }
         let newScene = SCNScene()
         newScene.background.contents = UIColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1)
         let root = SCNNode()
         root.eulerAngles.x = -Float.pi / 2
         newScene.rootNode.addChildNode(root)
+        var failure: String?
+        var maxSize: Double = 20
+        var maxHeight: Double = 0
         for comp in assemblyComponents {
+            let partResult: True3DResult
+            do {
+                partResult = try True3DKernel.build(comp.part)
+            } catch {
+                failure = "\(comp.name) 生成失败：\(error.localizedDescription)"
+                continue
+            }
             let holder = SCNNode()
             holder.position = SCNVector3(Float(comp.x), Float(comp.y), Float(comp.z))
             holder.eulerAngles.z = Float(comp.rotationZ * .pi / 180)
             let material = SCNMaterial()
             material.lightingModel = .physicallyBased
-            material.diffuse.contents = UIColor(red: 0.46, green: 0.58, blue: 0.70, alpha: 1)
+            material.diffuse.contents = assemblyColor(comp.colorIndex)
             material.metalness.contents = 0.18
             material.roughness.contents = 0.48
-            let geometry = result.mesh.sceneKitGeometry()
+            let geometry = partResult.mesh.sceneKitGeometry()
             geometry.materials = [material]
             holder.addChildNode(SCNNode(geometry: geometry))
             let wireMaterial = SCNMaterial()
@@ -488,7 +597,7 @@ struct True3DModelScreen: View {
             wireMaterial.diffuse.contents = UIColor(red: 0.10, green: 0.15, blue: 0.20, alpha: 0.72)
             wireMaterial.fillMode = .lines
             wireMaterial.isDoubleSided = true
-            let wire = result.mesh.sceneKitGeometry()
+            let wire = partResult.mesh.sceneKitGeometry()
             wire.materials = [wireMaterial]
             let wireNode = SCNNode(geometry: wire)
             wireNode.name = "wireOverlay"
@@ -496,17 +605,20 @@ struct True3DModelScreen: View {
             wireNode.isHidden = !showWire
             holder.addChildNode(wireNode)
             root.addChildNode(holder)
+            let bossMax = comp.part.bossFeatures.map(\.bossHeight).max() ?? 0
+            maxSize = max(maxSize, comp.part.width, comp.part.depth, comp.part.height + bossMax)
+            maxHeight = max(maxHeight, comp.part.height)
         }
-        let model = result.params
-        let maxSize = max(model.width, model.depth, model.height + (model.bossFeatures.map(\.bossHeight).max() ?? 0), 20)
+        assemblyError = failure
+        let maxSizeFinal = maxSize
         let camera = SCNNode()
         camera.camera = SCNCamera()
         camera.camera?.fieldOfView = 38
         camera.camera?.zNear = 0.1
         camera.camera?.zFar = 10000
-        camera.position = SCNVector3(Float(maxSize * 1.55), Float(maxSize * 1.35), Float(maxSize * 1.55))
+        camera.position = SCNVector3(Float(maxSizeFinal * 1.55), Float(maxSizeFinal * 1.35), Float(maxSizeFinal * 1.55))
         let target = SCNNode()
-        target.position = SCNVector3(0, Float(model.height / 2), 0)
+        target.position = SCNVector3(0, Float(maxHeight / 2), 0)
         newScene.rootNode.addChildNode(target)
         camera.constraints = [SCNLookAtConstraint(target: target)]
         newScene.rootNode.addChildNode(camera)
@@ -515,7 +627,7 @@ struct True3DModelScreen: View {
         light.light?.type = .omni
         light.light?.intensity = 1100
         light.light?.temperature = 6500
-        light.position = SCNVector3(Float(maxSize * 1.2), Float(maxSize * 1.8), Float(maxSize * 1.2))
+        light.position = SCNVector3(Float(maxSizeFinal * 1.2), Float(maxSizeFinal * 1.8), Float(maxSizeFinal * 1.2))
         newScene.rootNode.addChildNode(light)
         let fill = SCNNode()
         fill.light = SCNLight()
@@ -1968,9 +2080,9 @@ struct True3DModelScreen: View {
         camera.camera?.fieldOfView = 38
         camera.camera?.zNear = 0.1
         camera.camera?.zFar = 10000
-        camera.position = SCNVector3(Float(maxSize * 1.55), Float(maxSize * 1.35), Float(maxSize * 1.55))
+        camera.position = SCNVector3(Float(maxSizeFinal * 1.55), Float(maxSizeFinal * 1.35), Float(maxSizeFinal * 1.55))
         let target = SCNNode()
-        target.position = SCNVector3(0, Float(model.height / 2), 0)
+        target.position = SCNVector3(0, Float(maxHeight / 2), 0)
         newScene.rootNode.addChildNode(target)
         camera.constraints = [SCNLookAtConstraint(target: target)]
         newScene.rootNode.addChildNode(camera)
@@ -1979,7 +2091,7 @@ struct True3DModelScreen: View {
         light.light?.type = .omni
         light.light?.intensity = 1100
         light.light?.temperature = 6500
-        light.position = SCNVector3(Float(maxSize * 1.2), Float(maxSize * 1.8), Float(maxSize * 1.2))
+        light.position = SCNVector3(Float(maxSizeFinal * 1.2), Float(maxSizeFinal * 1.8), Float(maxSizeFinal * 1.2))
         newScene.rootNode.addChildNode(light)
         let fill = SCNNode()
         fill.light = SCNLight()
@@ -2216,8 +2328,10 @@ private struct True3DSceneView: UIViewRepresentable {
 
     func updateUIView(_ uiView: SCNView, context: Context) {
         uiView.scene = scene
-        uiView.scene?.rootNode
-            .childNode(withName: "wireOverlay", recursively: true)?
-            .isHidden = !showWire
+        uiView.scene?.rootNode.enumerateChildNodes { node, _ in
+            if node.name == "wireOverlay" {
+                node.isHidden = !showWire
+            }
+        }
     }
 }
