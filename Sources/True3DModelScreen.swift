@@ -316,7 +316,7 @@ struct True3DModelScreen: View {
                 }
                 .buttonStyle(.bordered)
 
-                Text("草图 → 建模 → 工序 → 加工 · OCCT 8.0.1 B-Rep 内核")
+                Text("草图 → 建模 → 装配 → 工序 → 加工 · OCCT 8.0.1 B-Rep 内核")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
