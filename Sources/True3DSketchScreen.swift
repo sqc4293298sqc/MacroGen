@@ -1256,6 +1256,8 @@ struct True3DSketchScreen: View {
         }
         savedProfiles = bases + all
         points = []
+        constraints = []
+        constraintSelections = []
         closed = false
         dimensionW = 0
         dimensionH = 0
@@ -1270,6 +1272,8 @@ struct True3DSketchScreen: View {
         }
         savedProfiles.append(points)
         points = []
+        constraints = []
+        constraintSelections = []
         closed = false
         dimensionW = 0
         dimensionH = 0
@@ -1285,6 +1289,8 @@ struct True3DSketchScreen: View {
             let smoothed = smoothClosed(points, samples: 8)
             ensureCanvasContains(smoothed)
             points = smoothed
+            constraints = []
+            constraintSelections = []
         }
         closed = true
         error = nil
@@ -1326,6 +1332,12 @@ struct True3DSketchScreen: View {
         } else if !points.isEmpty {
             points.removeLast()
         }
+        constraints = constraints.compactMap { c in
+            let maxIndex = points.count - 1
+            guard c.a <= maxIndex, (c.b ?? 0) <= maxIndex else { return nil }
+            return c
+        }
+        constraintSelections = constraintSelections.filter { $0 <= points.count - 1 }
         error = nil
     }
 
@@ -1334,6 +1346,8 @@ struct True3DSketchScreen: View {
         previewPoints = []
         arcPoints = []
         closed = false
+        constraints = []
+        constraintSelections = []
         error = nil
     }
 
