@@ -127,7 +127,7 @@ struct True3DModelScreen: View {
     var body: some View {
         ZStack(alignment: .trailing) {
             VStack(spacing: 0) {
-                if stage != .model { stageBar }
+                if stage != .model && stage != .sketch { stageBar }
                 stageContent
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -143,7 +143,7 @@ struct True3DModelScreen: View {
         .background(Color(.systemBackground))
         .navigationTitle(params.projectName.isEmpty ? "真 3D 工作台" : params.projectName)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar(stage == .model ? .hidden : .visible, for: .navigationBar)
+        .toolbar(stage == .model || stage == .sketch ? .hidden : .visible, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 if stage == .model {
@@ -313,7 +313,8 @@ struct True3DModelScreen: View {
             onBaseChange: { w, d in
                 params.width = max(w, 1)
                 params.depth = max(d, 1)
-            }
+            },
+            onBack: { stage = .model }
         ) { output in
             applySketch(output)
             stage = .model

@@ -105,6 +105,7 @@ enum True3DSketchOperation: String, CaseIterable, Identifiable {
 struct True3DSketchScreen: View {
     var embedded: Bool = false
     var onBaseChange: ((Double, Double) -> Void)? = nil
+    var onBack: (() -> Void)? = nil
     let onCommit: (True3DSketchOutput) -> Void
 
     @State private var canvasWidth: Double
@@ -115,10 +116,12 @@ struct True3DSketchScreen: View {
         depth: Double,
         embedded: Bool = false,
         onBaseChange: ((Double, Double) -> Void)? = nil,
+        onBack: (() -> Void)? = nil,
         onCommit: @escaping (True3DSketchOutput) -> Void
     ) {
         self.embedded = embedded
         self.onBaseChange = onBaseChange
+        self.onBack = onBack
         self.onCommit = onCommit
         _canvasWidth = State(initialValue: max(width, 1))
         _canvasDepth = State(initialValue: max(depth, 1))
@@ -162,55 +165,190 @@ struct True3DSketchScreen: View {
     private var baseDepth: CGFloat { CGFloat(max(canvasDepth, 1)) }
 
     var body: some View {
-        ZStack(alignment: .trailing) {
-            VStack(spacing: 0) {
-                topBar
-                sketchCanvas
-                summaryBar
-                bottomBar
+        ZStack {
+            SwiftUI.Color(red: 0.95, green: 0.96, blue: 0.98).ignoresSafeArea()
+
+            sketchCanvas
+                .padding(.horizontal, 12)
+                .padding(.top, 118)
+                .padding(.bottom, 172)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+            VStack(spacing: 8) {
+                HStack(spacing: 8) {
+                    Button {
+                        if let onBack { onBack() } else { dismiss() }
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 42, height: 42)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+
+                    HStack(spacing: 8) {
+                        Text("草图")
+                            .font(.system(size: 17, weight: .semibold))
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 42)
+                    .background(.ultraThinMaterial, in: Capsule())
+
+                    Spacer(minLength: 4)
+
+                    Button {
+                        withAnimation(.easeOut(duration: 0.2)) { showToolDrawer.toggle() }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 16, weight: .semibold))
+                            .frame(width: 42, height: 42)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                HStack(spacing: 8) {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.2)) { showToolDrawer = true }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: tool.symbol)
+                            Text("工具 · \(tool.rawValue)")
+                            Image(systemName: "chevron.down").font(.system(size: 9))
+                        }
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(.ultraThinMaterial, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+
+                    Toggle(isOn: $snap) {
+                        Text("吸附").font(.system(size: 11, weight: .medium))
+                    }
+                    .toggleStyle(.switch)
+                    .fixedSize()
+                    Toggle(isOn: $showGrid) {
+                        Text("网格").font(.system(size: 11, weight: .medium))
+                    }
+                    .toggleStyle(.switch)
+                    .fixedSize()
+                    Text("格 \(String(format: "%.0f", gridStep))")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+
+                    Button {
+                        withAnimation(.easeOut(duration: 0.2)) { showToolDrawer = true }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "cube")
+                            Text("基础 \(fmt(canvasWidth))×\(fmt(canvasDepth))")
+                        }
+                        .font(.system(size: 10, weight: .semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 7)
+                        .background(.ultraThinMaterial, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    Spacer(minLength: 0)
+                }
             }
+            .padding(.horizontal, 12)
+            .padding(.top, 6)
+
+            HStack(alignment: .top, spacing: 0) {
+                sketchToolRail
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, 10)
+            .padding(.top, 130)
+            .padding(.bottom, 185)
+
+            VStack(spacing: 7) {
+                Spacer()
+                summaryBar
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal, 12)
+                bottomBar
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .padding(.horizontal, 12)
+            }
+            .padding(.bottom, 12)
+
             if showToolDrawer {
-                Color.black.opacity(0.20)
-                    .ignoresSafeArea()
+                Color.black.opacity(0.18).ignoresSafeArea()
                     .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { showToolDrawer = false } }
-                sketchDrawer
-                    .frame(width: 300)
-                    .transition(.move(edge: .trailing))
+                HStack {
+                    Spacer()
+                    sketchDrawer
+                        .frame(width: min(320, UIScreen.main.bounds.width * 0.84))
+                }
+                .padding(.trailing, 8)
+                .padding(.top, 110)
+                .padding(.bottom, 40)
+                .transition(.move(edge: .trailing))
             }
         }
-        .navigationTitle("草图")
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .navigationBar)
         .onChange(of: closed) { newValue in
             if newValue { syncDimensions() }
         }
-        .toolbar {
-            if !embedded {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("取消") { dismiss() }
+    }
+
+    private var sketchToolRail: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 2) {
+                ForEach(True3DSketchTool.allCases) { item in
+                    Button {
+                        tool = item
+                        previewPoints = []
+                        arcPoints = []
+                        error = nil
+                    } label: {
+                        VStack(spacing: 3) {
+                            Image(systemName: item.symbol)
+                                .font(.system(size: 15, weight: .medium))
+                            Text(item.rawValue)
+                                .font(.system(size: 9, weight: .medium))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(tool == item ? SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85) : SwiftUI.Color.primary.opacity(0.74))
+                        .frame(width: 52, height: 42)
+                        .background(
+                            tool == item
+                                ? SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85).opacity(0.12)
+                                : SwiftUI.Color.clear,
+                            in: RoundedRectangle(cornerRadius: 10)
+                        )
+                    }
+                    .buttonStyle(.plain)
                 }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    withAnimation(.easeOut(duration: 0.2)) { showToolDrawer.toggle() }
+                    withAnimation(.easeOut(duration: 0.2)) { showToolDrawer = true }
                 } label: {
-                    Image(systemName: "sidebar.right")
+                    VStack(spacing: 3) {
+                        Image(systemName: "plus.square")
+                            .font(.system(size: 15, weight: .medium))
+                        Text("更多")
+                            .font(.system(size: 9, weight: .medium))
+                    }
+                    .foregroundStyle(SwiftUI.Color.primary.opacity(0.74))
+                    .frame(width: 52, height: 42)
                 }
+                .buttonStyle(.plain)
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button("撤销上一点") { undo() }
-                    Button("清空草图") { clear() }
-                    Divider()
-                    Button("闭合轮廓") { closeProfile() }
-                    Divider()
-                    Button("旋转 90°") { rotateSketch() }
-                    Button("水平镜像") { mirrorSketch(horizontal: true) }
-                    Button("垂直镜像") { mirrorSketch(horizontal: false) }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-            }
+            .padding(.vertical, 5)
+            .padding(.horizontal, 4)
         }
+        .frame(width: 60)
+        .frame(maxHeight: 470)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private var sketchDrawer: some View {
