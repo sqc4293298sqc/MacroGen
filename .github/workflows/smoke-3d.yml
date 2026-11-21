@@ -21,7 +21,7 @@ jobs:
           xcodebuild test \
             -project MacroGen.xcodeproj \
             -scheme MacroGen-3DSmoke \
-            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -destination 'platform=iOS Simulator,OS=26.2,name=iPhone 17' \
             -derivedDataPath build-smoke \
             CODE_SIGNING_ALLOWED=NO | tee smoke.log
       - name: Upload smoke log
