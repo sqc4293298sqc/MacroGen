@@ -4648,10 +4648,56 @@ struct True3DSceneView: UIViewRepresentable {
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var onPickEdge: ((SCNView, CGPoint, CGSize) -> Void)?
+        private var panStartPosition: SCNVector3?
+        private var panStartTarget: SCNVector3?
+        private var panStartDistance: Float = 0
+        private var panStartYaw: Double = 0
+        private var panStartPitch: Double = 0
 
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
             guard let view = gesture.view as? SCNView else { return }
             onPickEdge?(view, gesture.location(in: view), view.bounds.size)
+        }
+
+        @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
+            guard let view = gesture.view as? SCNView,
+                  let scene = view.scene,
+                  let camera = scene.rootNode.childNode(withName: "workbenchCamera", recursively: true),
+                  let target = scene.rootNode.childNode(withName: "cameraTarget", recursively: true) else { return }
+            if gesture.state == .began {
+                panStartPosition = camera.position
+                panStartTarget = target.position
+                let dx = camera.position.x - target.position.x
+                let dy = camera.position.y - target.position.y
+                let dz = camera.position.z - target.position.z
+                panStartDistance = max((dx * dx + dy * dy + dz * dz).squareRoot(), 0.001)
+                panStartYaw = Double(atan2(dx, dz))
+                panStartPitch = Double(asin(max(-1, min(1, dy / panStartDistance))))
+            }
+            guard gesture.state == .changed || gesture.state == .ended,
+                  panStartPosition != nil else { return }
+            let translation = gesture.translation(in: view)
+            let yaw = panStartYaw - Double(translation.x) * 0.009
+            let pitch = max(-1.552, min(1.552, panStartPitch + Double(translation.y) * 0.008))
+            let direction = SCNVector3(
+                Float(sin(yaw) * cos(pitch)),
+                Float(sin(pitch)),
+                Float(cos(yaw) * cos(pitch))
+            )
+            let length = max((direction.x * direction.x + direction.y * direction.y + direction.z * direction.z).squareRoot(), 0.001)
+            let targetPosition = panStartTarget ?? target.position
+            let newPosition = SCNVector3(
+                targetPosition.x + direction.x / length * panStartDistance,
+                targetPosition.y + direction.y / length * panStartDistance,
+                targetPosition.z + direction.z / length * panStartDistance
+            )
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = 0
+            camera.position = newPosition
+            SCNTransaction.commit()
+            if gesture.state == .ended {
+                panStartPosition = nil
+            }
         }
 
         func gestureRecognizer(
@@ -4674,7 +4720,7 @@ struct True3DSceneView: UIViewRepresentable {
         }
         view.backgroundColor = UIColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1)
         view.autoenablesDefaultLighting = false
-        view.allowsCameraControl = allowsCameraControl
+        view.allowsCameraControl = false
         view.antialiasingMode = .multisampling4X
         view.preferredFramesPerSecond = 60
         view.isPlaying = true
@@ -4684,12 +4730,19 @@ struct True3DSceneView: UIViewRepresentable {
         tap.cancelsTouchesInView = false
         tap.delegate = context.coordinator
         view.addGestureRecognizer(tap)
+        if allowsCameraControl {
+            let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePan(_:)))
+            pan.maximumNumberOfTouches = 1
+            pan.delegate = context.coordinator
+            view.addGestureRecognizer(pan)
+        }
         context.coordinator.onPickEdge = onPickEdge
         return view
     }
 
     func updateUIView(_ uiView: SCNView, context: Context) {
         uiView.scene = scene
+        uiView.allowsCameraControl = false
         if let camera = scene.rootNode.childNode(withName: "workbenchCamera", recursively: true) {
             uiView.pointOfView = camera
         }
