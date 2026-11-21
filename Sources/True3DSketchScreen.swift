@@ -50,6 +50,10 @@ enum True3DSketchConstraintKind: String, CaseIterable, Identifiable {
     case vertical = "垂直"
     case distance = "距离"
     case fixed = "固定"
+    case parallel = "平行"
+    case perpendicular = "垂直段"
+    case equalLength = "等长"
+    case angle = "角度"
 
     var id: String { rawValue }
 }
@@ -59,6 +63,8 @@ struct True3DSketchConstraint: Identifiable {
     var kind: True3DSketchConstraintKind
     var a: Int
     var b: Int?
+    var c: Int? = nil
+    var d: Int? = nil
     var value: Double = 0
     var anchorX: Double = 0
     var anchorY: Double = 0
@@ -69,6 +75,10 @@ struct True3DSketchConstraint: Identifiable {
         case .vertical: return "垂直 P\(a + 1)-P\((b ?? a) + 1)"
         case .distance: return "距离 P\(a + 1)-P\((b ?? a) + 1) = \(String(format: "%.1f", value))"
         case .fixed: return "固定 P\(a + 1)"
+        case .parallel: return "平行 P\(a + 1)-P\((b ?? a) + 1) ∥ P\((c ?? a) + 1)-P\((d ?? a) + 1)"
+        case .perpendicular: return "垂直段 P\(a + 1)-P\((b ?? a) + 1) ⊥ P\((c ?? a) + 1)-P\((d ?? a) + 1)"
+        case .equalLength: return "等长 P\(a + 1)-P\((b ?? a) + 1) = P\((c ?? a) + 1)-P\((d ?? a) + 1)"
+        case .angle: return "角度 P\(c ?? a) 段 = \(String(format: "%.1f", value))°"
         }
     }
 }
@@ -138,6 +148,7 @@ struct True3DSketchScreen: View {
     @State private var constraints: [True3DSketchConstraint] = []
     @State private var constraintSelections: [Int] = []
     @State private var constraintDistance: Double = 20
+    @State private var constraintAngle: Double = 90
 
     private var baseWidth: CGFloat { CGFloat(max(canvasWidth, 1)) }
     private var baseDepth: CGFloat { CGFloat(max(canvasDepth, 1)) }
@@ -276,20 +287,33 @@ struct True3DSketchScreen: View {
                 Text("切到“约束”工具点选控制点；已选 \(constraintSelections.count) 个，自由度 \(constraintDOF)")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     Button("水平") { addConstraint(.horizontal) }.buttonStyle(.bordered)
                     Button("垂直") { addConstraint(.vertical) }.buttonStyle(.bordered)
                     Button("固定") { addConstraint(.fixed) }.buttonStyle(.bordered)
                 }
-                .font(.system(size: 11))
+                .font(.system(size: 10))
                 .disabled(constraintSelections.isEmpty)
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
+                    Button("平行") { addConstraint(.parallel) }.buttonStyle(.bordered)
+                    Button("垂直段") { addConstraint(.perpendicular) }.buttonStyle(.bordered)
+                    Button("等长") { addConstraint(.equalLength) }.buttonStyle(.bordered)
+                }
+                .font(.system(size: 10))
+                .disabled(constraintSelections.count < 4)
+                HStack(spacing: 5) {
                     TextField("距离", value: $constraintDistance, format: .number.precision(.fractionLength(1)))
                         .keyboardType(.decimalPad).multilineTextAlignment(.trailing)
-                        .frame(width: 64).textFieldStyle(.roundedBorder)
-                    Button("距离约束") { addConstraint(.distance) }
-                        .font(.system(size: 11)).buttonStyle(.bordered)
+                        .frame(width: 58).textFieldStyle(.roundedBorder)
+                    Button("距离") { addConstraint(.distance) }
+                        .font(.system(size: 10)).buttonStyle(.bordered)
                         .disabled(constraintSelections.count < 2)
+                    TextField("角度°", value: $constraintAngle, format: .number.precision(.fractionLength(1)))
+                        .keyboardType(.decimalPad).multilineTextAlignment(.trailing)
+                        .frame(width: 54).textFieldStyle(.roundedBorder)
+                    Button("角度") { addConstraint(.angle) }
+                        .font(.system(size: 10)).buttonStyle(.bordered)
+                        .disabled(constraintSelections.count < 4)
                 }
                 Button("求解全部约束") { solveConstraints() }
                     .font(.system(size: 11, weight: .semibold))
@@ -877,7 +901,7 @@ struct True3DSketchScreen: View {
         if let existing = constraintSelections.firstIndex(of: index) {
             constraintSelections.remove(at: existing)
         } else {
-            if constraintSelections.count >= 2 { constraintSelections.removeFirst() }
+            if constraintSelections.count >= 4 { constraintSelections.removeFirst() }
             constraintSelections.append(index)
         }
         error = nil
@@ -888,14 +912,25 @@ struct True3DSketchScreen: View {
             error = "先画轮廓再添加约束"
             return
         }
-        let needed = kind == .fixed ? 1 : 2
+        let needed: Int
+        switch kind {
+        case .fixed: needed = 1
+        case .parallel, .perpendicular, .equalLength, .angle: needed = 4
+        case .horizontal, .vertical, .distance: needed = 2
+        }
         guard constraintSelections.count >= needed else {
             error = "\(kind.rawValue)约束需要先选 \(needed) 个控制点"
             return
         }
         let a = constraintSelections[0]
-        let b = needed == 2 ? constraintSelections[1] : nil
-        guard a >= 0, a < points.count, (b ?? 0) < points.count else {
+        let b = needed > 1 ? constraintSelections[1] : nil
+        let c = needed == 4 ? constraintSelections[2] : nil
+        let d = needed == 4 ? constraintSelections[3] : nil
+        let maxIndex = points.count - 1
+        guard a >= 0, a <= maxIndex,
+              (b ?? 0) <= maxIndex,
+              (c ?? 0) <= maxIndex,
+              (d ?? 0) <= maxIndex else {
             constraintSelections = []
             return
         }
@@ -903,9 +938,13 @@ struct True3DSketchScreen: View {
             error = "距离必须大于 0.01 mm"
             return
         }
+        if kind == .angle, constraintAngle <= 0.01 || constraintAngle >= 180 {
+            error = "角度必须在 0°～180° 之间"
+            return
+        }
         constraints.append(True3DSketchConstraint(
-            kind: kind, a: a, b: b,
-            value: kind == .distance ? constraintDistance : 0,
+            kind: kind, a: a, b: b, c: c, d: d,
+            value: kind == .distance ? constraintDistance : (kind == .angle ? constraintAngle : 0),
             anchorX: points[a].x, anchorY: points[a].y
         ))
         constraintSelections = []
@@ -946,6 +985,56 @@ struct True3DSketchScreen: View {
                         } else {
                             p[b].x = p[c.a].x + c.value
                         }
+                    }
+                case .parallel, .perpendicular, .equalLength, .angle:
+                    guard let b = c.b, let cIdx = c.c, let d = c.d,
+                          b >= 0, b < p.count, cIdx >= 0, cIdx < p.count, d >= 0, d < p.count else { continue }
+                    let ax = p[b].x - p[c.a].x, ay = p[b].y - p[c.a].y
+                    let cx = p[d].x - p[cIdx].x, cy = p[d].y - p[cIdx].y
+                    let len1 = hypot(ax, ay), len2 = hypot(cx, cy)
+                    guard len1 > 1e-8, len2 > 1e-8 else { continue }
+                    let ux1 = ax / len1, uy1 = ay / len1
+                    let ux2 = cx / len2, uy2 = cy / len2
+                    if c.kind == .equalLength {
+                        let avg = (len1 + len2) / 2
+                        let m1x = (p[c.a].x + p[b].x) / 2
+                        let m1y = (p[c.a].y + p[b].y) / 2
+                        p[c.a].x = m1x - ux1 * avg / 2; p[c.a].y = m1y - uy1 * avg / 2
+                        p[b].x = m1x + ux1 * avg / 2; p[b].y = m1y + uy1 * avg / 2
+                        let m2x = (p[cIdx].x + p[d].x) / 2
+                        let m2y = (p[cIdx].y + p[d].y) / 2
+                        p[cIdx].x = m2x - ux2 * avg / 2; p[cIdx].y = m2y - uy2 * avg / 2
+                        p[d].x = m2x + ux2 * avg / 2; p[d].y = m2y + uy2 * avg / 2
+                    } else {
+                        let dirX: Double
+                        let dirY: Double
+                        switch c.kind {
+                        case .parallel:
+                            let sign: Double = (ux1 * ux2 + uy1 * uy2) >= 0 ? 1 : -1
+                            dirX = ux1 * sign; dirY = uy1 * sign
+                        case .perpendicular:
+                            let cand1 = (-uy1, ux1)
+                            let cand2 = (uy1, -ux1)
+                            let dot1 = cand1.0 * ux2 + cand1.1 * uy2
+                            let dot2 = cand2.0 * ux2 + cand2.1 * uy2
+                            if dot1 >= dot2 { dirX = cand1.0; dirY = cand1.1 }
+                            else { dirX = cand2.0; dirY = cand2.1 }
+                        case .angle:
+                            let rad = min(max(c.value, 0.1), 179.9) * .pi / 180
+                            let ca = cos(rad), sa = sin(rad)
+                            var candX = ux1 * ca - uy1 * sa
+                            var candY = ux1 * sa + uy1 * ca
+                            let dot = candX * ux2 + candY * uy2
+                            if dot < 0 {
+                                candX = ux1 * ca + uy1 * sa
+                                candY = -ux1 * sa + uy1 * ca
+                            }
+                            dirX = candX; dirY = candY
+                        default:
+                            dirX = ux1; dirY = uy1
+                        }
+                        p[d].x = p[cIdx].x + dirX * len2
+                        p[d].y = p[cIdx].y + dirY * len2
                     }
                 case .fixed:
                     p[c.a].x = c.anchorX
