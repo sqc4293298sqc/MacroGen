@@ -39,6 +39,19 @@ private enum True3DImportMode {
     case dxf
 }
 
+private enum True3DPickMode {
+    case edge
+    case face
+}
+
+private struct True3DFaceSelection {
+    var faceIndex: Int
+    var point: SIMD3<Double>
+    var normal: SIMD3<Double>
+    var sizeX: Double
+    var sizeY: Double
+}
+
 /// 真 3D 工作台：草图 → 建模 → 工序 → 加工 一条线完成。
 struct True3DAssemblyComponent: Identifiable, Equatable {
     var id = UUID()
@@ -61,6 +74,11 @@ struct True3DModelScreen: View {
     @State private var importedPart: True3DImportedPart?
     @State private var modelOperations: [True3DHistoryOperation] = []
     @State private var selectedEdge: True3DEdgeRef?
+    @State private var selectedFace: True3DFaceSelection?
+    @State private var pickMode: True3DPickMode = .edge
+    @State private var pendingFaceExtrude = false
+    @State private var draftFeature: True3DFeatureSpec?
+    @State private var showFeatureDrawer = false
     @State private var filletRadius: Double = 2
     @State private var filletPreview: True3DPreview?
     @State private var filletPreviewRadius: Double?
@@ -433,14 +451,13 @@ struct True3DModelScreen: View {
             .padding(.top, 215)
             .padding(.bottom, 90)
 
-            if selectedEdge != nil {
-                HStack {
-                    digit3DFilletCard
+            if showFeatureDrawer, let draft = draftFeature {
+                VStack {
                     Spacer(minLength: 0)
+                    featureDrawer(draft)
+                        .transition(.move(edge: .bottom))
                 }
-                .padding(.leading, 14)
-                .padding(.top, 126)
-                .frame(maxHeight: .infinity, alignment: .top)
+                .zIndex(20)
             }
 
             VStack {
@@ -535,13 +552,16 @@ struct True3DModelScreen: View {
     }
 
     private var bottomHint: String {
+        if let face = selectedFace {
+            return "已选面 #\(face.faceIndex) · 点左侧命令设置参数"
+        }
         if let edge = selectedEdge {
-            return "已选边 #\(edge.edgeIndex) · 可设圆角"
+            return "已选边 #\(edge.edgeIndex) · 点左侧圆角/倒角设置参数"
         }
-        if importedPart != nil {
-            return "选择边 · 可多选"
+        if pendingFaceExtrude {
+            return "先轻点一个朝上的面，再设置拉伸参数"
         }
-        return "轻点模型边线 · 选择后可圆角"
+        return pickMode == .edge ? "轻点边线选择，点左侧命令打开参数框" : "轻点面选择，点左侧命令打开参数框"
     }
 
     private var digit3DTopBar: some View {
@@ -607,13 +627,47 @@ struct True3DModelScreen: View {
     }
 
     private var digit3DSelectionBar: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 5) {
-                Image(systemName: "line.diagonal").font(.system(size: 12, weight: .semibold))
-                Text("选择单条边").font(.system(size: 13, weight: .semibold))
+        HStack(spacing: 6) {
+            Button {
+                pickMode = .edge
+                notice = "选择模式：边"
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "line.diagonal").font(.system(size: 11, weight: .semibold))
+                    Text("边").font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(pickMode == .edge ? SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85) : SwiftUI.Color.secondary)
+                .padding(.horizontal, 8)
+                .frame(height: 28)
+                .background(pickMode == .edge ? SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85).opacity(0.12) : SwiftUI.Color.clear, in: Capsule())
             }
-            .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
-            .padding(.horizontal, 8)
+            .buttonStyle(.plain)
+
+            Button {
+                pickMode = .face
+                notice = "选择模式：面"
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "square.dashed").font(.system(size: 11, weight: .semibold))
+                    Text("面").font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(pickMode == .face ? SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85) : SwiftUI.Color.secondary)
+                .padding(.horizontal, 8)
+                .frame(height: 28)
+                .background(pickMode == .face ? SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85).opacity(0.12) : SwiftUI.Color.clear, in: Capsule())
+            }
+            .buttonStyle(.plain)
+
+            if let face = selectedFace {
+                Text("面 #\(face.faceIndex) · Z \(fmt(face.point.z))")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else {
+                Text(pickMode == .edge ? "轻点边线" : "轻点面")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
             Spacer(minLength: 2)
             Button {
                 withAnimation(.easeOut(duration: 0.2)) { showToolbox.toggle() }
@@ -649,8 +703,8 @@ struct True3DModelScreen: View {
             VStack(spacing: 2) {
                 railItem("pencil", "草图", highlighted: false) { stage = .sketch }
                 railItem("eye", "基准面", highlighted: showDatumPlane) { toggleDatumPlane() }
-                railItem("arrow.up.to.line", "拉伸") { runRailFeature(.boss) }
-                railItem("arrow.triangle.2.circlepath", "旋转体") { runRailFeature(.revolveBoss) }
+                railItem("arrow.up.to.line", "拉伸", highlighted: pendingFaceExtrude) { beginFaceExtrude() }
+                railItem("arrow.triangle.2.circlepath", "旋转体") { openFeatureDrawer(.revolveBoss) }
                 railItem("arrow.triangle.2.circlepath.circle", "同步") {
                     notice = "正在同步草图与实体…"
                     rebuild()
@@ -660,9 +714,9 @@ struct True3DModelScreen: View {
                     notice = "曲面着色显示：已关闭线框"
                 }
                 railItem("line.diagonal", "圆角", highlighted: selectedEdge != nil) {
-                    if selectedEdge == nil { notice = "先在模型上轻点一条边" }
+                    openEdgeDrawer(chamfer: false)
                 }
-                railItem("square.dashed", "抽壳") { runRailFeature(.shell) }
+                railItem("square.dashed", "抽壳") { openFeatureDrawer(.shell) }
                 railItem("scribble", "3D曲线") { stage = .sketch }
                 railItem("plus.square", "更多") {
                     withAnimation(.easeOut(duration: 0.2)) { showToolbox = true }
@@ -732,93 +786,223 @@ struct True3DModelScreen: View {
     }
 
     private var viewCube: some View {
-        GeometryReader { geo in
-            ZStack {
-                Canvas { context, size in
-                    let w = size.width
-                    let h = size.height
-                    let top = Path { path in
-                        path.move(to: CGPoint(x: w * 0.5, y: 0))
-                        path.addLine(to: CGPoint(x: w, y: h * 0.28))
-                        path.addLine(to: CGPoint(x: w * 0.5, y: h * 0.56))
-                        path.addLine(to: CGPoint(x: 0, y: h * 0.28))
-                        path.closeSubpath()
-                    }
-                    let front = Path { path in
-                        path.move(to: CGPoint(x: 0, y: h * 0.28))
-                        path.addLine(to: CGPoint(x: w * 0.5, y: h * 0.56))
-                        path.addLine(to: CGPoint(x: w * 0.5, y: h * 0.98))
-                        path.addLine(to: CGPoint(x: 0, y: h * 0.70))
-                        path.closeSubpath()
-                    }
-                    let right = Path { path in
-                        path.move(to: CGPoint(x: w * 0.5, y: h * 0.56))
-                        path.addLine(to: CGPoint(x: w, y: h * 0.28))
-                        path.addLine(to: CGPoint(x: w, y: h * 0.70))
-                        path.addLine(to: CGPoint(x: w * 0.5, y: h * 0.98))
-                        path.closeSubpath()
-                    }
-                    context.fill(top, with: .color(SwiftUI.Color.white.opacity(0.97)))
-                    context.fill(front, with: .color(SwiftUI.Color.white.opacity(0.80)))
-                    context.fill(right, with: .color(SwiftUI.Color.white.opacity(0.91)))
-                    for path in [top, front, right] {
-                        context.stroke(path, with: .color(SwiftUI.Color.black.opacity(0.16)), lineWidth: 1)
-                    }
+        ZStack {
+            Canvas { context, size in
+                let w = size.width
+                let h = size.height
+                let top = Path { path in
+                    path.move(to: CGPoint(x: w * 0.5, y: 0))
+                    path.addLine(to: CGPoint(x: w, y: h * 0.28))
+                    path.addLine(to: CGPoint(x: w * 0.5, y: h * 0.56))
+                    path.addLine(to: CGPoint(x: 0, y: h * 0.28))
+                    path.closeSubpath()
                 }
-
-                Text("顶")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(SwiftUI.Color.black.opacity(0.62))
-                    .position(x: geo.size.width * 0.5, y: geo.size.height * 0.30)
-                    .allowsHitTesting(false)
-                Text("前")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(SwiftUI.Color.black.opacity(0.55))
-                    .position(x: geo.size.width * 0.25, y: geo.size.height * 0.66)
-                    .allowsHitTesting(false)
-                Text("右")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(SwiftUI.Color.black.opacity(0.55))
-                    .position(x: geo.size.width * 0.75, y: geo.size.height * 0.66)
-                    .allowsHitTesting(false)
+                let front = Path { path in
+                    path.move(to: CGPoint(x: 0, y: h * 0.28))
+                    path.addLine(to: CGPoint(x: w * 0.5, y: h * 0.56))
+                    path.addLine(to: CGPoint(x: w * 0.5, y: h * 0.98))
+                    path.addLine(to: CGPoint(x: 0, y: h * 0.70))
+                    path.closeSubpath()
+                }
+                let right = Path { path in
+                    path.move(to: CGPoint(x: w * 0.5, y: h * 0.56))
+                    path.addLine(to: CGPoint(x: w, y: h * 0.28))
+                    path.addLine(to: CGPoint(x: w, y: h * 0.70))
+                    path.addLine(to: CGPoint(x: w * 0.5, y: h * 0.98))
+                    path.closeSubpath()
+                }
+                context.fill(top, with: .color(SwiftUI.Color.white.opacity(0.97)))
+                context.fill(front, with: .color(SwiftUI.Color.white.opacity(0.80)))
+                context.fill(right, with: .color(SwiftUI.Color.white.opacity(0.91)))
+                for path in [top, front, right] {
+                    context.stroke(path, with: .color(SwiftUI.Color.black.opacity(0.16)), lineWidth: 1)
+                }
             }
-            .background(
-                Ellipse()
-                    .fill(SwiftUI.Color.black.opacity(0.06))
-                    .frame(width: geo.size.width * 0.74, height: geo.size.height * 0.18)
-                    .offset(y: geo.size.height * 0.48)
-            )
-            .contentShape(Rectangle())
-            .highPriorityGesture(
-                DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                    .onChanged { value in
-                        if !cubeDragActive {
-                            cubeDragActive = true
-                            cubeDragStartYaw = orbitYaw
-                            cubeDragStartPitch = orbitPitch
-                        }
-                        orbitYaw = cubeDragStartYaw + Double(value.translation.width) * 0.8
-                        orbitPitch = min(85, max(-85, cubeDragStartPitch - Double(value.translation.height) * 0.5))
-                        applyOrbit()
-                        notice = "自由视角"
-                    }
-                    .onEnded { value in
-                        let moved = hypot(value.translation.width, value.translation.height)
-                        if moved < 6 {
-                            if value.location.y < geo.size.height * 0.58 {
-                                setViewOrientation(.top)
-                            } else if value.location.x < geo.size.width * 0.5 {
-                                setViewOrientation(.front)
-                            } else {
-                                setViewOrientation(.right)
-                            }
-                        }
-                        cubeDragActive = false
-                    }
-            )
+            .allowsHitTesting(false)
+
+            cubeFaceButton("顶", x: 48, y: 24, width: 74, height: 34) {
+                setViewOrientation(.top)
+            }
+            cubeFaceButton("前", x: 24, y: 72, width: 44, height: 42) {
+                setViewOrientation(.front)
+            }
+            cubeFaceButton("右", x: 74, y: 72, width: 44, height: 42) {
+                setViewOrientation(.right)
+            }
         }
         .frame(width: 96, height: 100)
+        .background(
+            Ellipse()
+                .fill(SwiftUI.Color.black.opacity(0.06))
+                .frame(width: 70, height: 18)
+                .offset(y: 48)
+        )
         .shadow(color: SwiftUI.Color.black.opacity(0.10), radius: 8, y: 4)
+    }
+
+    private func cubeFaceButton(_ title: String, x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(SwiftUI.Color.black.opacity(0.62))
+                .frame(width: width, height: height)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .position(x: x, y: y)
+    }
+
+    private func featureDrawer(_ draft: True3DFeatureSpec) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: icon(for: draft.kind))
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(featureDrawerTitle)
+                        .font(.system(size: 17, weight: .bold))
+                    Text(draft.kind.rawValue)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { closeFeatureDrawer() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 30, height: 30)
+                        .background(SwiftUI.Color.black.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 14)
+            .padding(.bottom, 8)
+
+            Divider().opacity(0.4)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if draft.kind == .edgeFillet || draft.kind == .edgeChamfer {
+                        edgeDrawerFields(draft)
+                    } else {
+                        if supportsCoordinates(draft.kind) {
+                            coordinateEditor(featureDraftBinding)
+                        }
+                        featureEditor(featureDraftBinding, showPosition: false)
+                    }
+                }
+                .padding(14)
+            }
+            .frame(maxHeight: 360)
+
+            Divider().opacity(0.4)
+            HStack(spacing: 10) {
+                Button {
+                    closeFeatureDrawer()
+                } label: {
+                    Text("取消").font(.system(size: 13, weight: .semibold))
+                        .frame(maxWidth: .infinity).frame(height: 42)
+                        .background(SwiftUI.Color.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    commitFeatureDrawer()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark")
+                        Text("确定添加")
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity).frame(height: 42)
+                    .background(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85), in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+                .disabled(isBuilding || importBusy || ((draft.kind == .edgeFillet || draft.kind == .edgeChamfer) && selectedEdge == nil))
+            }
+            .padding(14)
+        }
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(SwiftUI.Color.white.opacity(0.5), lineWidth: 0.5))
+        .padding(.horizontal, 10)
+        .padding(.bottom, 8)
+    }
+
+    @ViewBuilder
+    private func edgeDrawerFields(_ draft: True3DFeatureSpec) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("边选择").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+            if let edge = selectedEdge {
+                HStack {
+                    Image(systemName: "line.diagonal")
+                    Text("边 #\(edge.edgeIndex) · \(fmt(edge.length)) mm")
+                    Spacer()
+                    Button("重选") {
+                        selectedEdge = nil
+                        pickMode = .edge
+                        notice = "轻点一条边"
+                    }
+                    .font(.system(size: 11, weight: .semibold))
+                }
+                .font(.system(size: 12))
+                .padding(10)
+                .background(SwiftUI.Color.white.opacity(0.42), in: RoundedRectangle(cornerRadius: 9))
+            } else {
+                Button {
+                    pickMode = .edge
+                    notice = "轻点一条边"
+                } label: {
+                    Label("在三维模型上选择一条边", systemImage: "line.diagonal")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(maxWidth: .infinity).frame(height: 38)
+                        .background(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85).opacity(0.10), in: RoundedRectangle(cornerRadius: 9))
+                }
+                .buttonStyle(.plain)
+            }
+            HStack {
+                Text(draft.kind == .edgeChamfer ? "倒角距离 C" : "圆角半径 R")
+                    .font(.system(size: 12))
+                Spacer()
+                TextField("0", value: draftFeatureBinding.depth, format: .number.precision(.fractionLength(2)))
+                    .keyboardType(.decimalPad)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 88)
+                    .textFieldStyle(.roundedBorder)
+                Text("mm").font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            Text(draft.kind == .edgeChamfer ? "倒角方式：等距离" : "连续性：G1，等半径")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+    }
+
+    private func supportsCoordinates(_ kind: True3DFeatureKind) -> Bool {
+        switch kind {
+        case .hole, .boss, .rectBoss, .coneBoss, .loftBoss, .circularPocket, .rectPocket, .slot, .profileBoss, .profileCut:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func coordinateEditor(_ f: Binding<True3DFeatureSpec>) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("位置坐标")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+            numRow("位置 X", f.x)
+            numRow("位置 Y", f.y)
+            numRow("位置 Z", Binding(
+                get: { f.wrappedValue.topZ ?? params.height },
+                set: { f.wrappedValue.topZ = $0 }
+            ))
+            if f.wrappedValue.topZ != nil {
+                Button("恢复默认顶面 Z") { f.wrappedValue.topZ = nil }
+                    .font(.system(size: 10))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
+            }
+        }
     }
 
     private var digit3DFilletCard: some View {
@@ -1047,8 +1231,12 @@ struct True3DModelScreen: View {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                 ForEach(Array(toolboxItems.enumerated()), id: \.offset) { _, item in
                     Button {
-                        runRailFeature(item.kind)
                         withAnimation(.easeOut(duration: 0.2)) { showToolbox = false }
+                        if item.kind == .edgeFillet || item.kind == .edgeChamfer {
+                            openEdgeDrawer(chamfer: item.kind == .edgeChamfer)
+                        } else {
+                            openFeatureDrawer(item.kind)
+                        }
                     } label: {
                         HStack(spacing: 7) {
                             Image(systemName: icon(for: item.kind))
@@ -1686,7 +1874,74 @@ struct True3DModelScreen: View {
         fill.light?.intensity = 350
         fill.light?.color = UIColor(red: 0.72, green: 0.80, blue: 0.90, alpha: 1)
         newScene.rootNode.addChildNode(fill)
+        addAxisGizmo(to: modelRoot, size: maxSize)
         return newScene
+    }
+
+    private func addAxisGizmo(to parent: SCNNode, size: Double) {
+        let length = Float(min(max(size * 0.36, 12), 42))
+        let group = SCNNode()
+        group.name = "axisGizmo"
+        group.position = SCNVector3(-Float(size * 0.60), -Float(size * 0.60), 0)
+
+        func shaft(_ color: UIColor, _ position: SCNVector3, _ euler: SCNVector3) {
+            let box = SCNBox(width: CGFloat(length), height: 0.5, length: 0.5, chamferRadius: 0)
+            let material = SCNMaterial()
+            material.lightingModel = .constant
+            material.diffuse.contents = color
+            box.materials = [material]
+            let node = SCNNode(geometry: box)
+            node.position = position
+            node.eulerAngles = euler
+            group.addChildNode(node)
+        }
+
+        func head(_ color: UIColor, _ position: SCNVector3, _ euler: SCNVector3) {
+            let cone = SCNCone(topRadius: 0, bottomRadius: 1.8, height: 5)
+            let material = SCNMaterial()
+            material.lightingModel = .constant
+            material.diffuse.contents = color
+            cone.materials = [material]
+            let node = SCNNode(geometry: cone)
+            node.position = position
+            node.eulerAngles = euler
+            group.addChildNode(node)
+        }
+
+        func label(_ text: String, _ color: UIColor, _ position: SCNVector3) {
+            let textGeometry = SCNText(string: text, extrusionDepth: 0.1)
+            textGeometry.font = UIFont.systemFont(ofSize: 1.4, weight: .bold)
+            textGeometry.flatness = 0.1
+            let material = SCNMaterial()
+            material.lightingModel = .constant
+            material.diffuse.contents = color
+            textGeometry.materials = [material]
+            let node = SCNNode(geometry: textGeometry)
+            node.position = position
+            node.scale = SCNVector3(1.7, 1.7, 1.7)
+            let billboard = SCNBillboardConstraint()
+            billboard.freeAxes = .all
+            node.constraints = [billboard]
+            group.addChildNode(node)
+        }
+
+        let xColor = UIColor.systemRed
+        let yColor = UIColor.systemGreen
+        let zColor = UIColor.systemBlue
+
+        shaft(xColor, SCNVector3(length / 2, 0, 0), SCNVector3(0, 0, 0))
+        head(xColor, SCNVector3(length, 0, 0), SCNVector3(0, 0, -.pi / 2))
+        label("X", xColor, SCNVector3(length + 5, -1, 0))
+
+        shaft(yColor, SCNVector3(0, length / 2, 0), SCNVector3(0, 0, .pi / 2))
+        head(yColor, SCNVector3(0, length, 0), SCNVector3(0, 0, 0))
+        label("Y", yColor, SCNVector3(-1, length + 5, 0))
+
+        shaft(zColor, SCNVector3(0, 0, length / 2), SCNVector3(.pi / 2, 0, 0))
+        head(zColor, SCNVector3(0, 0, length), SCNVector3(.pi / 2, 0, 0))
+        label("Z", zColor, SCNVector3(-1, -1, length + 5))
+
+        parent.addChildNode(group)
     }
 
     private var operationStage: some View {
@@ -2732,7 +2987,7 @@ struct True3DModelScreen: View {
     }
 
     @ViewBuilder
-    private func featureEditor(_ f: Binding<True3DFeatureSpec>) -> some View {
+    private func featureEditor(_ f: Binding<True3DFeatureSpec>, showPosition: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             TextField("特征名称", text: f.name)
                 .textFieldStyle(.roundedBorder)
@@ -2740,8 +2995,10 @@ struct True3DModelScreen: View {
             switch f.wrappedValue.kind {
             case .hole:
                 numRow("直径 Ø", f.dia)
-                numRow("中心 X", f.x)
-                numRow("中心 Y", f.y)
+                if showPosition {
+                    numRow("中心 X", f.x)
+                    numRow("中心 Y", f.y)
+                }
                 Picker("孔类型", selection: f.holeKind) {
                     ForEach(True3DHoleKind.allCases) { kind in
                         Text(kind.rawValue).tag(kind)
@@ -2762,21 +3019,27 @@ struct True3DModelScreen: View {
             case .boss:
                 numRow("直径 Ø", f.dia)
                 numRow("高度 H", f.bossHeight)
-                numRow("中心 X", f.x)
-                numRow("中心 Y", f.y)
+                if showPosition {
+                    numRow("中心 X", f.x)
+                    numRow("中心 Y", f.y)
+                }
             case .rectBoss:
                 numRow("X 长", f.width)
                 numRow("Y 宽", f.depthY)
                 numRow("高度 H", f.bossHeight)
                 numRow("圆角 R", f.cornerRadius)
-                numRow("中心 X", f.x)
-                numRow("中心 Y", f.y)
+                if showPosition {
+                    numRow("中心 X", f.x)
+                    numRow("中心 Y", f.y)
+                }
             case .coneBoss:
                 numRow("底直径", f.dia)
                 numRow("顶直径", f.topDia)
                 numRow("高度 H", f.bossHeight)
-                numRow("中心 X", f.x)
-                numRow("中心 Y", f.y)
+                if showPosition {
+                    numRow("中心 X", f.x)
+                    numRow("中心 Y", f.y)
+                }
             case .loftBoss:
                 Picker("底截面", selection: f.loftBottomShape) {
                     ForEach(True3DLoftShape.allCases) { shape in
@@ -2803,8 +3066,10 @@ struct True3DModelScreen: View {
                     numRow("顶 Y", f.topDepthY)
                 }
                 numRow("高度 H", f.bossHeight)
-                numRow("中心 X", f.x)
-                numRow("中心 Y", f.y)
+                if showPosition {
+                    numRow("中心 X", f.x)
+                    numRow("中心 Y", f.y)
+                }
             case .sweepBoss:
                 Picker("路径", selection: f.sweepPathKind) {
                     ForEach(True3DSweepPath.allCases) { item in
@@ -2883,21 +3148,27 @@ struct True3DModelScreen: View {
             case .circularPocket:
                 numRow("直径 Ø", f.dia)
                 numRow("深度", f.depth)
-                numRow("中心 X", f.x)
-                numRow("中心 Y", f.y)
+                if showPosition {
+                    numRow("中心 X", f.x)
+                    numRow("中心 Y", f.y)
+                }
             case .rectPocket:
                 numRow("X 长", f.width)
                 numRow("Y 宽", f.depthY)
                 numRow("深度", f.depth)
                 numRow("圆角 R", f.cornerRadius)
-                numRow("中心 X", f.x)
-                numRow("中心 Y", f.y)
+                if showPosition {
+                    numRow("中心 X", f.x)
+                    numRow("中心 Y", f.y)
+                }
             case .slot:
                 numRow("总长", f.width)
                 numRow("槽宽", f.depthY)
                 numRow("深度", f.depth)
-                numRow("中心 X", f.x)
-                numRow("中心 Y", f.y)
+                if showPosition {
+                    numRow("中心 X", f.x)
+                    numRow("中心 Y", f.y)
+                }
             case .profileBoss:
                 Text("草图轮廓：\(f.wrappedValue.profile.count) 个点")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
@@ -2907,7 +3178,7 @@ struct True3DModelScreen: View {
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                 numRow("切除深度", f.depth)
             }
-            topZEditor(f)
+            if showPosition { topZEditor(f) }
         }
         .padding(10)
         .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
@@ -2994,11 +3265,151 @@ struct True3DModelScreen: View {
     }
 
     private func runRailFeature(_ kind: True3DFeatureKind) {
+        openFeatureDrawer(kind)
+    }
+
+    private func makeDraftFeature(_ kind: True3DFeatureKind) -> True3DFeatureSpec {
+        var f = True3DFeatureSpec(kind: kind)
+        switch kind {
+        case .hole:
+            f.name = "新孔"; f.x = -params.width * 0.25; f.y = 0; f.dia = 10
+        case .boss:
+            f.name = "新凸台"; f.x = params.width * 0.25; f.y = 0; f.dia = 20; f.bossHeight = 6
+        case .rectBoss:
+            f.name = "新矩形凸台"; f.x = params.width * 0.25; f.y = 0
+            f.width = min(30, params.width * 0.5); f.depthY = min(20, params.depth * 0.5)
+            f.bossHeight = 6
+        case .coneBoss:
+            f.name = "锥形凸台"; f.x = params.width * 0.25; f.y = 0
+            f.dia = 24; f.topDia = 12; f.bossHeight = 8
+        case .loftBoss:
+            f.name = "放样凸台"; f.x = 0; f.y = 0; f.bossHeight = 10
+        case .sweepBoss:
+            f.name = "扫掠凸台"; f.x = 0; f.y = 0
+            f.dia = 8; f.sweepPathKind = .helix
+            f.sweepPathRadius = 25; f.sweepPitch = 12; f.sweepTurns = 2; f.sweepLength = 60
+        case .revolveBoss:
+            f = True3DFeatureSpec(kind: .revolveBoss)
+            f.name = "旋转凸台"
+        case .revolveCut:
+            f = True3DFeatureSpec(kind: .revolveCut)
+            f.name = "旋转切除"
+        case .circularPocket:
+            f.name = "新圆腔"; f.x = -params.width * 0.25; f.y = 0; f.dia = 20; f.depth = 5
+        case .rectPocket:
+            f.name = "新方腔"; f.x = params.width * 0.25; f.y = 0; f.width = 24; f.depthY = 18; f.depth = 5
+        case .slot:
+            f.name = "新腰形槽"; f.x = 0; f.y = -params.depth * 0.25; f.width = 40; f.depthY = 12; f.depth = 5
+        case .edgeFillet:
+            f.name = "边圆角"; f.depth = max(filletRadius, 0.2)
+        case .edgeChamfer:
+            f.name = "边倒角"; f.depth = max(filletRadius, 0.2)
+        case .draft:
+            f.name = "拔模"; f.angle = 3
+        case .shell:
+            f.name = "抽壳"; f.depth = min(2, min(params.width, params.depth, params.height) / 4)
+        case .profileBoss:
+            f.name = "草图凸台"; f.bossHeight = 5
+        case .profileCut:
+            f.name = "草图切除"; f.depth = 5
+        }
+        return f
+    }
+
+    private func openFeatureDrawer(_ kind: True3DFeatureKind) {
         guard importedPart == nil else {
-            notice = "STEP 模型只能做圆角/倒角；请先“退出 STEP”再用参数化特征"
+            error = "STEP 模型只能做边圆角/倒角；请先退出 STEP 再用参数化特征"
             return
         }
-        addFeature(kind)
+        pickMode = .edge
+        pendingFaceExtrude = false
+        draftFeature = makeDraftFeature(kind)
+        showFeatureDrawer = true
+        error = nil
+        notice = nil
+    }
+
+    private func beginFaceExtrude() {
+        guard importedPart == nil else {
+            error = "STEP 模型暂不支持面拉伸"
+            return
+        }
+        closeFeatureDrawer()
+        pickMode = .face
+        pendingFaceExtrude = true
+        selectedFace = nil
+        scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
+        notice = "拉伸：先选择一个朝上的平面"
+    }
+
+    private func openEdgeDrawer(chamfer: Bool) {
+        guard importedPart == nil else {
+            error = "STEP 模型请使用边的圆角/倒角"
+            return
+        }
+        var f = True3DFeatureSpec(kind: chamfer ? .edgeChamfer : .edgeFillet)
+        f.name = chamfer ? "边倒角" : "边圆角"
+        f.depth = max(filletRadius, 0.2)
+        draftFeature = f
+        pickMode = .edge
+        pendingFaceExtrude = false
+        showFeatureDrawer = true
+        error = nil
+        notice = nil
+    }
+
+    private func closeFeatureDrawer() {
+        showFeatureDrawer = false
+        draftFeature = nil
+        pendingFaceExtrude = false
+    }
+
+    private var featureDraftBinding: Binding<True3DFeatureSpec> {
+        Binding(
+            get: { draftFeature ?? True3DFeatureSpec() },
+            set: { draftFeature = $0 }
+        )
+    }
+
+    private var featureDrawerTitle: String {
+        guard let draft = draftFeature else { return "参数" }
+        switch draft.kind {
+        case .rectBoss where draft.name == "拉伸凸台": return "拉伸参数"
+        case .edgeFillet: return "圆角参数"
+        case .edgeChamfer: return "倒角参数"
+        default: return draft.name.isEmpty ? draft.kind.rawValue : draft.name
+        }
+    }
+
+    private func commitFeatureDrawer() {
+        guard var draft = draftFeature else { return }
+        if draft.kind == .edgeFillet || draft.kind == .edgeChamfer {
+            guard let edge = selectedEdge else {
+                error = "请先在三维模型上选择一条边"
+                return
+            }
+            if draft.kind == .edgeFillet {
+                modelOperations.append(True3DHistoryOperation(kind: .fillet(edge: edge, radius: max(draft.depth, 0.1))))
+            } else {
+                modelOperations.append(True3DHistoryOperation(kind: .chamfer(edge: edge, distance: max(draft.depth, 0.1))))
+            }
+            selectedEdge = nil
+            scene.rootNode.childNode(withName: "selectedEdge", recursively: true)?.removeFromParentNode()
+            closeFeatureDrawer()
+            notice = draft.kind == .edgeFillet ? "已添加边圆角" : "已添加边倒角"
+            rebuild()
+            return
+        }
+        if draft.kind == .revolveBoss {
+            draft.bossHeight = max(draft.bossHeight, 0.1)
+        }
+        draft.name = draft.name.isEmpty ? draft.kind.rawValue : draft.name
+        params.features.append(draft)
+        selectedFeatureID = draft.id
+        pendingFeatureID = draft.id
+        closeFeatureDrawer()
+        notice = "已添加 \(draft.name)，正在重建"
+        rebuild()
     }
 
     private func addFeature(_ kind: True3DFeatureKind) {
@@ -3436,8 +3847,19 @@ struct True3DModelScreen: View {
         let direction = SIMD3<Double>(delta.x / length, delta.y / length, delta.z / length)
 
         guard let hit = result.shape.raycastNearest(origin: origin, direction: direction) else {
-            clearEdgeSelection()
-            notice = "没点到实体；轻点模型边线再试"
+            if pickMode == .face {
+                selectedFace = nil
+                scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
+                notice = "没点到实体；轻点模型表面再试"
+            } else {
+                clearEdgeSelection()
+                notice = "没点到实体；轻点模型边线再试"
+            }
+            return
+        }
+
+        if pickMode == .face {
+            selectFace(hit)
             return
         }
 
@@ -3487,11 +3909,77 @@ struct True3DModelScreen: View {
 
         let reference = True3DEdgeRef.make(edge: edge, in: result.shape)
         selectedEdge = reference
+        selectedFace = nil
+        scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
         selectedFeatureID = nil
         error = nil
         notice = nil
-        message = "已选中边 #\(reference.edgeIndex)，可设圆角/倒角"
+        message = "已选中边 #\(reference.edgeIndex)，点圆角/倒角设置参数"
         highlightSelectedEdge(modelRoot: modelRoot, edge: edge)
+    }
+
+    private func selectFace(_ hit: OCCTSwift.RayHit) {
+        guard let result else { return }
+        let face = result.shape.face(at: hit.faceIndex)
+        let bounds = face?.bounds
+        let sizeX = bounds.map { $0.max.x - $0.min.x } ?? 20
+        let sizeY = bounds.map { $0.max.y - $0.min.y } ?? 20
+        selectedFace = True3DFaceSelection(
+            faceIndex: hit.faceIndex,
+            point: hit.point,
+            normal: hit.normal,
+            sizeX: max(sizeX, 1),
+            sizeY: max(sizeY, 1)
+        )
+
+        scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
+        if let modelRoot = scene.rootNode.childNode(withName: "modelRoot", recursively: false) {
+            let marker = SCNNode()
+            marker.name = "selectedFace"
+            marker.position = SCNVector3(Float(hit.point.x), Float(hit.point.y), Float(hit.point.z) + 0.15)
+            if hit.normal.z > 0.5 {
+                let plane = SCNPlane(width: CGFloat(min(sizeX * 0.94, 80)), height: CGFloat(min(sizeY * 0.94, 80)))
+                let material = SCNMaterial()
+                material.lightingModel = .constant
+                material.diffuse.contents = UIColor(red: 0.12, green: 0.46, blue: 0.95, alpha: 1)
+                material.transparency = 0.22
+                material.isDoubleSided = true
+                material.writesToDepthBuffer = false
+                plane.materials = [material]
+                marker.geometry = plane
+                marker.renderingOrder = 20
+            } else {
+                let sphere = SCNSphere(radius: 1.8)
+                let material = SCNMaterial()
+                material.lightingModel = .constant
+                material.diffuse.contents = UIColor(red: 0.12, green: 0.46, blue: 0.95, alpha: 1)
+                sphere.materials = [material]
+                marker.geometry = sphere
+            }
+            modelRoot.addChildNode(marker)
+        }
+
+        if pendingFaceExtrude {
+            guard hit.normal.z > 0.5 else {
+                error = "拉伸只支持朝上的平面；请重新选择顶面"
+                return
+            }
+            var draft = True3DFeatureSpec(kind: .rectBoss)
+            draft.name = "拉伸凸台"
+            draft.x = hit.point.x
+            draft.y = hit.point.y
+            draft.topZ = hit.point.z
+            draft.width = min(max(sizeX * 0.6, 8), 80)
+            draft.depthY = min(max(sizeY * 0.6, 8), 80)
+            draft.bossHeight = 5
+            draftFeature = draft
+            showFeatureDrawer = true
+            pendingFaceExtrude = false
+            pickMode = .face
+            notice = "已选择面 #\(hit.faceIndex)，可设置拉伸尺寸与 XYZ"
+        } else {
+            notice = "已选择面 #\(hit.faceIndex) · Z \(fmt(hit.point.z))"
+        }
     }
 
     private func highlightSelectedEdge(modelRoot: SCNNode, edge: OCCTSwift.Edge) {
@@ -4180,6 +4668,9 @@ struct True3DSceneView: UIViewRepresentable {
     func makeUIView(context: Context) -> SCNView {
         let view = SCNView()
         view.scene = scene
+        if let camera = scene.rootNode.childNode(withName: "workbenchCamera", recursively: true) {
+            view.pointOfView = camera
+        }
         view.backgroundColor = UIColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1)
         view.autoenablesDefaultLighting = false
         view.allowsCameraControl = allowsCameraControl
@@ -4198,6 +4689,9 @@ struct True3DSceneView: UIViewRepresentable {
 
     func updateUIView(_ uiView: SCNView, context: Context) {
         uiView.scene = scene
+        if let camera = scene.rootNode.childNode(withName: "workbenchCamera", recursively: true) {
+            uiView.pointOfView = camera
+        }
         context.coordinator.onPickEdge = onPickEdge
         uiView.scene?.rootNode.enumerateChildNodes { node, _ in
             if node.name == "wireOverlay" {

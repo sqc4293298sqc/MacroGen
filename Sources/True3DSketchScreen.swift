@@ -240,7 +240,7 @@ struct True3DSketchScreen: View {
             sketchCanvas
                 .padding(.horizontal, 12)
                 .padding(.top, 116)
-                .padding(.bottom, 206)
+                .padding(.bottom, 92)
 
             if points.isEmpty {
                 Text("从下方选一个绘制工具开始画图")
@@ -256,16 +256,25 @@ struct True3DSketchScreen: View {
             .padding(.horizontal, 12)
             .padding(.top, 6)
 
+            HStack(alignment: .top, spacing: 0) {
+                sketchLeftRail
+                Spacer(minLength: 0)
+                sketchRightRail
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 118)
+            .padding(.bottom, 88)
+
             VStack(spacing: 7) {
                 Spacer()
+                if selectedEntity {
+                    sketchContextBar
+                }
                 Text(bottomHint)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(darkCanvas ? .white.opacity(0.65) : .black.opacity(0.68))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 4)
-
-                sketchModePanel
-                sketchTabBar
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 6)
@@ -326,6 +335,79 @@ struct True3DSketchScreen: View {
             finishCard
                 .padding(18)
                 .presentationDetents([.height(300)])
+        }
+    }
+
+    private var sketchLeftRail: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 2) {
+                sketchSideButton("选择", icon: "cursorarrow", active: isSelectMode) {
+                    isSelectMode = true
+                    isLineMode = false
+                    tool = .editPoint
+                    selectedEntity = !points.isEmpty
+                }
+                sketchSideButton("直线", icon: "line.diagonal", active: isLineMode) {
+                    isLineMode = true
+                    isSelectMode = false
+                    selectedEntity = false
+                    tool = .polyline
+                }
+                ForEach([True3DSketchTool.polyline, .rectangle, .circle, .arc, .polygon, .spline], id: \.id) { item in
+                    sketchSideButton(item.rawValue, icon: item.symbol, active: !isSelectMode && !isLineMode && tool == item) {
+                        tool = item
+                        isSelectMode = false
+                        isLineMode = false
+                        selectedEntity = false
+                    }
+                }
+            }
+            .padding(.vertical, 5)
+            .padding(.horizontal, 4)
+        }
+        .frame(width: 60)
+        .frame(maxHeight: 380)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var sketchRightRail: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 2) {
+                ForEach(True3DSketchTab.allCases) { tab in
+                    sketchSideButton(tab.rawValue, icon: tab.icon, active: sketchTab == tab) {
+                        selectSketchTab(tab)
+                    }
+                }
+            }
+            .padding(.vertical, 5)
+            .padding(.horizontal, 4)
+        }
+        .frame(width: 60)
+        .frame(maxHeight: 300)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func sketchSideButton(_ title: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: icon).font(.system(size: 15, weight: .medium))
+                Text(title).font(.system(size: 9, weight: .medium)).lineLimit(1)
+            }
+            .foregroundStyle(active ? SwiftUI.Color(red: 0.12, green: 0.44, blue: 0.92) : (darkCanvas ? .white.opacity(0.72) : .black.opacity(0.66)))
+            .frame(width: 50, height: 40)
+            .background(active ? SwiftUI.Color(red: 0.12, green: 0.44, blue: 0.92).opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func selectSketchTab(_ tab: True3DSketchTab) {
+        sketchTab = tab
+        switch tab {
+        case .annotate: showAnnotationEditor = true
+        case .layers: showLayerPanel = true
+        case .constraints: showToolDrawer = true
+        case .dimensions: beginDimensionEdit()
+        default: break
         }
     }
 
