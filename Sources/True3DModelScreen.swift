@@ -386,18 +386,18 @@ struct True3DModelScreen: View {
     }
 
     @ViewBuilder
-    private var stageContent: some View {
+    private var stageContent: AnyView {
         switch stage {
         case .sketch:
-            sketchStage
+            return AnyView(sketchStage)
         case .model:
-            digit3DModelingStage
+            return AnyView(digit3DModelingStage)
         case .assembly:
-            assemblyStage
+            return AnyView(assemblyStage)
         case .operation:
-            operationStage
+            return AnyView(operationStage)
         case .machine:
-            machineStage
+            return AnyView(machineStage)
         }
     }
 
@@ -428,8 +428,8 @@ struct True3DModelScreen: View {
     }
 
 
-    private var digit3DModelingStage: some View {
-        ZStack {
+    private var digit3DModelingStage: AnyView {
+        AnyView(ZStack {
             True3DSceneView(scene: scene, showWire: showWire, onPickEdge: { view, point, size in
                 pickEdge(in: view, at: point, viewSize: size)
             })
@@ -544,7 +544,7 @@ struct True3DModelScreen: View {
             if filletPreview != nil || isPreviewingFillet {
                 clearFilletPreview(restoreScene: true)
             }
-        }
+        })
     }
 
     private var workbenchTitle: String {
