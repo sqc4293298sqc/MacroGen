@@ -436,17 +436,17 @@ struct True3DModelScreen: View {
             .ignoresSafeArea()
 
             VStack(spacing: 8) {
-                digit3DTopBar
-                digit3DSelectionBar
+                AnyView(digit3DTopBar)
+                AnyView(digit3DSelectionBar)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 12)
             .padding(.top, 6)
 
             HStack(alignment: .top, spacing: 0) {
-                digit3DLeftRail
+                AnyView(digit3DLeftRail)
                 Spacer(minLength: 0)
-                digit3DRightRail
+                AnyView(digit3DRightRail)
             }
             .padding(.horizontal, 10)
             .padding(.top, 215)
@@ -455,7 +455,7 @@ struct True3DModelScreen: View {
             if showFeatureDrawer, let draft = draftFeature {
                 VStack {
                     Spacer(minLength: 0)
-                    featureDrawer(draft)
+                    AnyView(featureDrawer(draft))
                         .transition(.move(edge: .bottom))
                 }
                 .zIndex(20)
@@ -472,7 +472,7 @@ struct True3DModelScreen: View {
             VStack {
                 HStack {
                     Spacer()
-                    viewCube
+                    AnyView(viewCube)
                 }
                 .padding(.trailing, 14)
                 .padding(.top, 112)
@@ -484,7 +484,7 @@ struct True3DModelScreen: View {
                     .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { showTreePanel = false } }
                 HStack {
                     Spacer()
-                    digit3DTreePanel
+                    AnyView(digit3DTreePanel)
                 }
                 .padding(.trailing, 10)
                 .padding(.top, 132)
@@ -496,7 +496,7 @@ struct True3DModelScreen: View {
                 Color.black.opacity(0.10).ignoresSafeArea()
                     .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { showToolbox = false } }
                 HStack {
-                    digit3DToolbox
+                    AnyView(digit3DToolbox)
                     Spacer()
                 }
                 .padding(.leading, 10)
