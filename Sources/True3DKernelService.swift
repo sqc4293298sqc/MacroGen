@@ -92,6 +92,39 @@ actor True3DKernelService {
         )
     }
 
+    /// 倒角预览。与圆角同一套单边链路，距离对称。
+    func previewChamfer(
+        on shape: Shape,
+        edge: Edge,
+        distance: Double
+    ) async throws -> True3DPreview {
+        try Task.checkCancellation()
+        guard distance > 0 else {
+            throw True3DModelError.invalidParameter("倒角距离必须大于 0")
+        }
+        guard let builder = ChamferBuilder(shape: shape) else {
+            throw True3DModelError.previewFailed("无法创建倒角构建器")
+        }
+        guard builder.addEdge(edge, distance: distance), builder.contour(for: edge) > 0 else {
+            throw True3DModelError.previewFailed("这条边不能加 C\(fmt(distance)) 倒角")
+        }
+        guard let result = builder.build(), result.isValid else {
+            throw True3DModelError.previewFailed(
+                "C\(fmt(distance)) 倒角失败：距离可能超过实体允许范围"
+            )
+        }
+        try Task.checkCancellation()
+        guard let mesh = result.mesh(linearDeflection: 0.18, angularDeflection: 0.35) else {
+            throw True3DModelError.previewFailed("倒角预览三角化失败")
+        }
+        try Task.checkCancellation()
+        return True3DPreview(
+            shape: result,
+            mesh: mesh,
+            stats: True3DStats.measure(shape: result, mesh: mesh)
+        )
+    }
+
     private func fmt(_ value: Double) -> String {
         String(format: "%.2f", value).replacingOccurrences(of: ".00", with: "")
     }

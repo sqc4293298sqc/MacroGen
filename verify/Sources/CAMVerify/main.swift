@@ -128,6 +128,15 @@ do {
     }
     print("PASS history: nodes=\(filleted.nodes.count) faces=\(filleted.stats.faces)")
 
+    var chamferDocument = document
+    chamferDocument.append(True3DHistoryOperation(kind: .chamfer(edge: ref, distance: 2)))
+    let chamfered = try chamferDocument.build()
+    guard chamfered.stats.valid, chamfered.nodes.count == 2,
+          chamfered.nodes[1].kind == .chamfer else {
+        fail("history: chamfer did not produce a valid node")
+    }
+    print("PASS history-chamfer: nodes=\(chamfered.nodes.count) faces=\(chamfered.stats.faces)")
+
     let suppressedOperation = True3DHistoryOperation(
         kind: .fillet(edge: ref, radius: 3),
         suppressed: true

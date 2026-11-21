@@ -26,6 +26,13 @@ enum True3DWorkbenchStage: String, CaseIterable, Identifiable {
     }
 }
 
+private enum True3DViewOrientation {
+    case iso
+    case top
+    case front
+    case right
+}
+
 private enum True3DImportMode {
     case step
     case dxf
@@ -56,6 +63,8 @@ struct True3DModelScreen: View {
     @State private var filletRadius: Double = 2
     @State private var filletPreview: True3DPreview?
     @State private var filletPreviewRadius: Double?
+    @State private var edgeFeatureIsChamfer = false
+    @State private var viewOrientation: True3DViewOrientation = .iso
     @State private var isPreviewingFillet = false
     @State private var filletPreviewTask: Task<Void, Never>?
     @State private var filletPreviewGeneration = 0
@@ -141,7 +150,7 @@ struct True3DModelScreen: View {
             }
         }
         .background(Color(.systemBackground))
-        .navigationTitle(params.projectName.isEmpty ? "真 3D 工作台" : params.projectName)
+        .navigationTitle(params.projectName.isEmpty ? "3D绘图建模" : params.projectName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(stage == .model || stage == .sketch ? .hidden : .visible, for: .navigationBar)
         .toolbar {
@@ -521,30 +530,15 @@ struct True3DModelScreen: View {
 
     private var digit3DSelectionBar: some View {
         HStack(spacing: 8) {
-            selectionBarIcon("eye")
-            selectionBarIcon("cube")
-            selectionBarIcon("rectangle.3.group")
-            selectionBarIcon("pencil.tip")
-            selectionBarIcon("line.diagonal")
-            Rectangle().fill(SwiftUI.Color.black.opacity(0.12)).frame(width: 1, height: 20)
-            Menu {
-                Button("单条边") { edgeFilterLabel = "单条边" }
-                Button("相切边") { edgeFilterLabel = "相切边"; notice = "相切边选择将在下一版接入" }
-                Button("所有边") { edgeFilterLabel = "所有边"; notice = "所有边选择将在下一版接入" }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "line.diagonal").font(.system(size: 12, weight: .semibold))
-                    Text(edgeFilterLabel).font(.system(size: 13, weight: .semibold))
-                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
-                }
-                .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
-                .padding(.horizontal, 8)
+            HStack(spacing: 5) {
+                Image(systemName: "line.diagonal").font(.system(size: 12, weight: .semibold))
+                Text("选择单条边").font(.system(size: 13, weight: .semibold))
             }
-            .buttonStyle(.plain)
+            .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
+            .padding(.horizontal, 8)
             Spacer(minLength: 2)
-            selectionBarIcon("funnel")
             Button {
-                showToolbox.toggle()
+                withAnimation(.easeOut(duration: 0.2)) { showToolbox.toggle() }
             } label: {
                 Image(systemName: "cube.fill")
                     .font(.system(size: 13, weight: .semibold))
@@ -570,13 +564,6 @@ struct True3DModelScreen: View {
                 .background(.ultraThinMaterial, in: Circle())
         }
         .buttonStyle(.plain)
-    }
-
-    private func selectionBarIcon(_ icon: String) -> some View {
-        Image(systemName: icon)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(SwiftUI.Color.primary.opacity(0.72))
-            .frame(width: 26, height: 26)
     }
 
     private var digit3DLeftRail: some View {
@@ -613,7 +600,7 @@ struct True3DModelScreen: View {
                 }
                 railItem("eye", "显示", highlighted: showWire) { showWire.toggle() }
                 railItem("arrow.counterclockwise", "视图复位") {
-                    if let result { scene = makeScene(result: result) }
+                    setViewOrientation(.iso)
                 }
             }
             .padding(.vertical, 5)
@@ -652,36 +639,57 @@ struct True3DModelScreen: View {
 
     private var viewCube: some View {
         VStack(spacing: 2) {
-            Text("顶")
-                .font(.system(size: 11, weight: .semibold))
-                .frame(width: 40, height: 26)
-                .background(SwiftUI.Color.white.opacity(0.92), in: RoundedRectangle(cornerRadius: 5))
+            Button { setViewOrientation(.top) } label: {
+                Text("顶")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 40, height: 26)
+                    .background(SwiftUI.Color.white.opacity(0.92), in: RoundedRectangle(cornerRadius: 5))
+            }
+            .buttonStyle(.plain)
             HStack(spacing: 2) {
-                Text("前")
-                    .font(.system(size: 10, weight: .medium))
-                    .frame(width: 24, height: 21)
-                    .background(SwiftUI.Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 4))
-                Text("右")
-                    .font(.system(size: 10, weight: .medium))
-                    .frame(width: 24, height: 21)
-                    .background(SwiftUI.Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 4))
+                Button { setViewOrientation(.front) } label: {
+                    Text("前")
+                        .font(.system(size: 10, weight: .medium))
+                        .frame(width: 24, height: 21)
+                        .background(SwiftUI.Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 4))
+                }
+                .buttonStyle(.plain)
+                Button { setViewOrientation(.right) } label: {
+                    Text("右")
+                        .font(.system(size: 10, weight: .medium))
+                        .frame(width: 24, height: 21)
+                        .background(SwiftUI.Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 4))
+                }
+                .buttonStyle(.plain)
             }
         }
         .padding(5)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 9))
         .shadow(color: SwiftUI.Color.black.opacity(0.08), radius: 5, y: 2)
-        .onTapGesture { notice = "视图方向切换将在下一版接入" }
     }
 
     private var digit3DFilletCard: some View {
         VStack(spacing: 6) {
             filletCardRow("类型") {
-                HStack(spacing: 5) {
-                    Image(systemName: "line.diagonal")
-                    Text("圆角")
-                    Image(systemName: "chevron.down").font(.system(size: 8))
+                Menu {
+                    Button("圆角") {
+                        edgeFeatureIsChamfer = false
+                        filletRadius = 2
+                        clearFilletPreview(restoreScene: true)
+                    }
+                    Button("倒角") {
+                        edgeFeatureIsChamfer = true
+                        filletRadius = 1
+                        clearFilletPreview(restoreScene: true)
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: edgeFeatureIsChamfer ? "square.dashed" : "line.diagonal")
+                        Text(edgeFeatureIsChamfer ? "倒角" : "圆角")
+                        Image(systemName: "chevron.down").font(.system(size: 8))
+                    }
+                    .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
                 }
-                .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
             }
             filletCardRow("连续性") {
                 HStack(spacing: 5) {
@@ -693,13 +701,13 @@ struct True3DModelScreen: View {
             filletCardRow("方法") {
                 HStack(spacing: 5) {
                     Image(systemName: "line.diagonal")
-                    Text("等半径")
+                    Text(edgeFeatureIsChamfer ? "等距离" : "等半径")
                     Image(systemName: "chevron.down").font(.system(size: 8))
                 }
                 .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
             }
             HStack(spacing: 8) {
-                Text("半径")
+                Text(edgeFeatureIsChamfer ? "距离" : "半径")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -758,7 +766,7 @@ struct True3DModelScreen: View {
                 .buttonStyle(.plain)
 
                 Button {
-                    filletRadius = 2
+                    filletRadius = edgeFeatureIsChamfer ? 1 : 2
                     clearFilletPreview(restoreScene: true)
                 } label: {
                     Image(systemName: "arrow.counterclockwise")
@@ -1520,6 +1528,7 @@ struct True3DModelScreen: View {
 
         let maxSizeFinal = maxSize
         let camera = SCNNode()
+        camera.name = "workbenchCamera"
         camera.camera = SCNCamera()
         camera.camera?.fieldOfView = 38
         camera.camera?.zNear = 0.1
@@ -3134,7 +3143,7 @@ struct True3DModelScreen: View {
             return
         }
         guard filletRadius > 0 else {
-            error = "圆角半径必须大于 0"
+            error = edgeFeatureIsChamfer ? "倒角距离必须大于 0" : "圆角半径必须大于 0"
             return
         }
         guard let edge = result.shape.edge(at: edgeRef.edgeIndex) else {
@@ -3153,17 +3162,28 @@ struct True3DModelScreen: View {
         let shape = result.shape
         filletPreviewTask = Task { @MainActor in
             do {
-                let preview = try await self.kernelService.previewFillet(
-                    on: shape,
-                    edge: edge,
-                    radius: radius
-                )
+                let preview: True3DPreview
+                if self.edgeFeatureIsChamfer {
+                    preview = try await self.kernelService.previewChamfer(
+                        on: shape,
+                        edge: edge,
+                        distance: radius
+                    )
+                } else {
+                    preview = try await self.kernelService.previewFillet(
+                        on: shape,
+                        edge: edge,
+                        radius: radius
+                    )
+                }
                 guard !Task.isCancelled, generation == self.filletPreviewGeneration else { return }
                 self.filletPreview = preview
                 self.filletPreviewRadius = radius
                 self.scene = self.makePreviewScene(preview)
                 self.isPreviewingFillet = false
-                self.message = "圆角预览 R\(String(format: "%.2f", radius))"
+                self.message = self.edgeFeatureIsChamfer
+                    ? "倒角预览 C\(String(format: "%.2f", radius))"
+                    : "圆角预览 R\(String(format: "%.2f", radius))"
             } catch is CancellationError {
                 guard generation == self.filletPreviewGeneration else { return }
                 self.isPreviewingFillet = false
@@ -3185,9 +3205,15 @@ struct True3DModelScreen: View {
               !isBuilding else {
             return
         }
-        modelOperations.append(
-            True3DHistoryOperation(kind: .fillet(edge: edge, radius: filletRadius))
-        )
+        if edgeFeatureIsChamfer {
+            modelOperations.append(
+                True3DHistoryOperation(kind: .chamfer(edge: edge, distance: filletRadius))
+            )
+        } else {
+            modelOperations.append(
+                True3DHistoryOperation(kind: .fillet(edge: edge, radius: filletRadius))
+            )
+        }
         selectedEdge = nil
         selectedFeatureID = nil
         error = nil
@@ -3335,6 +3361,36 @@ struct True3DModelScreen: View {
         selectedEdge = nil
         notice = nil
         scene.rootNode.childNode(withName: "selectedEdge", recursively: true)?.removeFromParentNode()
+    }
+
+    private func setViewOrientation(_ orientation: True3DViewOrientation) {
+        viewOrientation = orientation
+        let scene = self.scene
+        guard let camera = scene.rootNode.childNode(withName: "workbenchCamera", recursively: true),
+              let target = scene.rootNode.childNode(withName: "cameraTarget", recursively: true) else {
+            return
+        }
+        let dx = camera.position.x - target.position.x
+        let dy = camera.position.y - target.position.y
+        let dz = camera.position.z - target.position.z
+        let distance = max((dx * dx + dy * dy + dz * dz).squareRoot(), 1)
+        let direction: SCNVector3
+        switch orientation {
+        case .iso:
+            direction = SCNVector3(0.78, 0.62, 0.78)
+        case .top:
+            direction = SCNVector3(0, 1, 0.02)
+        case .front:
+            direction = SCNVector3(0, 0.18, 1)
+        case .right:
+            direction = SCNVector3(1, 0.18, 0)
+        }
+        let length = max((direction.x * direction.x + direction.y * direction.y + direction.z * direction.z).squareRoot(), 0.001)
+        camera.position = SCNVector3(
+            target.position.x + direction.x / length * distance,
+            target.position.y + direction.y / length * distance,
+            target.position.z + direction.z / length * distance
+        )
     }
 
     private func makeScene(result: True3DResult) -> SCNScene {

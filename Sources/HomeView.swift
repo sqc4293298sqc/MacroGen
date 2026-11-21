@@ -45,7 +45,7 @@ struct HomeView: View {
                     NavigationLink {
                         True3DModelScreen()
                     } label: {
-                        Tile(title: "3D工作台", icon: "cube.transparent.2",
+                        Tile(title: "3D绘图建模", icon: "cube.transparent.2",
                              tint: Color(red: 0.10, green: 0.55, blue: 0.50))
                     }
                     .buttonStyle(.plain)

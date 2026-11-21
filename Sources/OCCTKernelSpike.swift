@@ -47,7 +47,7 @@ struct OCCTKernelSpikeScreen: View {
                     }
                 }
 
-                Text("这是 OCCT 真 B-Rep 验证页；正式建模和 3D 刀路入口已经接到“真3D建模”。")
+                Text("这是 OCCT 真 B-Rep 验证页；正式建模和 3D 刀路入口已经接到“3D绘图建模”。")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
