@@ -3161,6 +3161,8 @@ struct True3DModelScreen: View {
         var message = ""
         switch output {
         case .base(let points):
+            sketchProfile = points
+            sketchClosed = points.count >= 3
             let xs = points.map(\.x)
             let ys = points.map(\.y)
             params.baseShape = .profile
@@ -3173,10 +3175,16 @@ struct True3DModelScreen: View {
             }
             message = "已用草图轮廓替换基础形状；Z 高在建模页设置"
         case .feature(let feature):
+            sketchProfile = feature.profile
+            sketchClosed = feature.profile.count >= 3
             params.features.append(feature)
             selectedFeatureID = feature.id
             message = "已添加 \(feature.name)，正在重建实体"
         case .features(let features):
+            if let largest = features.max(by: { profileArea($0.profile) < profileArea($1.profile) }) {
+                sketchProfile = largest.profile
+                sketchClosed = largest.profile.count >= 3
+            }
             var additions = features
             if let outer = features.max(by: { profileArea($0.profile) < profileArea($1.profile) }),
                !features.contains(where: { $0.kind == .profileCut }) {
@@ -3595,13 +3603,13 @@ struct True3DModelScreen: View {
             orbitPitch = 29
         case .top:
             orbitYaw = 0
-            orbitPitch = 88
+            orbitPitch = 89.5
         case .front:
             orbitYaw = 0
-            orbitPitch = 10
+            orbitPitch = 0
         case .right:
             orbitYaw = 90
-            orbitPitch = 10
+            orbitPitch = 0
         }
         applyOrbit(animated: true)
     }
@@ -3617,7 +3625,7 @@ struct True3DModelScreen: View {
         let currentDistance = max((dx * dx + dy * dy + dz * dz).squareRoot(), 1)
         let distance = orbitDistance.map { Float($0) } ?? currentDistance
         let yaw = orbitYaw * Double.pi / 180
-        let pitch = min(85, max(-85, orbitPitch)) * Double.pi / 180
+        let pitch = min(89.5, max(-89.5, orbitPitch)) * Double.pi / 180
         let direction = SCNVector3(
             Float(sin(yaw) * cos(pitch)),
             Float(sin(pitch)),
