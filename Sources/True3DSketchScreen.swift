@@ -551,8 +551,7 @@ struct True3DSketchScreen: View {
     private var summaryBar: some View {
         let box = bounds
         return HStack(spacing: 14) {
-            Text("\(savedProfiles.count + (closed ? 1 : 0)) 轮廓")
-            Text("\(points.count) 点")
+            Text("\(savedProfiles.count + (closed ? 1 : 0)) 轮廓 · \(points.count) 点")
             Text(closed ? "已闭合" : "未闭合")
                 .foregroundStyle(closed ? .green : .orange)
             if let box {
@@ -642,7 +641,7 @@ struct True3DSketchScreen: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
-                .disabled(points.count < 3 || !closed)
+                .disabled((points.count < 3 || !closed) && savedProfiles.isEmpty)
             }
         }
         .padding(.horizontal, 12)
@@ -1086,22 +1085,25 @@ struct True3DSketchScreen: View {
     }
 
     private func commit() {
-        guard points.count >= 3 else {
-            error = "草图至少需要 3 个点"
+        let currentIsValid = closed && points.count >= 3
+        guard currentIsValid || !savedProfiles.isEmpty else {
+            error = "至少需要 1 个闭合轮廓"
             return
         }
-        guard closed else {
-            error = "请先闭合轮廓"
-            return
-        }
-        guard let box = bounds, box.maxX - box.minX > 0.1, box.maxY - box.minY > 0.1 else {
-            error = "草图尺寸太小"
+        if currentIsValid, let box = bounds, box.maxX - box.minX <= 0.1 || box.maxY - box.minY <= 0.1 {
+            error = "当前草图尺寸太小"
             return
         }
 
-        if operation == .base, !savedProfiles.isEmpty {
-            error = "多轮廓不能同时作为基础轮廓；请只保留一个轮廓，或改用凸台/切除"
-            return
+        if operation == .base {
+            guard currentIsValid else {
+                error = "基础轮廓需要一个当前闭合轮廓"
+                return
+            }
+            guard savedProfiles.isEmpty else {
+                error = "多轮廓不能同时作为基础轮廓；请只保留一个轮廓，或改用凸台/切除"
+                return
+            }
         }
 
         onBaseChange?(canvasWidth, canvasDepth)
@@ -1110,7 +1112,7 @@ struct True3DSketchScreen: View {
             onCommit(.base(points))
         case .boss, .cut:
             var profiles = savedProfiles
-            profiles.append(points)
+            if currentIsValid { profiles.append(points) }
             let specs = profiles.map { profile -> True3DFeatureSpec in
                 var feature = True3DFeatureSpec(kind: operation == .boss ? .profileBoss : .profileCut)
                 feature.name = operation == .boss ? "草图凸台" : "草图切除"
