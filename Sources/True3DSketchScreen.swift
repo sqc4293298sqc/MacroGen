@@ -1223,7 +1223,7 @@ struct True3DSketchScreen: View {
                             .foregroundStyle(SwiftUI.Color(red: 0.10, green: 0.42, blue: 0.90))
                             .padding(.horizontal, 4)
                             .padding(.vertical, 2)
-                            .background((darkCanvas ? SwiftUI.Color.black.opacity(0.35) : SwiftUI.Color.white.opacity(0.72)), in: Capsule())
+                            .background(Color.clear)
                     }
                     .buttonStyle(.plain)
                     .position(point)
@@ -1436,7 +1436,8 @@ struct True3DSketchScreen: View {
                 CGPoint(x: center.x, y: center.y - r),
                 CGPoint(x: center.x + r, y: center.y),
                 CGPoint(x: center.x, y: center.y + r),
-                CGPoint(x: center.x - r, y: center.y)
+                CGPoint(x: center.x - r, y: center.y),
+                center
             ]
         } else {
             handlePoints = mapped
@@ -1948,11 +1949,17 @@ struct True3DSketchScreen: View {
 
     private func snapped(_ p: True3DPoint) -> True3DPoint {
         guard snap else { return p }
-        let g = max(gridStep, 0.1)
-        return True3DPoint(
-            x: (p.x / g).rounded() * g,
-            y: (p.y / g).rounded() * g
-        )
+        var candidates = points
+        for segment in openSegments {
+            candidates.append(segment.start)
+            candidates.append(segment.end)
+        }
+        let tolerance = max(gridStep * 0.45, 0.6)
+        if let nearest = candidates.min(by: { hypot($0.x - p.x, $0.y - p.y) < hypot($1.x - p.x, $1.y - p.y) }),
+           hypot(nearest.x - p.x, nearest.y - p.y) <= tolerance {
+            return nearest
+        }
+        return p
     }
 
     private func shapePoints(from a: True3DPoint, to b: True3DPoint) -> [True3DPoint] {
