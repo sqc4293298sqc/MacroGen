@@ -24,6 +24,13 @@ enum True3DRevolvePlane: String, CaseIterable, Identifiable, Codable {
     var id: String { rawValue }
 }
 
+enum True3DRevolveAxis: String, CaseIterable, Identifiable, Codable {
+    case x = "X 轴"
+    case y = "Y 轴"
+    case z = "Z 轴"
+    var id: String { rawValue }
+}
+
 enum True3DEdgeMode: String, CaseIterable, Identifiable, Codable {
     case none = "无"
     case fillet = "圆角"
@@ -111,8 +118,9 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
     var sweepPathRadius: Double = 25
     var sweepPitch: Double = 12
     var sweepTurns: Double = 2
-    /// 旋转特征所在基准面：XZ 绕 Z、XY 绕 X、YZ 绕 Y。
+    /// 旋转特征所在基准面，以及旋转轴。
     var revolvePlane: True3DRevolvePlane = .xz
+    var revolveAxis: True3DRevolveAxis = .z
 
     init(kind: True3DFeatureKind = .hole, x: Double = 0, y: Double = 0) {
         self.kind = kind
@@ -192,9 +200,9 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
         case .shell:
             return "壁厚 \(fmt(abs(depth)))"
         case .revolveBoss:
-            return "\(profile.count) 点 \(revolvePlane.rawValue)旋转 \(fmt(angle))° H\(fmt(bossHeight))"
+            return "\(profile.count) 点 \(revolvePlane.rawValue)/\(revolveAxis.rawValue)旋转 \(fmt(angle))° H\(fmt(bossHeight))"
         case .revolveCut:
-            return "\(profile.count) 点 \(revolvePlane.rawValue)旋转切除 \(fmt(angle))°"
+            return "\(profile.count) 点 \(revolvePlane.rawValue)/\(revolveAxis.rawValue)旋转切除 \(fmt(angle))°"
         case .circularPocket:
             return "Ø\(fmt(dia)) 深\(fmt(depth)) @ \(p)"
         case .rectPocket:
@@ -645,20 +653,19 @@ enum True3DKernel {
         guard pts.count >= 3 else { return nil }
         let axisOrigin = SIMD3<Double>(0, 0, h)
         let axisDirection: SIMD3<Double>
+        switch f.revolveAxis {
+        case .x: axisDirection = SIMD3<Double>(1, 0, 0)
+        case .y: axisDirection = SIMD3<Double>(0, 1, 0)
+        case .z: axisDirection = SIMD3<Double>(0, 0, 1)
+        }
         let wirePts: [SIMD3<Double>]
         switch f.revolvePlane {
         case .xz:
-            guard pts.allSatisfy({ $0.x >= -0.001 }) else { return nil }
-            axisDirection = SIMD3<Double>(0, 0, 1)
-            wirePts = pts.map { SIMD3<Double>(max($0.x, 0.0), 0, $0.y + h) }
+            wirePts = pts.map { SIMD3<Double>($0.x, 0, $0.y + h) }
         case .xy:
-            guard pts.allSatisfy({ $0.y >= -0.001 }) else { return nil }
-            axisDirection = SIMD3<Double>(1, 0, 0)
-            wirePts = pts.map { SIMD3<Double>($0.x, max($0.y, 0.0), h) }
+            wirePts = pts.map { SIMD3<Double>($0.x, $0.y, h) }
         case .yz:
-            guard pts.allSatisfy({ $0.x >= -0.001 }) else { return nil }
-            axisDirection = SIMD3<Double>(0, 1, 0)
-            wirePts = pts.map { SIMD3<Double>(max($0.x, 0.0), $0.y, h) }
+            wirePts = pts.map { SIMD3<Double>(0, $0.x, $0.y + h) }
         }
         guard let wire = Wire.polygon3D(wirePts) else { return nil }
         let angle = min(max(f.angle, 0.1), 360) * .pi / 180
@@ -844,13 +851,8 @@ enum True3DKernel {
                     throw True3DModelError.invalidParameter("\(f.name) 壁厚必须大于 0.05，且小于最小外形的一半")
                 }
             case .revolveBoss, .revolveCut:
-                let radialOK: Bool
-                switch f.revolvePlane {
-                case .xz, .yz: radialOK = f.profile.allSatisfy { $0.x.isFinite && $0.y.isFinite && $0.x >= -0.001 }
-                case .xy: radialOK = f.profile.allSatisfy { $0.x.isFinite && $0.y.isFinite && $0.y >= -0.001 }
-                }
-                guard f.profile.count >= 3, radialOK else {
-                    throw True3DModelError.invalidParameter("\(f.name) 旋转轮廓需要至少 3 个点，且径向坐标不能为负")
+                guard f.profile.count >= 3, f.profile.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else {
+                    throw True3DModelError.invalidParameter("\(f.name) 旋转轮廓需要至少 3 个有效点")
                 }
                 guard f.angle > 0.1, f.angle <= 360 else {
                     throw True3DModelError.invalidParameter("\(f.name) 旋转角度必须在 0.1°～360°")

@@ -1544,7 +1544,13 @@ struct True3DModelScreen: View {
                     }
                 }
                 .font(.system(size: 12))
-                Text("旋转轮廓：\(f.wrappedValue.profile.count) 点；XZ 以 X 为半径、Y 为轴向，XY 以 Y 为半径、X 为轴向，YZ 绕 Y 轴")
+                Picker("旋转轴", selection: f.revolveAxis) {
+                    ForEach(True3DRevolveAxis.allCases) { item in
+                        Text(item.rawValue).tag(item)
+                    }
+                }
+                .font(.system(size: 12))
+                Text("旋转轮廓：\(f.wrappedValue.profile.count) 点；基准面决定 2D 坐标映射，旋转轴可独立选 X/Y/Z")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                 numRow("角度 °", f.angle)
                 if f.wrappedValue.kind == .revolveBoss {
