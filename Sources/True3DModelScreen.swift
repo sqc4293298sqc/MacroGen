@@ -394,7 +394,7 @@ struct True3DModelScreen: View {
                 HStack(spacing: 8) {
                     Text("装配")
                         .font(.system(size: 22, weight: .bold))
-                    Text("多实例")
+                    Text("多零件")
                         .font(.system(size: 11, weight: .semibold))
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
@@ -404,14 +404,20 @@ struct True3DModelScreen: View {
                     Spacer()
                 }
 
-                if result == nil {
-                    Text("先在“建模”页生成实体，再回到装配添加实例。")
+                if assemblyComponents.isEmpty {
+                    Text("先在“建模”页生成实体，或添加一个零件快照，再回装配。")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                     Button("回到建模页") { stage = .model }
                         .buttonStyle(.borderedProminent)
                         .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
                 } else {
+                    if let assemblyError {
+                        Label(assemblyError, systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     True3DSceneView(scene: assemblyScene, showWire: showWire)
                         .frame(height: 400)
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -420,7 +426,7 @@ struct True3DModelScreen: View {
                                 .stroke(Color.black.opacity(0.08), lineWidth: 1)
                         )
 
-                    Text("实例偏移（基础块坐标，mm）")
+                    Text("零件位姿（基础块坐标，mm）")
                         .font(.system(size: 12, weight: .semibold))
                     HStack(spacing: 6) {
                         assemblyField("X", value: $assemblyX)
@@ -453,7 +459,7 @@ struct True3DModelScreen: View {
                         VStack(alignment: .leading, spacing: 6) {
                             HStack(spacing: 6) {
                                 Circle()
-                                    .fill(assemblyColor(component.colorIndex))
+                                    .fill(Color(uiColor: assemblyColor(component.colorIndex)))
                                     .frame(width: 8, height: 8)
                                 TextField("名称", text: $component.name)
                                     .font(.system(size: 12, weight: .semibold))
