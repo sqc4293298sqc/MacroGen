@@ -65,6 +65,11 @@ struct True3DModelScreen: View {
     @State private var filletPreviewRadius: Double?
     @State private var edgeFeatureIsChamfer = false
     @State private var viewOrientation: True3DViewOrientation = .iso
+    @State private var orbitYaw: Double = 45
+    @State private var orbitPitch: Double = 29
+    @State private var cubeDragActive = false
+    @State private var cubeDragStartYaw: Double = 45
+    @State private var cubeDragStartPitch: Double = 29
     @State private var isPreviewingFillet = false
     @State private var filletPreviewTask: Task<Void, Never>?
     @State private var filletPreviewGeneration = 0
@@ -75,6 +80,8 @@ struct True3DModelScreen: View {
     @State private var notice: String?
     @State private var message = "点“生成实体”创建 OCCT 实体"
     @State private var showWire = true
+    @State private var showDatumPlane = false
+    @State private var renderDark = false
     @State private var stepURL: URL?
     @State private var stlURL: URL?
     @State private var isBuilding = false
@@ -352,8 +359,8 @@ struct True3DModelScreen: View {
                 digit3DRightRail
             }
             .padding(.horizontal, 10)
-            .padding(.top, 132)
-            .padding(.bottom, 96)
+            .padding(.top, 215)
+            .padding(.bottom, 90)
 
             if selectedEdge != nil {
                 HStack {
@@ -374,13 +381,13 @@ struct True3DModelScreen: View {
             }
 
             VStack {
-                Spacer()
                 HStack {
                     Spacer()
                     viewCube
                 }
-                .padding(.trailing, 16)
-                .padding(.bottom, 132)
+                .padding(.trailing, 14)
+                .padding(.top, 112)
+                Spacer()
             }
 
             if showTreePanel {
@@ -570,13 +577,22 @@ struct True3DModelScreen: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 2) {
                 railItem("pencil", "草图", highlighted: false) { stage = .sketch }
+                railItem("eye", "基准面", highlighted: showDatumPlane) { toggleDatumPlane() }
                 railItem("arrow.up.to.line", "拉伸") { runRailFeature(.boss) }
                 railItem("arrow.triangle.2.circlepath", "旋转体") { runRailFeature(.revolveBoss) }
-                railItem("circle.circle", "孔") { runRailFeature(.hole) }
+                railItem("arrow.triangle.2.circlepath.circle", "同步") {
+                    notice = "正在同步草图与实体…"
+                    rebuild()
+                }
+                railItem("water.waves", "曲面") {
+                    showWire = false
+                    notice = "曲面着色显示：已关闭线框"
+                }
                 railItem("line.diagonal", "圆角", highlighted: selectedEdge != nil) {
                     if selectedEdge == nil { notice = "先在模型上轻点一条边" }
                 }
                 railItem("square.dashed", "抽壳") { runRailFeature(.shell) }
+                railItem("scribble", "3D曲线") { stage = .sketch }
                 railItem("plus.square", "更多") {
                     withAnimation(.easeOut(duration: 0.2)) { showToolbox = true }
                 }
@@ -599,6 +615,9 @@ struct True3DModelScreen: View {
                     withAnimation(.easeOut(duration: 0.2)) { showTreePanel.toggle() }
                 }
                 railItem("eye", "显示", highlighted: showWire) { showWire.toggle() }
+                railItem("ruler", "测量") { announceMeasurement() }
+                railItem("waveform.path.ecg", "分析") { announceAnalysis() }
+                railItem("sun.max", "渲染", highlighted: renderDark) { toggleRenderMode() }
                 railItem("arrow.counterclockwise", "视图复位") {
                     setViewOrientation(.iso)
                 }
@@ -638,34 +657,90 @@ struct True3DModelScreen: View {
     }
 
     private var viewCube: some View {
-        VStack(spacing: 2) {
-            Button { setViewOrientation(.top) } label: {
+        GeometryReader { geo in
+            ZStack {
+                Canvas { context, size in
+                    let w = size.width
+                    let h = size.height
+                    let top = Path { path in
+                        path.move(to: CGPoint(x: w * 0.5, y: 0))
+                        path.addLine(to: CGPoint(x: w, y: h * 0.28))
+                        path.addLine(to: CGPoint(x: w * 0.5, y: h * 0.56))
+                        path.addLine(to: CGPoint(x: 0, y: h * 0.28))
+                        path.closeSubpath()
+                    }
+                    let front = Path { path in
+                        path.move(to: CGPoint(x: 0, y: h * 0.28))
+                        path.addLine(to: CGPoint(x: w * 0.5, y: h * 0.56))
+                        path.addLine(to: CGPoint(x: w * 0.5, y: h * 0.98))
+                        path.addLine(to: CGPoint(x: 0, y: h * 0.70))
+                        path.closeSubpath()
+                    }
+                    let right = Path { path in
+                        path.move(to: CGPoint(x: w * 0.5, y: h * 0.56))
+                        path.addLine(to: CGPoint(x: w, y: h * 0.28))
+                        path.addLine(to: CGPoint(x: w, y: h * 0.70))
+                        path.addLine(to: CGPoint(x: w * 0.5, y: h * 0.98))
+                        path.closeSubpath()
+                    }
+                    context.fill(top, with: .color(SwiftUI.Color.white.opacity(0.97)))
+                    context.fill(front, with: .color(SwiftUI.Color.white.opacity(0.80)))
+                    context.fill(right, with: .color(SwiftUI.Color.white.opacity(0.91)))
+                    for path in [top, front, right] {
+                        context.stroke(path, with: .color(SwiftUI.Color.black.opacity(0.16)), lineWidth: 1)
+                    }
+                }
+
                 Text("顶")
                     .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 40, height: 26)
-                    .background(SwiftUI.Color.white.opacity(0.92), in: RoundedRectangle(cornerRadius: 5))
+                    .foregroundStyle(SwiftUI.Color.black.opacity(0.62))
+                    .position(x: geo.size.width * 0.5, y: geo.size.height * 0.30)
+                Text("前")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(SwiftUI.Color.black.opacity(0.55))
+                    .position(x: geo.size.width * 0.25, y: geo.size.height * 0.66)
+                Text("右")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(SwiftUI.Color.black.opacity(0.55))
+                    .position(x: geo.size.width * 0.75, y: geo.size.height * 0.66)
             }
-            .buttonStyle(.plain)
-            HStack(spacing: 2) {
-                Button { setViewOrientation(.front) } label: {
-                    Text("前")
-                        .font(.system(size: 10, weight: .medium))
-                        .frame(width: 24, height: 21)
-                        .background(SwiftUI.Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 4))
-                }
-                .buttonStyle(.plain)
-                Button { setViewOrientation(.right) } label: {
-                    Text("右")
-                        .font(.system(size: 10, weight: .medium))
-                        .frame(width: 24, height: 21)
-                        .background(SwiftUI.Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 4))
-                }
-                .buttonStyle(.plain)
-            }
+            .background(
+                Ellipse()
+                    .fill(SwiftUI.Color.black.opacity(0.06))
+                    .frame(width: geo.size.width * 0.74, height: geo.size.height * 0.18)
+                    .offset(y: geo.size.height * 0.48)
+            )
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                    .onChanged { value in
+                        if !cubeDragActive {
+                            cubeDragActive = true
+                            cubeDragStartYaw = orbitYaw
+                            cubeDragStartPitch = orbitPitch
+                        }
+                        orbitYaw = cubeDragStartYaw + Double(value.translation.width) * 0.8
+                        orbitPitch = min(85, max(-85, cubeDragStartPitch - Double(value.translation.height) * 0.5))
+                        applyOrbit()
+                        notice = "自由视角"
+                    }
+                    .onEnded { value in
+                        let moved = hypot(value.translation.width, value.translation.height)
+                        if moved < 6 {
+                            if value.location.y < geo.size.height * 0.58 {
+                                setViewOrientation(.top)
+                            } else if value.location.x < geo.size.width * 0.5 {
+                                setViewOrientation(.front)
+                            } else {
+                                setViewOrientation(.right)
+                            }
+                        }
+                        cubeDragActive = false
+                    }
+            )
         }
-        .padding(5)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 9))
-        .shadow(color: SwiftUI.Color.black.opacity(0.08), radius: 5, y: 2)
+        .frame(width: 96, height: 100)
+        .shadow(color: SwiftUI.Color.black.opacity(0.10), radius: 8, y: 4)
     }
 
     private var digit3DFilletCard: some View {
@@ -1468,7 +1543,9 @@ struct True3DModelScreen: View {
         parts: [(True3DAssemblyComponent, True3DResult)]
     ) -> SCNScene {
         let newScene = SCNScene()
-        newScene.background.contents = UIColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1)
+        newScene.background.contents = renderDark
+            ? UIColor(red: 0.12, green: 0.14, blue: 0.18, alpha: 1)
+            : UIColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1)
         let root = SCNNode()
         root.eulerAngles.x = -Float.pi / 2
         newScene.rootNode.addChildNode(root)
@@ -3099,6 +3176,8 @@ struct True3DModelScreen: View {
                 self.message = "构建完成"
                 self.selectedEdge = nil
                 self.scene = self.makeScene(result: newResult)
+                self.applyOrbit()
+                if self.showDatumPlane { self.addDatumPlane(report: false) }
                 self.isBuilding = false
             } catch is CancellationError {
                 guard generation == self.buildGeneration else { return }
@@ -3342,9 +3421,78 @@ struct True3DModelScreen: View {
         scene.rootNode.childNode(withName: "selectedEdge", recursively: true)?.removeFromParentNode()
     }
 
+    private func toggleDatumPlane() {
+        showDatumPlane.toggle()
+        if showDatumPlane {
+            addDatumPlane()
+        } else {
+            scene.rootNode.childNode(withName: "datumPlane", recursively: true)?.removeFromParentNode()
+            notice = "基准面已隐藏"
+        }
+    }
+
+    private func addDatumPlane(report: Bool = true) {
+        guard let target = scene.rootNode.childNode(withName: "cameraTarget", recursively: true) else { return }
+        scene.rootNode.childNode(withName: "datumPlane", recursively: true)?.removeFromParentNode()
+        let stats = result?.stats
+        let planeWidth = max(CGFloat(stats?.sizeX ?? params.width) * 1.7, 30)
+        let planeDepth = max(CGFloat(stats?.sizeY ?? params.depth) * 1.7, 30)
+        let plane = SCNPlane(width: planeWidth, height: planeDepth)
+        let material = SCNMaterial()
+        material.lightingModel = .constant
+        material.diffuse.contents = UIColor(red: 0.20, green: 0.50, blue: 0.90, alpha: 1)
+        material.transparency = 0.16
+        material.isDoubleSided = true
+        material.writesToDepthBuffer = false
+        plane.materials = [material]
+        let node = SCNNode(geometry: plane)
+        node.name = "datumPlane"
+        node.position = target.position
+        node.renderingOrder = -60
+        scene.rootNode.addChildNode(node)
+        if report { notice = "基准面已显示：XY 平面" }
+    }
+
+    private func announceMeasurement() {
+        guard let result else { notice = "先生成实体，再测量"; return }
+        let stats = result.stats
+        notice = "测量：\(fmt(stats.sizeX)) × \(fmt(stats.sizeY)) × \(fmt(stats.sizeZ)) mm · 体积 \(fmt(stats.volume)) mm³"
+    }
+
+    private func announceAnalysis() {
+        guard let result else { notice = "先生成实体，再分析"; return }
+        let stats = result.stats
+        notice = "分析：\(stats.faces) 面 / \(stats.edges) 边 / \(stats.triangles) 三角面 · \(stats.valid ? "实体有效" : "实体无效")"
+    }
+
+    private func toggleRenderMode() {
+        renderDark.toggle()
+        scene.background.contents = renderDark
+            ? UIColor(red: 0.12, green: 0.14, blue: 0.18, alpha: 1)
+            : UIColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1)
+        notice = renderDark ? "渲染：深色背景已开启" : "渲染：浅色背景已恢复"
+    }
+
     private func setViewOrientation(_ orientation: True3DViewOrientation) {
         viewOrientation = orientation
-        let scene = self.scene
+        switch orientation {
+        case .iso:
+            orbitYaw = 45
+            orbitPitch = 29
+        case .top:
+            orbitYaw = 0
+            orbitPitch = 88
+        case .front:
+            orbitYaw = 0
+            orbitPitch = 10
+        case .right:
+            orbitYaw = 90
+            orbitPitch = 10
+        }
+        applyOrbit()
+    }
+
+    private func applyOrbit() {
         guard let camera = scene.rootNode.childNode(withName: "workbenchCamera", recursively: true),
               let target = scene.rootNode.childNode(withName: "cameraTarget", recursively: true) else {
             return
@@ -3353,18 +3501,17 @@ struct True3DModelScreen: View {
         let dy = camera.position.y - target.position.y
         let dz = camera.position.z - target.position.z
         let distance = max((dx * dx + dy * dy + dz * dz).squareRoot(), 1)
-        let direction: SCNVector3
-        switch orientation {
-        case .iso:
-            direction = SCNVector3(0.78, 0.62, 0.78)
-        case .top:
-            direction = SCNVector3(0, 1, 0.02)
-        case .front:
-            direction = SCNVector3(0, 0.18, 1)
-        case .right:
-            direction = SCNVector3(1, 0.18, 0)
-        }
-        let length = max((direction.x * direction.x + direction.y * direction.y + direction.z * direction.z).squareRoot(), 0.001)
+        let yaw = orbitYaw * Double.pi / 180
+        let pitch = min(85, max(-85, orbitPitch)) * Double.pi / 180
+        let direction = SCNVector3(
+            Float(sin(yaw) * cos(pitch)),
+            Float(sin(pitch)),
+            Float(cos(yaw) * cos(pitch))
+        )
+        let length = max(
+            (direction.x * direction.x + direction.y * direction.y + direction.z * direction.z).squareRoot(),
+            0.001
+        )
         camera.position = SCNVector3(
             target.position.x + direction.x / length * distance,
             target.position.y + direction.y / length * distance,
