@@ -1537,6 +1537,22 @@ struct True3DModelScreen: View {
         notice = "已\(delta < 0 ? "上移" : "下移")特征"
     }
 
+    private func profileArea(_ points: [True3DPoint]) -> Double {
+        guard points.count >= 3 else { return 0 }
+        var sum = 0.0
+        for i in 0..<points.count {
+            let a = points[i], b = points[(i + 1) % points.count]
+            sum += a.x * b.y - b.x * a.y
+        }
+        return abs(sum / 2)
+    }
+
+    private func profileBox(_ points: [True3DPoint]) -> (minX: Double, maxX: Double, minY: Double, maxY: Double)? {
+        guard let minX = points.map(\.x).min(), let maxX = points.map(\.x).max(),
+              let minY = points.map(\.y).min(), let maxY = points.map(\.y).max() else { return nil }
+        return (minX, maxX, minY, maxY)
+    }
+
     private func applySketch(_ output: True3DSketchOutput) {
         if params.features.count == 3,
            params.features.contains(where: { $0.name == "通孔" }),
@@ -1563,9 +1579,31 @@ struct True3DModelScreen: View {
             selectedFeatureID = feature.id
             message = "已添加 \(feature.name)，正在重建实体"
         case .features(let features):
-            params.features.append(contentsOf: features)
-            selectedFeatureID = features.last?.id
-            message = "已添加 \(features.count) 个草图轮廓特征，正在重建实体"
+            var additions = features
+            if let outer = features.max(by: { profileArea($0.profile) < profileArea($1.profile) }),
+               !features.contains(where: { $0.kind == .profileCut }) {
+                let outerBox = profileBox(outer.profile)
+                additions = [outer]
+                for feature in features where feature.id != outer.id {
+                    let box = profileBox(feature.profile)
+                    if let outerBox, let box,
+                       box.minX >= outerBox.minX - 0.01, box.maxX <= outerBox.maxX + 0.01,
+                       box.minY >= outerBox.minY - 0.01, box.maxY <= outerBox.maxY + 0.01,
+                       profileArea(feature.profile) < profileArea(outer.profile) {
+                        var cut = feature
+                        cut.kind = .profileCut
+                        cut.name = "草图内孔"
+                        cut.depth = feature.bossHeight
+                        cut.topZ = params.height + feature.bossHeight
+                        additions.append(cut)
+                    } else {
+                        additions.append(feature)
+                    }
+                }
+            }
+            params.features.append(contentsOf: additions)
+            selectedFeatureID = additions.last?.id
+            message = "已添加 \(additions.count) 个草图轮廓特征，正在重建实体"
         }
         rebuild()
         notice = message
