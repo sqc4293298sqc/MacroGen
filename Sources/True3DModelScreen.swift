@@ -121,21 +121,6 @@ struct True3DModelScreen: View {
         UTType(filenameExtension: "dxf") ?? .plainText
     }
 
-    private var stepTypes: [UTType] {
-        let types = [
-            UTType(filenameExtension: "step"),
-            UTType(filenameExtension: "stp")
-        ].compactMap { $0 }
-        return types.isEmpty ? [.data] : types
-    }
-
-    private var importTypes: [UTType] {
-        switch importMode {
-        case .step: return stepTypes
-        case .dxf: return [dxfType, .plainText]
-        }
-    }
-
     var body: some View {
         ZStack(alignment: .trailing) {
             VStack(spacing: 0) {
@@ -239,22 +224,9 @@ struct True3DModelScreen: View {
                 rebuild()
             }
         }
-        .fileImporter(
-            isPresented: $showImporter,
-            allowedContentTypes: importTypes,
-            allowsMultipleSelection: false
-        ) { outcome in
-            switch outcome {
-            case .success(let urls):
-                guard let url = urls.first else { return }
-                let ext = url.pathExtension.lowercased()
-                if ext == "step" || ext == "stp" {
-                    importSTEP(url)
-                } else {
-                    importDXF(url)
-                }
-            case .failure(let err):
-                self.error = "打开文件失败：\(err.localizedDescription)"
+        .sheet(isPresented: $showImporter) {
+            True3DDocumentPicker(isPresented: $showImporter) { url in
+                handlePickedFile(url)
             }
         }
         .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images)
@@ -2913,6 +2885,18 @@ struct True3DModelScreen: View {
         notice = "已载入上次保存的 3D 工程"
     }
 
+    private func handlePickedFile(_ url: URL) {
+        let ext = url.pathExtension.lowercased()
+        switch ext {
+        case "step", "stp":
+            importSTEP(url)
+        case "dxf":
+            importDXF(url)
+        default:
+            error = "只支持 STEP / STP / DXF 文件，当前选择的是 .\(ext.isEmpty ? "未知格式" : ext)"
+        }
+    }
+
     private func importSTEP(_ url: URL) {
         guard !importBusy else { return }
         importMode = .step
@@ -3193,6 +3177,43 @@ private struct True3DSceneView: UIViewRepresentable {
             if node.name == "wireOverlay" {
                 node.isHidden = !showWire
             }
+        }
+    }
+}
+
+struct True3DDocumentPicker: UIViewControllerRepresentable {
+    @Binding var isPresented: Bool
+    let onPick: (URL) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.data], asCopy: true)
+        picker.delegate = context.coordinator
+        picker.allowsMultipleSelection = false
+        picker.shouldShowFileExtensions = true
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        private let parent: True3DDocumentPicker
+
+        init(_ parent: True3DDocumentPicker) {
+            self.parent = parent
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            parent.isPresented = false
+            guard let url = urls.first else { return }
+            parent.onPick(url)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            parent.isPresented = false
         }
     }
 }
