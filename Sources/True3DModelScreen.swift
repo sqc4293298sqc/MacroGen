@@ -622,9 +622,9 @@ struct True3DModelScreen: View {
         camera.camera?.fieldOfView = 38
         camera.camera?.zNear = 0.1
         camera.camera?.zFar = 10000
-        camera.position = SCNVector3(Float(maxSizeFinal * 1.55), Float(maxSizeFinal * 1.35), Float(maxSizeFinal * 1.55))
+        camera.position = SCNVector3(Float(maxSize * 1.55), Float(maxSize * 1.35), Float(maxSize * 1.55))
         let target = SCNNode()
-        target.position = SCNVector3(0, Float(maxHeight / 2), 0)
+        target.position = SCNVector3(0, Float(model.height / 2), 0)
         newScene.rootNode.addChildNode(target)
         camera.constraints = [SCNLookAtConstraint(target: target)]
         newScene.rootNode.addChildNode(camera)
@@ -2086,9 +2086,9 @@ struct True3DModelScreen: View {
         camera.camera?.fieldOfView = 38
         camera.camera?.zNear = 0.1
         camera.camera?.zFar = 10000
-        camera.position = SCNVector3(Float(maxSizeFinal * 1.55), Float(maxSizeFinal * 1.35), Float(maxSizeFinal * 1.55))
+        camera.position = SCNVector3(Float(maxSize * 1.55), Float(maxSize * 1.35), Float(maxSize * 1.55))
         let target = SCNNode()
-        target.position = SCNVector3(0, Float(maxHeight / 2), 0)
+        target.position = SCNVector3(0, Float(model.height / 2), 0)
         newScene.rootNode.addChildNode(target)
         camera.constraints = [SCNLookAtConstraint(target: target)]
         newScene.rootNode.addChildNode(camera)
@@ -2097,7 +2097,7 @@ struct True3DModelScreen: View {
         light.light?.type = .omni
         light.light?.intensity = 1100
         light.light?.temperature = 6500
-        light.position = SCNVector3(Float(maxSizeFinal * 1.2), Float(maxSizeFinal * 1.8), Float(maxSizeFinal * 1.2))
+        light.position = SCNVector3(Float(maxSize * 1.2), Float(maxSize * 1.8), Float(maxSize * 1.2))
         newScene.rootNode.addChildNode(light)
         let fill = SCNNode()
         fill.light = SCNLight()
