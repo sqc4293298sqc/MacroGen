@@ -374,7 +374,7 @@ enum True3DKernel {
         case .draft:
             let angle = min(max(f.angle, 0.1), 30) * .pi / 180
             guard let drafted = current.drafted(
-                faces: current.verticalFaces(),
+                faces: current.faces().filter { $0.isVertical() },
                 direction: SIMD3<Double>(0, 0, 1),
                 angle: angle,
                 neutralPlane: (point: SIMD3<Double>(0, 0, 0), normal: SIMD3<Double>(0, 0, 1))

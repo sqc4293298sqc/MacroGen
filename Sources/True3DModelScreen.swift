@@ -1562,6 +1562,10 @@ struct True3DModelScreen: View {
             params.features.append(feature)
             selectedFeatureID = feature.id
             message = "已添加 \(feature.name)，正在重建实体"
+        case .features(let features):
+            params.features.append(contentsOf: features)
+            selectedFeatureID = features.last?.id
+            message = "已添加 \(features.count) 个草图轮廓特征，正在重建实体"
         }
         rebuild()
         notice = message

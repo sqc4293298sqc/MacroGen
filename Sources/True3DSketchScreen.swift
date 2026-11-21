@@ -6,6 +6,7 @@ import SwiftUI
 enum True3DSketchOutput {
     case base([True3DPoint])
     case feature(True3DFeatureSpec)
+    case features([True3DFeatureSpec])
 }
 
 enum True3DSketchTool: String, CaseIterable, Identifiable {
@@ -95,6 +96,7 @@ struct True3DSketchScreen: View {
     @State private var slotWidth: Double = 20
     @State private var offsetDistance: Double = 5
     @State private var editingPointIndex: Int?
+    @State private var savedProfiles: [[True3DPoint]] = []
 
     private var baseWidth: CGFloat { CGFloat(max(canvasWidth, 1)) }
     private var baseDepth: CGFloat { CGFloat(max(canvasDepth, 1)) }
@@ -228,6 +230,20 @@ struct True3DSketchScreen: View {
                     Button("清空") { clear() }.buttonStyle(.bordered)
                 }
                 .font(.system(size: 11))
+                if closed {
+                    Button("存为轮廓并新建 \(savedProfiles.count + 1)") { stashProfile() }
+                        .font(.system(size: 11, weight: .semibold))
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
+                }
+                if !savedProfiles.isEmpty {
+                    HStack {
+                        Text("已存 \(savedProfiles.count) 个闭合轮廓").font(.system(size: 10)).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("清空已存") { savedProfiles.removeAll() }
+                            .font(.system(size: 10)).buttonStyle(.bordered)
+                    }
+                }
 
                 HStack(spacing: 6) {
                     Button("旋转90°") { rotateSketch() }.buttonStyle(.bordered)
@@ -354,6 +370,7 @@ struct True3DSketchScreen: View {
         GeometryReader { geo in
             Canvas { context, size in
                 drawGrid(context: &context, size: size)
+                drawSavedProfiles(context: &context, size: size)
                 drawProfile(context: &context, size: size)
                 drawPreview(context: &context, size: size)
             }
@@ -487,6 +504,18 @@ struct True3DSketchScreen: View {
         context.stroke(axisY, with: .color(Color.blue.opacity(0.18)), lineWidth: 0.8)
     }
 
+    private func drawSavedProfiles(context: inout GraphicsContext, size: CGSize) {
+        for profile in savedProfiles where profile.count > 1 {
+            let mapped = profile.map { viewPoint($0, in: size) }
+            var path = Path()
+            path.move(to: mapped[0])
+            for p in mapped.dropFirst() { path.addLine(to: p) }
+            path.closeSubpath()
+            context.fill(path, with: .color(Color(red: 0.25, green: 0.35, blue: 0.45).opacity(0.07)))
+            context.stroke(path, with: .color(Color(red: 0.25, green: 0.35, blue: 0.45).opacity(0.55)), lineWidth: 1.2)
+        }
+    }
+
     private func drawProfile(context: inout GraphicsContext, size: CGSize) {
         guard points.count > 1 else { return }
         let mapped = points.map { viewPoint($0, in: size) }
@@ -522,6 +551,7 @@ struct True3DSketchScreen: View {
     private var summaryBar: some View {
         let box = bounds
         return HStack(spacing: 14) {
+            Text("\(savedProfiles.count + (closed ? 1 : 0)) 轮廓")
             Text("\(points.count) 点")
             Text(closed ? "已闭合" : "未闭合")
                 .foregroundStyle(closed ? .green : .orange)
@@ -529,6 +559,10 @@ struct True3DSketchScreen: View {
                 Text("X \(fmt(box.maxX - box.minX)) × Y \(fmt(box.maxY - box.minY)) mm")
             }
             Spacer()
+            if closed {
+                Button("存为轮廓") { stashProfile() }
+                    .font(.system(size: 12, weight: .semibold))
+            }
             Button(closed ? "重新画" : "闭合轮廓") {
                 if closed {
                     points = []
@@ -969,6 +1003,19 @@ struct True3DSketchScreen: View {
         return sum / 2
     }
 
+    private func stashProfile() {
+        guard closed, points.count >= 3 else {
+            error = "当前轮廓还没闭合"
+            return
+        }
+        savedProfiles.append(points)
+        points = []
+        closed = false
+        dimensionW = 0
+        dimensionH = 0
+        error = nil
+    }
+
     private func closeProfile() {
         guard points.count >= 3 else {
             error = "至少需要 3 个点才能闭合"
@@ -1052,17 +1099,31 @@ struct True3DSketchScreen: View {
             return
         }
 
+        if operation == .base, !savedProfiles.isEmpty {
+            error = "多轮廓不能同时作为基础轮廓；请只保留一个轮廓，或改用凸台/切除"
+            return
+        }
+
         onBaseChange?(canvasWidth, canvasDepth)
         switch operation {
         case .base:
             onCommit(.base(points))
         case .boss, .cut:
-            var feature = True3DFeatureSpec(kind: operation == .boss ? .profileBoss : .profileCut)
-            feature.name = operation == .boss ? "草图凸台" : "草图切除"
-            feature.profile = points
-            feature.depth = max(extrudeDepth, 0.1)
-            feature.bossHeight = max(extrudeDepth, 0.1)
-            onCommit(.feature(feature))
+            var profiles = savedProfiles
+            profiles.append(points)
+            let specs = profiles.map { profile -> True3DFeatureSpec in
+                var feature = True3DFeatureSpec(kind: operation == .boss ? .profileBoss : .profileCut)
+                feature.name = operation == .boss ? "草图凸台" : "草图切除"
+                feature.profile = profile
+                feature.depth = max(extrudeDepth, 0.1)
+                feature.bossHeight = max(extrudeDepth, 0.1)
+                return feature
+            }
+            if specs.count == 1 {
+                onCommit(.feature(specs[0]))
+            } else {
+                onCommit(.features(specs))
+            }
         }
         if !embedded { dismiss() }
     }
