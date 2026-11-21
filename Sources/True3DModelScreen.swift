@@ -964,7 +964,7 @@ struct True3DModelScreen: View {
                 Text(draft.kind == .edgeChamfer ? "倒角距离 C" : "圆角半径 R")
                     .font(.system(size: 12))
                 Spacer()
-                TextField("0", value: draftFeatureBinding.depth, format: .number.precision(.fractionLength(2)))
+                TextField("0", value: featureDraftBinding.depth, format: .number.precision(.fractionLength(2)))
                     .keyboardType(.decimalPad)
                     .multilineTextAlignment(.trailing)
                     .frame(width: 88)
@@ -1874,7 +1874,7 @@ struct True3DModelScreen: View {
         fill.light?.intensity = 350
         fill.light?.color = UIColor(red: 0.72, green: 0.80, blue: 0.90, alpha: 1)
         newScene.rootNode.addChildNode(fill)
-        addAxisGizmo(to: modelRoot, size: maxSize)
+        addAxisGizmo(to: root, size: maxSizeFinal)
         return newScene
     }
 
@@ -1930,15 +1930,15 @@ struct True3DModelScreen: View {
         let zColor = UIColor.systemBlue
 
         shaft(xColor, SCNVector3(length / 2, 0, 0), SCNVector3(0, 0, 0))
-        head(xColor, SCNVector3(length, 0, 0), SCNVector3(0, 0, -.pi / 2))
+        head(xColor, SCNVector3(length, 0, 0), SCNVector3(0, 0, -Float.pi / 2))
         label("X", xColor, SCNVector3(length + 5, -1, 0))
 
-        shaft(yColor, SCNVector3(0, length / 2, 0), SCNVector3(0, 0, .pi / 2))
+        shaft(yColor, SCNVector3(0, length / 2, 0), SCNVector3(0, 0, Float.pi / 2))
         head(yColor, SCNVector3(0, length, 0), SCNVector3(0, 0, 0))
         label("Y", yColor, SCNVector3(-1, length + 5, 0))
 
-        shaft(zColor, SCNVector3(0, 0, length / 2), SCNVector3(.pi / 2, 0, 0))
-        head(zColor, SCNVector3(0, 0, length), SCNVector3(.pi / 2, 0, 0))
+        shaft(zColor, SCNVector3(0, 0, length / 2), SCNVector3(Float.pi / 2, 0, 0))
+        head(zColor, SCNVector3(0, 0, length), SCNVector3(Float.pi / 2, 0, 0))
         label("Z", zColor, SCNVector3(-1, -1, length + 5))
 
         parent.addChildNode(group)
@@ -4261,6 +4261,7 @@ struct True3DModelScreen: View {
         fill.light?.intensity = 350
         fill.light?.color = UIColor(red: 0.72, green: 0.80, blue: 0.90, alpha: 1)
         newScene.rootNode.addChildNode(fill)
+        addAxisGizmo(to: modelRoot, size: maxSize)
         return newScene
     }
 
