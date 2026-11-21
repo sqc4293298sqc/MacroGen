@@ -92,6 +92,9 @@ struct True3DModelScreen: View {
     @State private var isGeneratingCAM = false
     @State private var gcodeURL: URL?
     @State private var showImporter = false
+    @State private var showTreePanel = false
+    @State private var showToolbox = false
+    @State private var edgeFilterLabel = "单条边"
     @State private var showCamera = false
     @State private var showPhotoPicker = false
     @State private var photoItem: PhotosPickerItem?
@@ -124,7 +127,7 @@ struct True3DModelScreen: View {
     var body: some View {
         ZStack(alignment: .trailing) {
             VStack(spacing: 0) {
-                stageBar
+                if stage != .model { stageBar }
                 stageContent
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -140,6 +143,7 @@ struct True3DModelScreen: View {
         .background(Color(.systemBackground))
         .navigationTitle(params.projectName.isEmpty ? "真 3D 工作台" : params.projectName)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(stage == .model ? .hidden : .visible, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 if stage == .model {
@@ -291,7 +295,7 @@ struct True3DModelScreen: View {
         case .sketch:
             sketchStage
         case .model:
-            modelingStage
+            digit3DModelingStage
         case .assembly:
             assemblyStage
         case .operation:
@@ -313,6 +317,605 @@ struct True3DModelScreen: View {
         ) { output in
             applySketch(output)
             stage = .model
+        }
+    }
+
+
+    private var digit3DModelingStage: some View {
+        ZStack {
+            True3DSceneView(scene: scene, showWire: showWire, onPickEdge: { view, point, size in
+                pickEdge(in: view, at: point, viewSize: size)
+            })
+            .ignoresSafeArea()
+
+            VStack(spacing: 8) {
+                digit3DTopBar
+                digit3DSelectionBar
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 6)
+
+            HStack(alignment: .top, spacing: 0) {
+                digit3DLeftRail
+                Spacer(minLength: 0)
+                digit3DRightRail
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 132)
+            .padding(.bottom, 96)
+
+            if selectedEdge != nil {
+                HStack {
+                    digit3DFilletCard
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 14)
+                .padding(.top, 126)
+                .frame(maxHeight: .infinity, alignment: .top)
+            }
+
+            VStack {
+                Spacer()
+                Text(bottomHint)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 28)
+            }
+
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    viewCube
+                }
+                .padding(.trailing, 16)
+                .padding(.bottom, 132)
+            }
+
+            if showTreePanel {
+                Color.black.opacity(0.10).ignoresSafeArea()
+                    .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { showTreePanel = false } }
+                HStack {
+                    Spacer()
+                    digit3DTreePanel
+                }
+                .padding(.trailing, 10)
+                .padding(.top, 132)
+                .padding(.bottom, 70)
+                .transition(.move(edge: .trailing))
+            }
+
+            if showToolbox {
+                Color.black.opacity(0.10).ignoresSafeArea()
+                    .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { showToolbox = false } }
+                HStack {
+                    digit3DToolbox
+                    Spacer()
+                }
+                .padding(.leading, 10)
+                .padding(.top, 132)
+                .padding(.bottom, 70)
+                .transition(.move(edge: .leading))
+            }
+        }
+        .background(SwiftUI.Color(red: 0.95, green: 0.96, blue: 0.98))
+        .onChange(of: filletRadius) { _ in
+            if filletPreview != nil || isPreviewingFillet {
+                clearFilletPreview(restoreScene: true)
+            }
+        }
+    }
+
+    private var workbenchTitle: String {
+        if let importedPart, !importedPart.name.isEmpty { return importedPart.name }
+        return params.projectName.isEmpty ? "未命名工程" : params.projectName
+    }
+
+    private var bottomHint: String {
+        if let edge = selectedEdge {
+            return "已选边 #\(edge.edgeIndex) · 可设圆角"
+        }
+        if importedPart != nil {
+            return "选择边 · 可多选"
+        }
+        return "轻点模型边线 · 选择后可圆角"
+    }
+
+    private var digit3DTopBar: some View {
+        HStack(spacing: 8) {
+            Button {
+                stage = .sketch
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 42, height: 42)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+            .buttonStyle(.plain)
+
+            Menu {
+                Button { rebuild() } label: { Label("重新构建模型", systemImage: "arrow.clockwise") }
+                Button { importMode = .step; showImporter = true } label: {
+                    Label("导入 STEP", systemImage: "cube.transparent")
+                }
+                Button { saveProject() } label: { Label("保存工程", systemImage: "square.and.arrow.down") }
+                Divider()
+                Button { exportSTEP() } label: { Label("导出 STEP", systemImage: "square.and.arrow.up") }
+                Button { exportSTL() } label: { Label("导出 STL", systemImage: "square.and.arrow.up") }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(workbenchTitle)
+                        .font(.system(size: 17, weight: .semibold))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 14)
+                .frame(height: 42)
+                .background(.ultraThinMaterial, in: Capsule())
+            }
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 4)
+
+            workbenchIconButton("square.stack.3d.up", active: showTreePanel) {
+                withAnimation(.easeOut(duration: 0.2)) { showTreePanel.toggle() }
+            }
+            workbenchIconButton("square.and.arrow.down") { saveProject() }
+            Menu {
+                Button { importMode = .step; showImporter = true } label: {
+                    Label("导入 STEP", systemImage: "cube.transparent")
+                }
+                Button { stage = .operation } label: { Label("进入工序", systemImage: "square.stack.3d.up") }
+                Button { stage = .assembly } label: { Label("进入装配", systemImage: "square.stack.3d.up.fill") }
+                Divider()
+                Button { newBlankProject() } label: { Label("新建空白工程", systemImage: "doc.badge.plus") }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 42, height: 42)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var digit3DSelectionBar: some View {
+        HStack(spacing: 8) {
+            selectionBarIcon("eye")
+            selectionBarIcon("cube")
+            selectionBarIcon("rectangle.3.group")
+            selectionBarIcon("pencil.tip")
+            selectionBarIcon("line.diagonal")
+            Rectangle().fill(SwiftUI.Color.black.opacity(0.12)).frame(width: 1, height: 20)
+            Menu {
+                Button("单条边") { edgeFilterLabel = "单条边" }
+                Button("相切边") { edgeFilterLabel = "相切边"; notice = "相切边选择将在下一版接入" }
+                Button("所有边") { edgeFilterLabel = "所有边"; notice = "所有边选择将在下一版接入" }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "line.diagonal").font(.system(size: 12, weight: .semibold))
+                    Text(edgeFilterLabel).font(.system(size: 13, weight: .semibold))
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+                }
+                .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
+                .padding(.horizontal, 8)
+            }
+            .buttonStyle(.plain)
+            Spacer(minLength: 2)
+            selectionBarIcon("funnel")
+            Button {
+                showToolbox.toggle()
+            } label: {
+                Image(systemName: "cube.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
+                    .frame(width: 28, height: 28)
+                    .background(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85).opacity(0.10), in: Circle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 6)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(SwiftUI.Color.white.opacity(0.55), lineWidth: 0.5))
+        .frame(maxWidth: 370)
+    }
+
+    private func workbenchIconButton(_ icon: String, active: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(active ? SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85) : SwiftUI.Color.primary)
+                .frame(width: 42, height: 42)
+                .background(.ultraThinMaterial, in: Circle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func selectionBarIcon(_ icon: String) -> some View {
+        Image(systemName: icon)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(SwiftUI.Color.primary.opacity(0.72))
+            .frame(width: 26, height: 26)
+    }
+
+    private var digit3DLeftRail: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 2) {
+                railItem("pencil", "草图", highlighted: false) { stage = .sketch }
+                railItem("circle.grid.cross", "基准面") { notice = "基准面功能暂未开放" }
+                railItem("arrow.up.to.line", "拉伸") { notice = "STEP 模型暂只支持圆角/倒角" }
+                railItem("arrow.triangle.2.circlepath", "旋转体") { notice = "旋转体功能暂未开放" }
+                railItem("square.on.square", "同步") { notice = "同步建模功能暂未开放" }
+                railItem("arrow.left.and.right", "变换") { notice = "变换功能暂未开放" }
+                railItem("square.stack.3d.up", "曲面") { notice = "曲面功能暂未开放" }
+                railItem("circle.circle", "布尔") { notice = "布尔功能暂未开放" }
+                railItem("line.diagonal", "圆角", highlighted: selectedEdge != nil) {
+                    if selectedEdge == nil { notice = "先在模型上轻点一条边" }
+                }
+                railItem("square.dashed", "抽壳") { notice = "抽壳功能暂未开放" }
+                railItem("scribble", "3D曲线") { notice = "3D 曲线功能暂未开放" }
+                railItem("plus.square", "更多") {
+                    withAnimation(.easeOut(duration: 0.2)) { showToolbox = true }
+                }
+            }
+            .padding(.vertical, 5)
+            .padding(.horizontal, 4)
+        }
+        .frame(width: 60)
+        .frame(maxHeight: 470)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var digit3DRightRail: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 2) {
+                railItem("square.stack.3d.up", "建模树", highlighted: showTreePanel) {
+                    withAnimation(.easeOut(duration: 0.2)) { showTreePanel.toggle() }
+                }
+                railItem("point.3.connected.trianglepath.dotted", "模型树") {
+                    withAnimation(.easeOut(duration: 0.2)) { showTreePanel.toggle() }
+                }
+                railItem("square.split.2x1", "剖切") { notice = "剖切功能暂未开放" }
+                railItem("eye", "显示", highlighted: showWire) { showWire.toggle() }
+                railItem("ruler", "测量") { notice = "测量功能暂未开放" }
+                railItem("magnifyingglass", "分析") { notice = "分析功能暂未开放" }
+                railItem("square.stack.3d.down.right", "爆炸图") { notice = "爆炸图功能暂未开放" }
+                railItem("character.cursor.ibeam", "3D标注") { notice = "3D 标注功能暂未开放" }
+                railItem("sparkles", "渲染") { notice = "渲染设置暂未开放" }
+            }
+            .padding(.vertical, 5)
+            .padding(.horizontal, 4)
+        }
+        .frame(width: 60)
+        .frame(maxHeight: 440)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func railItem(
+        _ icon: String,
+        _ title: String,
+        highlighted: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: icon)
+                    .font(.system(size: 15, weight: .medium))
+                Text(title)
+                    .font(.system(size: 9, weight: .medium))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(highlighted ? SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85) : SwiftUI.Color.primary.opacity(0.74))
+            .frame(width: 50, height: 42)
+            .background(
+                highlighted
+                    ? SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85).opacity(0.12)
+                    : SwiftUI.Color.clear,
+                in: RoundedRectangle(cornerRadius: 10)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var viewCube: some View {
+        VStack(spacing: 2) {
+            Text("顶")
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 40, height: 26)
+                .background(SwiftUI.Color.white.opacity(0.92), in: RoundedRectangle(cornerRadius: 5))
+            HStack(spacing: 2) {
+                Text("前")
+                    .font(.system(size: 10, weight: .medium))
+                    .frame(width: 24, height: 21)
+                    .background(SwiftUI.Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 4))
+                Text("右")
+                    .font(.system(size: 10, weight: .medium))
+                    .frame(width: 24, height: 21)
+                    .background(SwiftUI.Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 4))
+            }
+        }
+        .padding(5)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 9))
+        .shadow(color: SwiftUI.Color.black.opacity(0.08), radius: 5, y: 2)
+        .onTapGesture { notice = "视图方向切换将在下一版接入" }
+    }
+
+    private var digit3DFilletCard: some View {
+        VStack(spacing: 6) {
+            filletCardRow("类型") {
+                HStack(spacing: 5) {
+                    Image(systemName: "line.diagonal")
+                    Text("圆角")
+                    Image(systemName: "chevron.down").font(.system(size: 8))
+                }
+                .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
+            }
+            filletCardRow("连续性") {
+                HStack(spacing: 5) {
+                    Text("G1")
+                    Image(systemName: "chevron.down").font(.system(size: 8))
+                }
+                .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
+            }
+            filletCardRow("方法") {
+                HStack(spacing: 5) {
+                    Image(systemName: "line.diagonal")
+                    Text("等半径")
+                    Image(systemName: "chevron.down").font(.system(size: 8))
+                }
+                .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
+            }
+            HStack(spacing: 8) {
+                Text("半径")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button { filletRadius = max(0.2, filletRadius - 0.5) } label: {
+                    Image(systemName: "minus")
+                        .frame(width: 24, height: 24)
+                        .background(SwiftUI.Color.black.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.plain)
+                Text(String(format: "%.1f mm", filletRadius))
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .frame(minWidth: 60)
+                Button { filletRadius = min(200, filletRadius + 0.5) } label: {
+                    Image(systemName: "plus")
+                        .frame(width: 24, height: 24)
+                        .background(SwiftUI.Color.black.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 32)
+            .background(SwiftUI.Color.white.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+
+            HStack {
+                Text("变半径")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Toggle("", isOn: .constant(false))
+                    .labelsHidden()
+                    .scaleEffect(0.72)
+                    .disabled(true)
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 32)
+            .background(SwiftUI.Color.white.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+
+            HStack(spacing: 8) {
+                Image(systemName: "line.diagonal")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Text("曲线规则：\(edgeFilterLabel)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 14) {
+                Button {
+                    clearEdgeSelection()
+                } label: {
+                    Image(systemName: "xmark")
+                        .frame(width: 34, height: 34)
+                        .background(SwiftUI.Color.black.opacity(0.07), in: Circle())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    filletRadius = 2
+                    clearFilletPreview(restoreScene: true)
+                } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                        .frame(width: 34, height: 34)
+                        .background(SwiftUI.Color.black.opacity(0.07), in: Circle())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    previewFillet()
+                } label: {
+                    Image(systemName: "eye")
+                        .frame(width: 34, height: 34)
+                        .background(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85).opacity(0.10), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isPreviewingFillet || isBuilding || importBusy || isDirty)
+
+                Button {
+                    commitFillet()
+                } label: {
+                    Image(systemName: "checkmark")
+                        .frame(width: 38, height: 38)
+                        .background(
+                            (filletPreview == nil ? SwiftUI.Color.black.opacity(0.08) : SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85)),
+                            in: Circle()
+                        )
+                        .foregroundStyle(filletPreview == nil ? SwiftUI.Color.secondary : SwiftUI.Color.white)
+                }
+                .buttonStyle(.plain)
+                .disabled(
+                    filletPreview == nil
+                    || (filletPreviewRadius ?? -1) != filletRadius
+                    || isPreviewingFillet
+                    || isBuilding
+                    || importBusy
+                    || isDirty
+                )
+
+                if isPreviewingFillet { ProgressView().scaleEffect(0.7) }
+            }
+            .padding(.top, 2)
+        }
+        .padding(9)
+        .frame(width: 264)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(SwiftUI.Color.white.opacity(0.5), lineWidth: 0.5))
+        .shadow(color: SwiftUI.Color.black.opacity(0.07), radius: 12, y: 4)
+    }
+
+    @ViewBuilder
+    private func filletCardRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+            Spacer()
+            content()
+                .font(.system(size: 12, weight: .semibold))
+        }
+        .padding(.horizontal, 9)
+        .frame(height: 32)
+        .background(SwiftUI.Color.white.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var digit3DTreePanel: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Text("建模树")
+                    .font(.system(size: 18, weight: .bold))
+                Spacer()
+                Image(systemName: "line.3.horizontal.decrease")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) { showTreePanel = false }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                        .background(SwiftUI.Color.black.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
+
+            Divider().opacity(0.4)
+
+            ScrollView {
+                if let result {
+                    featureTree(result)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 8)
+                } else {
+                    Text("模型尚未构建")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .padding(20)
+                }
+            }
+        }
+        .frame(width: min(330, UIScreen.main.bounds.width * 0.80))
+        .frame(maxHeight: 500)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(SwiftUI.Color.white.opacity(0.5), lineWidth: 0.5))
+    }
+
+    private var digit3DToolbox: some View {
+        VStack(spacing: 10) {
+            HStack {
+                Text("工具箱")
+                    .font(.system(size: 17, weight: .bold))
+                Spacer()
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) { showToolbox = false }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                        .background(SwiftUI.Color.black.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                ForEach(Array(toolboxNames.enumerated()), id: \.offset) { _, item in
+                    Button {
+                        notice = "\(item) 暂未接入"
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: itemIcon(item))
+                                .font(.system(size: 14))
+                                .frame(width: 22)
+                            Text(item)
+                                .font(.system(size: 12, weight: .medium))
+                            Spacer(minLength: 0)
+                        }
+                        .foregroundStyle(.primary.opacity(0.78))
+                        .padding(.horizontal, 8)
+                        .frame(height: 40)
+                        .background(SwiftUI.Color.white.opacity(0.58), in: RoundedRectangle(cornerRadius: 9))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(12)
+        .frame(width: min(310, UIScreen.main.bounds.width * 0.78))
+        .frame(maxHeight: 520)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(SwiftUI.Color.white.opacity(0.5), lineWidth: 0.5))
+    }
+
+    private var toolboxNames: [String] {
+        ["拔模", "拆分体", "修剪体", "加厚", "缩放体", "管", "包容体", "螺纹",
+         "刻字", "删除体", "优化体", "孔", "基本体", "随机着色", "抽取面", "去除参数",
+         "齿轮", "弹簧", "螺栓螺钉", "螺母", "垫圈", "型材"]
+    }
+
+    private func itemIcon(_ title: String) -> String {
+        switch title {
+        case "拔模": return "arrow.up.right"
+        case "拆分体": return "square.split.2x1"
+        case "修剪体": return "scissors"
+        case "加厚": return "square.stack.3d.up"
+        case "缩放体": return "arrow.up.left.and.arrow.down.right"
+        case "管": return "circle.dashed"
+        case "包容体": return "cube"
+        case "螺纹": return "scribble"
+        case "刻字": return "character.cursor.ibeam"
+        case "删除体": return "trash"
+        case "优化体": return "sparkles"
+        case "孔": return "circle"
+        case "基本体": return "cube"
+        case "随机着色": return "paintpalette"
+        case "抽取面": return "square.on.square"
+        case "去除参数": return "function"
+        case "齿轮": return "gearshape"
+        case "弹簧": return "waveform.path"
+        case "螺栓螺钉": return "bolt"
+        case "螺母": return "hexagon"
+        case "垫圈": return "circle.circle"
+        default: return "square.grid.2x2"
         }
     }
 
@@ -2588,20 +3191,26 @@ struct True3DModelScreen: View {
             return
         }
 
-        let candidates = result.shape.edges().filter { edge in
-            guard let faces = edge.adjacentFaces(in: result.shape) else { return false }
-            return faces.0.index == hit.faceIndex || faces.1?.index == hit.faceIndex
-        }
-        guard !candidates.isEmpty else {
-            clearEdgeSelection()
-            notice = "点到面，但这条面没有可选的边"
-            return
-        }
+        let box = result.mesh.boundingBox
+        let diagonal = Double(
+            pow(Double(box.max.x - box.min.x), 2)
+            + pow(Double(box.max.y - box.min.y), 2)
+            + pow(Double(box.max.z - box.min.z), 2)
+        ).squareRoot()
+        let nearby3D = max(0.8, diagonal * 0.07)
+        let hitPoint = hit.point
 
         var bestEdge: OCCTSwift.Edge?
         var bestDistance = Double.greatestFiniteMagnitude
-        for edge in candidates {
-            let samples = edge.points(count: 16)
+        for edge in result.shape.edges() {
+            let samples = edge.points(count: 24)
+            let nearest3D = samples.map { sample -> Double in
+                let dx = sample.x - hitPoint.x
+                let dy = sample.y - hitPoint.y
+                let dz = sample.z - hitPoint.z
+                return (dx * dx + dy * dy + dz * dz).squareRoot()
+            }.min() ?? .greatestFiniteMagnitude
+            guard nearest3D <= nearby3D else { continue }
             for sample in samples {
                 let world = modelRoot.convertPosition(
                     SCNVector3(Float(sample.x), Float(sample.y), Float(sample.z)),
@@ -2676,7 +3285,7 @@ struct True3DModelScreen: View {
         makeScene(
             mesh: result.mesh,
             stats: result.stats,
-            materialColor: UIColor(red: 0.46, green: 0.58, blue: 0.70, alpha: 1),
+            materialColor: UIColor(red: 0.52, green: 0.54, blue: 0.57, alpha: 1),
             isPreview: false
         )
     }
@@ -2685,7 +3294,7 @@ struct True3DModelScreen: View {
         makeScene(
             mesh: preview.mesh,
             stats: preview.stats,
-            materialColor: UIColor(red: 1.0, green: 0.58, blue: 0.16, alpha: 1),
+            materialColor: UIColor(red: 0.20, green: 0.47, blue: 0.92, alpha: 1),
             isPreview: true
         )
     }
@@ -2706,8 +3315,8 @@ struct True3DModelScreen: View {
         let material = SCNMaterial()
         material.lightingModel = .physicallyBased
         material.diffuse.contents = materialColor
-        material.metalness.contents = 0.18
-        material.roughness.contents = 0.48
+        material.metalness.contents = 0.08
+        material.roughness.contents = 0.55
         geometry.materials = [material]
         let solidNode = SCNNode(geometry: geometry)
         solidNode.name = isPreview ? "previewSolid" : "solid"
@@ -2724,16 +3333,31 @@ struct True3DModelScreen: View {
         wireNode.scale = SCNVector3(1.002, 1.002, 1.002)
         wireNode.isHidden = !showWire
         modelRoot.addChildNode(wireNode)
-        let maxSize = max(stats.sizeX, stats.sizeY, stats.sizeZ, 20)
+        let box = mesh.boundingBox
+        let meshSizeX = Double(box.max.x - box.min.x)
+        let meshSizeY = Double(box.max.y - box.min.y)
+        let meshSizeZ = Double(box.max.z - box.min.z)
+        let meshCenter = SCNVector3(
+            (box.min.x + box.max.x) / 2,
+            (box.min.y + box.max.y) / 2,
+            (box.min.z + box.max.z) / 2
+        )
+        let maxSize = max(meshSizeX, meshSizeY, meshSizeZ, 1)
+        let worldCenter = modelRoot.convertPosition(meshCenter, to: nil)
         let camera = SCNNode()
         camera.camera = SCNCamera()
-        camera.camera?.fieldOfView = 38
-        camera.camera?.zNear = 0.1
-        camera.camera?.zFar = 10000
-        camera.position = SCNVector3(Float(maxSize * 1.55), Float(maxSize * 1.35), Float(maxSize * 1.55))
+        camera.camera?.fieldOfView = 34
+        camera.camera?.zNear = max(0.01, maxSize / 5000)
+        camera.camera?.zFar = max(1000, maxSize * 40)
+        let distance = maxSize * 2.15
+        camera.position = SCNVector3(
+            worldCenter.x + Float(distance * 0.78),
+            worldCenter.y + Float(distance * 0.62),
+            worldCenter.z + Float(distance * 0.78)
+        )
         let target = SCNNode()
         target.name = "cameraTarget"
-        target.position = SCNVector3(0, Float(stats.sizeZ / 2), 0)
+        target.position = worldCenter
         newScene.rootNode.addChildNode(target)
         camera.constraints = [SCNLookAtConstraint(target: target)]
         newScene.rootNode.addChildNode(camera)
