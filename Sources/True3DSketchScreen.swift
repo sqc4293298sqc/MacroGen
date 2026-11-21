@@ -243,6 +243,24 @@ struct True3DSketchScreen: View {
                         Button("清空已存") { savedProfiles.removeAll() }
                             .font(.system(size: 10)).buttonStyle(.bordered)
                     }
+                    ForEach(Array(savedProfiles.enumerated()), id: \.offset) { index, profile in
+                        HStack(spacing: 6) {
+                            Image(systemName: "square.dashed").font(.system(size: 10))
+                            Text("轮廓 \(index + 1) · \(profile.count) 点")
+                                .font(.system(size: 10))
+                            Spacer()
+                            Button {
+                                savedProfiles.remove(at: index)
+                            } label: {
+                                Image(systemName: "trash").font(.system(size: 10))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.red.opacity(0.7))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 6))
+                    }
                 }
 
                 HStack(spacing: 6) {
