@@ -114,6 +114,32 @@ do {
     var params = True3DParams()
     params.edgeMode = .none
     params.features = []
+    var sketchFeature = True3DFeatureSpec(kind: .profileBoss)
+    sketchFeature.name = "草图凸台验证"
+    sketchFeature.profile = [
+        True3DPoint(x: -20, y: -10),
+        True3DPoint(x: 20, y: -10),
+        True3DPoint(x: 20, y: 10),
+        True3DPoint(x: -20, y: 10)
+    ]
+    sketchFeature.depth = 6
+    sketchFeature.bossHeight = 6
+    params.features = [sketchFeature]
+    let sketchDocument = True3DModelDocument(params: params)
+    let sketchBuilt = try sketchDocument.build()
+    guard sketchBuilt.stats.valid, sketchBuilt.stats.faces >= 6,
+          sketchBuilt.nodes.count >= 2 else {
+        fail("sketch-profile: extrusion did not produce a valid solid")
+    }
+    print("PASS sketch-profile: faces=\(sketchBuilt.stats.faces) nodes=\(sketchBuilt.nodes.count)")
+} catch {
+    fail("sketch-profile: \(error.localizedDescription)")
+}
+
+do {
+    var params = True3DParams()
+    params.edgeMode = .none
+    params.features = []
     let document = True3DModelDocument(params: params)
     let built = try document.build()
     guard let edge = built.shape.edge(at: 0) else {
