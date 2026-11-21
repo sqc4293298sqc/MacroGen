@@ -68,6 +68,7 @@ struct True3DModelScreen: View {
     @State private var viewOrientation: True3DViewOrientation = .iso
     @State private var orbitYaw: Double = 45
     @State private var orbitPitch: Double = 29
+    @State private var orbitDistance: Double?
     @State private var cubeDragActive = false
     @State private var cubeDragStartYaw: Double = 45
     @State private var cubeDragStartPitch: Double = 29
@@ -93,7 +94,13 @@ struct True3DModelScreen: View {
     @State private var assemblyGeneration = 0
     @State private var didInitialBuild = false
     @State private var selectedFeatureID: UUID?
+    @State private var pendingFeatureID: UUID?
     @State private var stage: True3DWorkbenchStage = .model
+    @State private var sketchProfile: [True3DPoint] = []
+    @State private var sketchClosed = false
+    @State private var sketchTool: True3DSketchTool = .polyline
+    @State private var sketchSavedProfiles: [[True3DPoint]] = []
+    @State private var showProgramSheet = false
     @State private var cam = True3DCAMParams()
     @State private var operations: [True3DOperation] = True3DModelScreen.defaultOperations()
     @State private var camResult: True3DCAMResult?
@@ -144,7 +151,7 @@ struct True3DModelScreen: View {
     var body: some View {
         ZStack(alignment: .trailing) {
             VStack(spacing: 0) {
-                if stage != .model && stage != .sketch { stageBar }
+                workbenchTopTabs
                 stageContent
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -259,6 +266,19 @@ struct True3DModelScreen: View {
                 scanImage(image)
             }
         }
+        .sheet(isPresented: $showProgramSheet) {
+            True3DProgramSheet(
+                projectName: params.projectName.isEmpty ? "未命名工程" : params.projectName,
+                profile: sketchProfile,
+                width: params.width,
+                depth: params.depth,
+                height: params.height,
+                scene: scene,
+                cam: cam,
+                operations: cam.operations,
+                stats: result?.stats
+            )
+        }
         .onDisappear {
             buildTask?.cancel()
             assemblyBuildTask?.cancel()
@@ -268,6 +288,46 @@ struct True3DModelScreen: View {
             filletPreviewGeneration += 1
             isBuilding = false
             isPreviewingFillet = false
+        }
+    }
+
+    private var workbenchTopTabs: some View {
+        HStack(spacing: 2) {
+            ForEach([True3DWorkbenchStage.sketch, .model, .operation, .machine], id: \.id) { item in
+                Button {
+                    stage = item
+                } label: {
+                    Text(item.rawValue)
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 7)
+                        .foregroundStyle(stage == item ? SwiftUI.Color(red: 0.10, green: 0.42, blue: 0.90) : SwiftUI.Color.primary.opacity(0.58))
+                        .background(
+                            stage == item
+                                ? SwiftUI.Color(red: 0.10, green: 0.42, blue: 0.90).opacity(0.10)
+                                : SwiftUI.Color.clear,
+                            in: RoundedRectangle(cornerRadius: 8)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+            Divider().frame(height: 22)
+            Button {
+                showProgramSheet = true
+            } label: {
+                Label("程序单", systemImage: "doc.text")
+                    .font(.system(size: 13, weight: .semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 7)
+                    .foregroundStyle(SwiftUI.Color.primary.opacity(0.72))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(.bar)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(SwiftUI.Color.black.opacity(0.06)).frame(height: 0.5)
         }
     }
 
@@ -327,11 +387,21 @@ struct True3DModelScreen: View {
             width: params.width,
             depth: params.depth,
             embedded: true,
+            initialProfile: sketchProfile,
+            initialClosed: sketchClosed,
+            initialTool: sketchTool,
+            initialSavedProfiles: sketchSavedProfiles,
             onBaseChange: { w, d in
                 params.width = max(w, 1)
                 params.depth = max(d, 1)
             },
-            onBack: { stage = .model }
+            onBack: { stage = .model },
+            onDraftChange: { points, closed, tool, saved in
+                sketchProfile = points
+                sketchClosed = closed
+                sketchTool = tool
+                sketchSavedProfiles = saved
+            }
         ) { output in
             applySketch(output)
             stage = .model
@@ -637,7 +707,11 @@ struct True3DModelScreen: View {
         highlighted: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
+        Button {
+            error = nil
+            notice = nil
+            action()
+        } label: {
             VStack(spacing: 3) {
                 Image(systemName: icon)
                     .font(.system(size: 15, weight: .medium))
@@ -696,14 +770,17 @@ struct True3DModelScreen: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(SwiftUI.Color.black.opacity(0.62))
                     .position(x: geo.size.width * 0.5, y: geo.size.height * 0.30)
+                    .allowsHitTesting(false)
                 Text("前")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(SwiftUI.Color.black.opacity(0.55))
                     .position(x: geo.size.width * 0.25, y: geo.size.height * 0.66)
+                    .allowsHitTesting(false)
                 Text("右")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(SwiftUI.Color.black.opacity(0.55))
                     .position(x: geo.size.width * 0.75, y: geo.size.height * 0.66)
+                    .allowsHitTesting(false)
             }
             .background(
                 Ellipse()
@@ -712,7 +789,7 @@ struct True3DModelScreen: View {
                     .offset(y: geo.size.height * 0.48)
             )
             .contentShape(Rectangle())
-            .gesture(
+            .highPriorityGesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .local)
                     .onChanged { value in
                         if !cubeDragActive {
@@ -2925,6 +3002,8 @@ struct True3DModelScreen: View {
     }
 
     private func addFeature(_ kind: True3DFeatureKind) {
+        error = nil
+        notice = nil
         var f = True3DFeatureSpec(kind: kind)
         switch kind {
         case .hole:
@@ -2969,6 +3048,7 @@ struct True3DModelScreen: View {
         }
         params.features.append(f)
         selectedFeatureID = f.id
+        pendingFeatureID = f.id
         rebuild()
         notice = "已添加 \(f.name)，可在特征面板里改尺寸"
     }
@@ -3135,12 +3215,17 @@ struct True3DModelScreen: View {
         modelOperations = []
         modelDocumentID = UUID()
         selectedFeatureID = nil
+        sketchProfile = []
+        sketchClosed = false
+        sketchTool = .polyline
+        sketchSavedProfiles = []
         notice = "已新建空白工程：可直接添加孔/凸台/型腔，或进入草图"
         stage = .model
         rebuild()
     }
 
     private func rebuild() {
+        captureCameraOrbit()
         buildGeneration += 1
         let generation = buildGeneration
         buildTask?.cancel()
@@ -3175,6 +3260,7 @@ struct True3DModelScreen: View {
                 guard !Task.isCancelled, generation == self.buildGeneration else { return }
                 self.result = newResult
                 self.message = "构建完成"
+                self.pendingFeatureID = nil
                 self.selectedEdge = nil
                 self.scene = self.makeScene(result: newResult)
                 self.applyOrbit()
@@ -3186,8 +3272,18 @@ struct True3DModelScreen: View {
                 self.message = "构建已取消"
             } catch {
                 guard generation == self.buildGeneration else { return }
-                self.error = error.localizedDescription
-                self.message = "构建失败"
+                let failedFeature = self.pendingFeatureID
+                if let failedFeature,
+                   let index = self.params.features.firstIndex(where: { $0.id == failedFeature }) {
+                    self.params.features.remove(at: index)
+                    self.selectedFeatureID = nil
+                    self.pendingFeatureID = nil
+                    self.message = "特征未生效，已撤回"
+                    self.error = "\(error.localizedDescription)（已撤销该特征）"
+                } else {
+                    self.message = "构建失败"
+                    self.error = error.localizedDescription
+                }
                 self.isBuilding = false
             }
         }
@@ -3277,7 +3373,7 @@ struct True3DModelScreen: View {
         selectedFeatureID = nil
         error = nil
         notice = nil
-        clearFilletPreview(restoreScene: true)
+        clearFilletPreview(restoreScene: false)
         rebuild()
     }
 
@@ -3291,6 +3387,8 @@ struct True3DModelScreen: View {
         isPreviewingFillet = false
         if restoreScene, hadPreview, let result {
             scene = makeScene(result: result)
+            applyOrbit()
+            if showDatumPlane { addDatumPlane(report: false) }
             if let selectedEdge,
                let edge = result.shape.edge(at: selectedEdge.edgeIndex),
                let modelRoot = scene.rootNode.childNode(withName: "modelRoot", recursively: false) {
@@ -3474,6 +3572,21 @@ struct True3DModelScreen: View {
         notice = renderDark ? "渲染：深色背景已开启" : "渲染：浅色背景已恢复"
     }
 
+    private func captureCameraOrbit() {
+        guard let camera = scene.rootNode.childNode(withName: "workbenchCamera", recursively: true),
+              let target = scene.rootNode.childNode(withName: "cameraTarget", recursively: true) else {
+            return
+        }
+        let dx = camera.position.x - target.position.x
+        let dy = camera.position.y - target.position.y
+        let dz = camera.position.z - target.position.z
+        let distance = (dx * dx + dy * dy + dz * dz).squareRoot()
+        guard distance > 0.01 else { return }
+        orbitDistance = Double(distance)
+        orbitYaw = Double(atan2(dx, dz)) * 180 / Double.pi
+        orbitPitch = min(85, max(-85, Double(asin(min(1, max(-1, dy / distance)))) * 180 / Double.pi))
+    }
+
     private func setViewOrientation(_ orientation: True3DViewOrientation) {
         viewOrientation = orientation
         switch orientation {
@@ -3501,7 +3614,8 @@ struct True3DModelScreen: View {
         let dx = camera.position.x - target.position.x
         let dy = camera.position.y - target.position.y
         let dz = camera.position.z - target.position.z
-        let distance = max((dx * dx + dy * dy + dz * dz).squareRoot(), 1)
+        let currentDistance = max((dx * dx + dy * dy + dz * dz).squareRoot(), 1)
+        let distance = orbitDistance.map { Float($0) } ?? currentDistance
         let yaw = orbitYaw * Double.pi / 180
         let pitch = min(85, max(-85, orbitPitch)) * Double.pi / 180
         let direction = SCNVector3(
@@ -4014,18 +4128,21 @@ struct True3DModelScreen: View {
     }
 }
 
-private struct True3DSceneView: UIViewRepresentable {
+struct True3DSceneView: UIViewRepresentable {
     let scene: SCNScene
     let showWire: Bool
+    let allowsCameraControl: Bool
     var onPickEdge: ((SCNView, CGPoint, CGSize) -> Void)?
 
     init(
         scene: SCNScene,
         showWire: Bool,
+        allowsCameraControl: Bool = true,
         onPickEdge: ((SCNView, CGPoint, CGSize) -> Void)? = nil
     ) {
         self.scene = scene
         self.showWire = showWire
+        self.allowsCameraControl = allowsCameraControl
         self.onPickEdge = onPickEdge
     }
 
@@ -4054,7 +4171,7 @@ private struct True3DSceneView: UIViewRepresentable {
         view.scene = scene
         view.backgroundColor = UIColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1)
         view.autoenablesDefaultLighting = false
-        view.allowsCameraControl = true
+        view.allowsCameraControl = allowsCameraControl
         view.antialiasingMode = .multisampling4X
         view.preferredFramesPerSecond = 60
         view.isPlaying = true

@@ -247,4 +247,36 @@ do {
     fail("project-imported: \(error.localizedDescription)")
 }
 
+do {
+    var params = True3DParams()
+    params.edgeMode = .none
+    params.features = [True3DFeatureSpec(kind: .revolveBoss)]
+    let built = try True3DKernel.build(params)
+    guard built.stats.valid, built.stats.faces > 0 else {
+        fail("revolve-default: invalid B-Rep")
+    }
+    print("PASS revolve-default: faces=\(built.stats.faces)")
+} catch {
+    fail("revolve-default: \(error.localizedDescription)")
+}
+
+do {
+    var params = True3DParams()
+    params.edgeMode = .none
+    params.height = 5
+    params.baseShape = .profile
+    params.profile = (0..<48).map { i in
+        let a = Double(i) / 48.0 * 2 * Double.pi
+        return True3DPoint(x: 32 * cos(a), y: 32 * sin(a))
+    }
+    params.features = [True3DFeatureSpec(kind: .revolveBoss)]
+    let built = try True3DKernel.build(params)
+    guard built.stats.valid, built.stats.faces > 0 else {
+        fail("revolve-profile-base: invalid B-Rep")
+    }
+    print("PASS revolve-profile-base: faces=\(built.stats.faces)")
+} catch {
+    fail("revolve-profile-base: \(error.localizedDescription)")
+}
+
 print("ALL CAM CHECKS PASSED")

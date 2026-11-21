@@ -173,12 +173,12 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
             name = "抽壳"; depth = 2
         case .revolveBoss:
             name = "旋转凸台"; angle = 360; bossHeight = 8
-            profile = [True3DPoint(x: 10, y: -10), True3DPoint(x: 24, y: -10),
-                       True3DPoint(x: 24, y: 10), True3DPoint(x: 10, y: 10)]
+            profile = [True3DPoint(x: 0.5, y: -8), True3DPoint(x: 10, y: -8),
+                       True3DPoint(x: 10, y: 8), True3DPoint(x: 0.5, y: 8)]
         case .revolveCut:
             name = "旋转切除"; angle = 360; depth = 4
-            profile = [True3DPoint(x: 14, y: -6), True3DPoint(x: 20, y: -6),
-                       True3DPoint(x: 20, y: 6), True3DPoint(x: 14, y: 6)]
+            profile = [True3DPoint(x: 2, y: -5), True3DPoint(x: 8, y: -5),
+                       True3DPoint(x: 8, y: 5), True3DPoint(x: 2, y: 5)]
         case .circularPocket:
             name = "圆腔"; dia = 24; depth = 5
         case .rectPocket:

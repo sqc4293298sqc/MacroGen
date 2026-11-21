@@ -131,6 +131,7 @@ struct True3DSketchScreen: View {
     var embedded: Bool = false
     var onBaseChange: ((Double, Double) -> Void)? = nil
     var onBack: (() -> Void)? = nil
+    let onDraftChange: (([True3DPoint], Bool, True3DSketchTool, [[True3DPoint]]) -> Void)?
     let onCommit: (True3DSketchOutput) -> Void
 
     @State private var canvasWidth: Double
@@ -140,16 +141,32 @@ struct True3DSketchScreen: View {
         width: Double,
         depth: Double,
         embedded: Bool = false,
+        initialProfile: [True3DPoint] = [],
+        initialClosed: Bool = false,
+        initialTool: True3DSketchTool = .polyline,
+        initialSavedProfiles: [[True3DPoint]] = [],
         onBaseChange: ((Double, Double) -> Void)? = nil,
         onBack: (() -> Void)? = nil,
+        onDraftChange: (([True3DPoint], Bool, True3DSketchTool, [[True3DPoint]]) -> Void)? = nil,
         onCommit: @escaping (True3DSketchOutput) -> Void
     ) {
         self.embedded = embedded
         self.onBaseChange = onBaseChange
         self.onBack = onBack
+        self.onDraftChange = onDraftChange
         self.onCommit = onCommit
         _canvasWidth = State(initialValue: max(width, 1))
         _canvasDepth = State(initialValue: max(depth, 1))
+        _points = State(initialValue: initialProfile)
+        _closed = State(initialValue: initialClosed)
+        _lastShapeTool = State(initialValue: initialTool)
+        _tool = State(initialValue: initialTool)
+        _savedProfiles = State(initialValue: initialSavedProfiles)
+        let xs = initialProfile.map(\.x)
+        let ys = initialProfile.map(\.y)
+        _dimensionW = State(initialValue: (xs.max() ?? 0) - (xs.min() ?? 0))
+        _dimensionH = State(initialValue: (ys.max() ?? 0) - (ys.min() ?? 0))
+        _selectedEntity = State(initialValue: initialClosed && initialProfile.count > 2)
     }
 
     @Environment(\.dismiss) private var dismiss
@@ -284,7 +301,12 @@ struct True3DSketchScreen: View {
                 syncDimensions()
                 selectedEntity = true
             }
+            reportDraft()
         }
+        .onChange(of: points) { _ in reportDraft() }
+        .onChange(of: lastShapeTool) { _ in reportDraft() }
+        .onChange(of: savedProfiles) { _ in reportDraft() }
+        .onAppear { reportDraft() }
         .sheet(isPresented: $showDimensionEditor) {
             dimensionEditorCard
                 .padding(18)
@@ -2226,6 +2248,10 @@ struct True3DSketchScreen: View {
         guard closed, points.count > 2 else { return }
         savedProfiles.append(points.map { True3DPoint(x: $0.x + 8, y: $0.y + 8) })
         error = "已复制一份，偏移 8 mm"
+    }
+
+    private func reportDraft() {
+        onDraftChange?(points, closed, lastShapeTool, savedProfiles)
     }
 
     private func syncDimensions() {
