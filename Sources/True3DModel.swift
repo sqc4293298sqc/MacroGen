@@ -439,7 +439,8 @@ enum True3DKernel {
                 return bevel
             }
             let tuples: [(edgeIndex: Int, faceIndex: Int, distance: Double, angleDegrees: Double)] = edges.compactMap { edge in
-                guard let face = edge.adjacentFaces(in: current)?.first else { return nil }
+                guard let faces = edge.adjacentFaces(in: current) else { return nil }
+                let face = faces.0
                 return (edge.index, face.index, max(f.depth, 0.05), 45)
             }
             guard !tuples.isEmpty, let bevel = current.chamferedDistAngle(tuples) else {
