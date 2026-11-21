@@ -114,8 +114,8 @@ struct True3DPoint3: Codable, Equatable, Hashable, Sendable {
 
 // MARK: - History operation
 
-struct True3DHistoryOperation: Identifiable, Equatable, Sendable {
-    enum Kind: Equatable, Sendable {
+struct True3DHistoryOperation: Identifiable, Codable, Equatable, Sendable {
+    enum Kind: Codable, Equatable, Sendable {
         case fillet(edge: True3DEdgeRef, radius: Double)
         case chamfer(edge: True3DEdgeRef, distance: Double)
     }

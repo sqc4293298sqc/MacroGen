@@ -127,4 +127,71 @@ do {
     fail("history: \(error.localizedDescription)")
 }
 
+do {
+    let params = True3DParams()
+    let edge = True3DEdgeRef(
+        edgeIndex: 0,
+        midpoint: True3DPoint3(x: 1, y: 2, z: 3),
+        length: 10,
+        adjacentFaceIndices: [0, 1]
+    )
+    let operation = True3DHistoryOperation(kind: .fillet(edge: edge, radius: 2))
+    let stored = True3DStoredProject(
+        id: UUID(),
+        name: "roundtrip",
+        sourceKind: .parametric,
+        params: params,
+        operations: [operation]
+    )
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    let data = try encoder.encode(stored)
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let decoded = try decoder.decode(True3DStoredProject.self, from: data)
+    guard decoded.id == stored.id,
+          decoded.sourceKind == .parametric,
+          decoded.params?.width == params.width,
+          decoded.operations.count == 1 else {
+        fail("project: stored project round-trip mismatch")
+    }
+    if case .fillet(let decodedEdge, let decodedRadius) = decoded.operations[0].kind {
+        guard decodedRadius == 2, decodedEdge.edgeIndex == 0, decodedEdge.length == 10 else {
+            fail("project: fillet operation round-trip mismatch")
+        }
+    } else {
+        fail("project: operation kind changed")
+    }
+    print("PASS project: operations=\(decoded.operations.count)")
+} catch {
+    fail("project: \(error.localizedDescription)")
+}
+
+do {
+    let stored = True3DStoredProject(
+        id: UUID(),
+        name: "imported-roundtrip",
+        sourceKind: .importedStep,
+        importedName: "bracket",
+        importedFileName: "bracket.step",
+        importedUnitInMeters: 0.001,
+        importedAt: Date(timeIntervalSince1970: 1_700_000_000),
+        operations: []
+    )
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    let data = try encoder.encode(stored)
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let decoded = try decoder.decode(True3DStoredProject.self, from: data)
+    guard decoded.sourceKind == .importedStep,
+          decoded.importedFileName == "bracket.step",
+          abs((decoded.importedUnitInMeters ?? 0) - 0.001) < 1e-9 else {
+        fail("project: imported project round-trip mismatch")
+    }
+    print("PASS project: imported source persisted")
+} catch {
+    fail("project-imported: \(error.localizedDescription)")
+}
+
 print("ALL CAM CHECKS PASSED")

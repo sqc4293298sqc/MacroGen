@@ -26,6 +26,11 @@ enum True3DWorkbenchStage: String, CaseIterable, Identifiable {
     }
 }
 
+private enum True3DImportMode {
+    case step
+    case dxf
+}
+
 /// 真 3D 工作台：草图 → 建模 → 工序 → 加工 一条线完成。
 struct True3DAssemblyComponent: Identifiable, Equatable {
     var id = UUID()
@@ -45,6 +50,9 @@ struct True3DAssemblyComponent: Identifiable, Equatable {
 struct True3DModelScreen: View {
     @State private var params = True3DParams()
     @State private var modelDocumentID = UUID()
+    @State private var importedPart: True3DImportedPart?
+    @State private var modelOperations: [True3DHistoryOperation] = []
+    @State private var importMode: True3DImportMode = .dxf
     @State private var scene = SCNScene()
     @State private var result: True3DResult?
     @State private var error: String?
@@ -92,11 +100,33 @@ struct True3DModelScreen: View {
 
     private var isDirty: Bool {
         guard let result else { return false }
-        return result.params != params || result.documentID != modelDocumentID
+        let builtOperationIDs = result.nodes.compactMap { $0.operationID }
+        let currentOperationIDs = modelOperations.map { $0.id }
+        if importedPart != nil {
+            return result.documentID != modelDocumentID || builtOperationIDs != currentOperationIDs
+        }
+        return result.params != params
+            || result.documentID != modelDocumentID
+            || builtOperationIDs != currentOperationIDs
     }
 
     private var dxfType: UTType {
         UTType(filenameExtension: "dxf") ?? .plainText
+    }
+
+    private var stepTypes: [UTType] {
+        let types = [
+            UTType(filenameExtension: "step"),
+            UTType(filenameExtension: "stp")
+        ].compactMap { $0 }
+        return types.isEmpty ? [.data] : types
+    }
+
+    private var importTypes: [UTType] {
+        switch importMode {
+        case .step: return stepTypes
+        case .dxf: return [dxfType, .plainText]
+        }
     }
 
     var body: some View {
@@ -138,7 +168,16 @@ struct True3DModelScreen: View {
                             Label("新建空白工程", systemImage: "doc.badge.plus")
                         }
                         Divider()
-                        Button { showImporter = true } label: {
+                        Button {
+                            importMode = .step
+                            showImporter = true
+                        } label: {
+                            Label("导入 STEP 模型", systemImage: "cube.transparent")
+                        }
+                        Button {
+                            importMode = .dxf
+                            showImporter = true
+                        } label: {
                             Label("导入 DXF 轮廓", systemImage: "doc.badge.plus")
                         }
                         Button { showPhotoPicker = true } label: {
@@ -171,7 +210,16 @@ struct True3DModelScreen: View {
             }
         }
         .onChange(of: stage) { newStage in
+            if importedPart != nil, newStage == .operation || newStage == .machine {
+                self.error = "STEP 模型暂不支持 CAM 工序；请先导出 STEP/STL，或退出 STEP"
+                stage = .model
+                return
+            }
             if newStage == .assembly {
+                if importedPart != nil {
+                    assemblyError = "STEP 零件暂不支持装配快照；请先“退出 STEP”"
+                    return
+                }
                 if assemblyComponents.isEmpty, result != nil {
                     assemblyComponents = [True3DAssemblyComponent(name: "零件 1", colorIndex: 0, part: params)]
                 }
@@ -186,14 +234,20 @@ struct True3DModelScreen: View {
         }
         .fileImporter(
             isPresented: $showImporter,
-            allowedContentTypes: [dxfType, .plainText],
-            allowsMultipleSelection: true
+            allowedContentTypes: importTypes,
+            allowsMultipleSelection: false
         ) { outcome in
             switch outcome {
             case .success(let urls):
-                if let url = urls.first { importDXF(url) }
+                guard let url = urls.first else { return }
+                let ext = url.pathExtension.lowercased()
+                if ext == "step" || ext == "stp" {
+                    importSTEP(url)
+                } else {
+                    importDXF(url)
+                }
             case .failure(let err):
-                self.error = "打开 DXF 失败：\(err.localizedDescription)"
+                self.error = "打开文件失败：\(err.localizedDescription)"
             }
         }
         .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images)
@@ -284,6 +338,17 @@ struct True3DModelScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header
+                if let importedPart {
+                    importedPartBanner(importedPart)
+                }
+                if importBusy {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text(importMode == .step ? "正在导入 STEP…" : "正在读取文件…")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 if let editingID = assemblyEditingID,
                    let component = assemblyComponents.first(where: { $0.id == editingID }) {
                     HStack(spacing: 8) {
@@ -307,6 +372,8 @@ struct True3DModelScreen: View {
                     .background(Color(red: 0.10, green: 0.55, blue: 0.50).opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
                 }
                 modelToolBar
+                    .disabled(importedPart != nil)
+                    .opacity(importedPart == nil ? 1 : 0.45)
 
                 True3DSceneView(scene: scene, showWire: showWire)
                     .frame(height: 400)
@@ -317,7 +384,7 @@ struct True3DModelScreen: View {
                     )
 
                 statusArea
-                if !params.features.isEmpty {
+                if importedPart == nil, !params.features.isEmpty {
                     inlineFeatureStrip
                 }
                 if let notice {
@@ -387,9 +454,13 @@ struct True3DModelScreen: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                parametersArea
-                featureListArea
-                patternArea
+                if let importedPart {
+                    importedPartDrawer(importedPart)
+                } else {
+                    parametersArea
+                    featureListArea
+                    patternArea
+                }
             }
             .padding(14)
             .padding(.bottom, 30)
@@ -399,6 +470,81 @@ struct True3DModelScreen: View {
             Rectangle().fill(Color.black.opacity(0.12)).frame(width: 0.5)
         }
         .ignoresSafeArea(edges: .bottom)
+    }
+
+    private func importedPartBanner(_ part: True3DImportedPart) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "cube.transparent")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(Color(red: 0.10, green: 0.55, blue: 0.50))
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text("STEP 零件")
+                        .font(.system(size: 13, weight: .bold))
+                    Text(part.name)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Text("\(part.stats.faces) 面 · \(part.stats.edges) 边 · \(String(format: "%.1f×%.1f×%.1f", part.stats.sizeX, part.stats.sizeY, part.stats.sizeZ)) mm")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            VStack(spacing: 5) {
+                Button("重新导入") {
+                    importMode = .step
+                    showImporter = true
+                }
+                .font(.system(size: 10, weight: .semibold))
+                .buttonStyle(.bordered)
+                Button("退出 STEP") { exitImportedPart() }
+                    .font(.system(size: 10))
+                    .buttonStyle(.bordered)
+            }
+            .disabled(importBusy || isBuilding)
+        }
+        .padding(11)
+        .background(Color(red: 0.10, green: 0.55, blue: 0.50).opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func importedPartDrawer(_ part: True3DImportedPart) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("STEP 模型源")
+            Text(part.name)
+                .font(.system(size: 13, weight: .semibold))
+            Text("只读 B-Rep · \(part.stats.faces) 面 / \(part.stats.edges) 边")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            if let localURL = part.localURL {
+                Text(localURL.lastPathComponent)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Text("参数化基础体、孔/凸台/型腔命令在 STEP 模型下会禁用。R1 下一刀接边选择与圆角预览。")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button("重新导入 STEP") {
+                    importMode = .step
+                    showImporter = true
+                    showModelDrawer = false
+                }
+                .font(.system(size: 11, weight: .semibold))
+                .buttonStyle(.borderedProminent)
+                .tint(Color(red: 0.10, green: 0.55, blue: 0.50))
+                Button("退出 STEP") {
+                    showModelDrawer = false
+                    exitImportedPart()
+                }
+                .font(.system(size: 11))
+                .buttonStyle(.bordered)
+            }
+            .disabled(importBusy || isBuilding)
+        }
     }
 
     private var assemblyStage: some View {
@@ -457,6 +603,7 @@ struct True3DModelScreen: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
+                        .disabled(importedPart != nil)
 
                         Button {
                             addBlankAssemblyPart()
@@ -545,6 +692,8 @@ struct True3DModelScreen: View {
 
     private func editAssemblyPart(_ component: True3DAssemblyComponent) {
         params = component.part
+        importedPart = nil
+        modelOperations = []
         modelDocumentID = UUID()
         selectedFeatureID = nil
         assemblyEditingID = component.id
@@ -1164,6 +1313,10 @@ struct True3DModelScreen: View {
         VStack(alignment: .leading, spacing: 6) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 7) {
+                    modelTool("导入 STEP", "cube.transparent") {
+                        importMode = .step
+                        showImporter = true
+                    }
                     modelTool("草图", "pencil.tip.crop.circle") { stage = .sketch }
                     modelTool("孔", "circle.dashed") { addFeature(.hole) }
                     modelTool("凸台", "arrow.up.circle") { addFeature(.boss) }
@@ -1238,7 +1391,10 @@ struct True3DModelScreen: View {
                         .fixedSize()
                 }
                 if isDirty {
-                    Label("参数已修改，当前显示仍是上次生成的实体；请点“生成实体”更新", systemImage: "exclamationmark.arrow.triangle.2.circlepath")
+                    Label(importedPart == nil
+                          ? "参数已修改，当前显示仍是上次生成的实体；请点“生成实体”更新"
+                          : "操作历史已修改，当前显示仍是上次结果；请点“重新构建 STEP”更新",
+                          systemImage: "exclamationmark.arrow.triangle.2.circlepath")
                         .font(.system(size: 11))
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1249,7 +1405,7 @@ struct True3DModelScreen: View {
         } else {
             HStack(spacing: 8) {
                 if isBuilding || importBusy { ProgressView() }
-                Text(importBusy ? "正在识别轮廓…" : message)
+                Text(importBusy ? (importMode == .step ? "正在导入 STEP…" : "正在识别轮廓…") : message)
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             }
@@ -1311,7 +1467,7 @@ struct True3DModelScreen: View {
             Button {
                 rebuild()
             } label: {
-                Label(isBuilding ? "生成中…" : "生成实体", systemImage: "cube.transparent")
+                Label(isBuilding ? "生成中…" : (importedPart == nil ? "生成实体" : "重新构建 STEP"), systemImage: "cube.transparent")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
@@ -1320,6 +1476,8 @@ struct True3DModelScreen: View {
 
             Button {
                 params = True3DParams()
+                importedPart = nil
+                modelOperations = []
                 modelDocumentID = UUID()
                 selectedFeatureID = nil
                 rebuild()
@@ -2094,6 +2252,8 @@ struct True3DModelScreen: View {
         params = True3DParams()
         params.projectName = "未命名工程"
         params.features = []
+        importedPart = nil
+        modelOperations = []
         modelDocumentID = UUID()
         selectedFeatureID = nil
         notice = "已新建空白工程：先画草图，或直接添加孔/凸台/型腔"
@@ -2115,7 +2275,20 @@ struct True3DModelScreen: View {
         isBuilding = true
         message = "正在构建 OCCT 实体…"
 
-        let document = True3DModelDocument(id: modelDocumentID, params: params)
+        let document: True3DModelDocument
+        if let importedPart {
+            document = True3DModelDocument(
+                id: modelDocumentID,
+                imported: importedPart,
+                operations: modelOperations
+            )
+        } else {
+            document = True3DModelDocument(
+                id: modelDocumentID,
+                params: params,
+                operations: modelOperations
+            )
+        }
         buildTask = Task { @MainActor in
             do {
                 let newResult = try await self.kernelService.build(document)
@@ -2165,9 +2338,7 @@ struct True3DModelScreen: View {
         wireNode.scale = SCNVector3(1.002, 1.002, 1.002)
         wireNode.isHidden = !showWire
         modelRoot.addChildNode(wireNode)
-        let model = result.params
-        let bossMax = model.bossFeatures.map(\.bossHeight).max() ?? 0
-        let maxSize = max(model.width, model.depth, model.height + bossMax, 20)
+        let maxSize = max(result.stats.sizeX, result.stats.sizeY, result.stats.sizeZ, 20)
         let camera = SCNNode()
         camera.camera = SCNCamera()
         camera.camera?.fieldOfView = 38
@@ -2175,7 +2346,7 @@ struct True3DModelScreen: View {
         camera.camera?.zFar = 10000
         camera.position = SCNVector3(Float(maxSize * 1.55), Float(maxSize * 1.35), Float(maxSize * 1.55))
         let target = SCNNode()
-        target.position = SCNVector3(0, Float(model.height / 2), 0)
+        target.position = SCNVector3(0, Float(result.stats.sizeZ / 2), 0)
         newScene.rootNode.addChildNode(target)
         camera.constraints = [SCNLookAtConstraint(target: target)]
         newScene.rootNode.addChildNode(camera)
@@ -2220,8 +2391,36 @@ struct True3DModelScreen: View {
     }
 
     private func saveProject() {
+        let stored: True3DStoredProject
+        if let importedPart {
+            guard let fileName = importedPart.localURL?.lastPathComponent else {
+                self.error = "STEP 源文件没有复制到 App 容器，无法保存工程"
+                return
+            }
+            stored = True3DStoredProject(
+                id: modelDocumentID,
+                name: importedPart.name,
+                sourceKind: .importedStep,
+                importedName: importedPart.name,
+                importedFileName: fileName,
+                importedUnitInMeters: importedPart.unitInMeters,
+                importedAt: importedPart.importedAt,
+                operations: modelOperations,
+                selectedNodeID: selectedFeatureID
+            )
+        } else {
+            stored = True3DStoredProject(
+                id: modelDocumentID,
+                name: params.projectName,
+                sourceKind: .parametric,
+                params: params,
+                operations: modelOperations,
+                selectedNodeID: selectedFeatureID
+            )
+        }
+
         do {
-            try True3DProjectStore.save(params)
+            try True3DProjectStore.saveDocument(stored)
             notice = "工程已保存到 Documents/MacroGen-3D-project.json"
         } catch {
             self.error = "保存工程失败：\(error.localizedDescription)"
@@ -2229,18 +2428,129 @@ struct True3DModelScreen: View {
     }
 
     private func loadProject() {
+        guard !importBusy else { return }
+        error = nil
         do {
-            params = try True3DProjectStore.load()
-            modelDocumentID = UUID()
-            selectedFeatureID = nil
-            rebuild()
-            notice = "已载入上次保存的 3D 工程"
+            let stored = try True3DProjectStore.loadDocument()
+            applyStoredProject(stored)
         } catch {
-            self.error = "载入工程失败：\(error.localizedDescription)"
+            do {
+                params = try True3DProjectStore.load()
+                importedPart = nil
+                modelOperations = []
+                modelDocumentID = UUID()
+                selectedFeatureID = nil
+                stage = .model
+                rebuild()
+                notice = "已载入上次保存的 3D 工程"
+            } catch {
+                self.error = "载入工程失败：\(error.localizedDescription)"
+            }
         }
     }
 
+    private func applyStoredProject(_ stored: True3DStoredProject) {
+        stage = .model
+        if stored.sourceKind == .importedStep {
+            guard let fileName = stored.importedFileName else {
+                self.error = "工程缺少 STEP 文件名，无法载入"
+                return
+            }
+            let url = True3DProjectStore.modelURL(fileName: fileName)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                self.error = "STEP 源文件已不在 Documents/MacroGen-3D-models，请重新导入"
+                return
+            }
+            importBusy = true
+            importMode = .step
+            Task { @MainActor in
+                defer { self.importBusy = false }
+                do {
+                    var part = try await self.kernelService.importSTEP(
+                        from: url,
+                        name: stored.importedName ?? url.deletingPathExtension().lastPathComponent
+                    )
+                    if let unitInMeters = stored.importedUnitInMeters {
+                        part.unitInMeters = unitInMeters
+                    }
+                    self.importedPart = part
+                    self.params = stored.params ?? True3DParams()
+                    self.modelOperations = stored.operations
+                    self.modelDocumentID = stored.id
+                    self.selectedFeatureID = stored.selectedNodeID
+                    self.result = nil
+                    self.scene = SCNScene()
+                    self.rebuild()
+                    self.notice = "已载入 STEP 工程：\(part.name)"
+                } catch {
+                    self.error = "载入 STEP 工程失败：\(error.localizedDescription)"
+                }
+            }
+            return
+        }
+
+        importedPart = nil
+        params = stored.params ?? True3DParams()
+        modelOperations = stored.operations
+        modelDocumentID = stored.id
+        selectedFeatureID = stored.selectedNodeID
+        rebuild()
+        notice = "已载入上次保存的 3D 工程"
+    }
+
+    private func importSTEP(_ url: URL) {
+        guard !importBusy else { return }
+        importMode = .step
+        importBusy = true
+        error = nil
+        let access = url.startAccessingSecurityScopedResource()
+        Task { @MainActor in
+            defer {
+                if access { url.stopAccessingSecurityScopedResource() }
+                self.importBusy = false
+            }
+            var copiedURL: URL?
+            do {
+                let copied = try await Task.detached(priority: .userInitiated) {
+                    try True3DProjectStore.copyModelFile(from: url)
+                }.value
+                copiedURL = copied
+                let name = url.deletingPathExtension().lastPathComponent
+                let part = try await self.kernelService.importSTEP(from: copied, name: name)
+                self.importedPart = part
+                self.modelOperations = []
+                self.modelDocumentID = UUID()
+                self.selectedFeatureID = nil
+                self.result = nil
+                self.scene = SCNScene()
+                self.stage = .model
+                self.rebuild()
+                self.notice = "已导入 STEP：\(name)"
+            } catch {
+                if let copiedURL {
+                    try? FileManager.default.removeItem(at: copiedURL)
+                }
+                self.error = "STEP 导入失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func exitImportedPart() {
+        importedPart = nil
+        modelOperations = []
+        params = True3DParams()
+        params.features = []
+        modelDocumentID = UUID()
+        selectedFeatureID = nil
+        result = nil
+        scene = SCNScene()
+        stage = .model
+        rebuild()
+        notice = "已退出 STEP 模型，回到空白参数化模型"
+    }
+
     private func importDXF(_ url: URL) {
+        importMode = .dxf
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         do {
@@ -2318,6 +2628,8 @@ struct True3DModelScreen: View {
         }
         p.features = spec.feats.map(convert)
         params = p
+        importedPart = nil
+        modelOperations = []
         modelDocumentID = UUID()
         selectedFeatureID = nil
         rebuild()
