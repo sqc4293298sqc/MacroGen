@@ -1488,7 +1488,7 @@ struct True3DModelScreen: View {
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if let filletPreview {
+                if filletPreview != nil {
                     HStack(spacing: 8) {
                         Label("圆角预览 R\(String(format: "%.2f", filletPreviewRadius ?? filletRadius))", systemImage: "eye")
                             .font(.system(size: 11, weight: .semibold))
@@ -1623,55 +1623,66 @@ struct True3DModelScreen: View {
             }
             VStack(spacing: 0) {
                 ForEach(Array(nodes.enumerated()), id: \.element.id) { index, node in
-                    HStack(spacing: 10) {
-                        Image(systemName: treeIcon(for: node.status))
-                            .foregroundStyle(treeColor(for: node.status))
-                            .font(.system(size: 14))
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(node.name).font(.system(size: 13, weight: .semibold))
-                            Text(node.detail).font(.system(size: 11)).foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        Spacer()
-                        Text("\(index + 1)")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                        if let operationID = node.operationID {
-                            Menu {
-                                Button(node.suppressed ? "恢复" : "抑制") {
-                                    toggleOperationSuppression(operationID)
-                                } label: {
-                                    Label(node.suppressed ? "恢复" : "抑制",
-                                          systemImage: node.suppressed ? "arrow.uturn.forward" : "minus.circle")
-                                }
-                                Button("删除", role: .destructive) {
-                                    deleteOperation(operationID)
-                                }
-                            } label: {
-                                Image(systemName: "ellipsis.circle")
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.borderless)
-                        }
-                    }
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 6)
-                    .background(
-                        selectedFeatureID == node.id
-                            ? Color(red: 1.0, green: 0.42, blue: 0.10).opacity(0.12)
-                            : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 8)
-                    )
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        selectedFeatureID = selectedFeatureID == node.id ? nil : node.id
-                    }
+                    featureTreeRow(node, index: index)
                     if index < nodes.count - 1 { Divider().padding(.leading, 24) }
                 }
             }
             .padding(.horizontal, 6)
             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private func featureTreeRow(_ node: True3DTreeNode, index: Int) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: treeIcon(for: node.status))
+                .foregroundStyle(treeColor(for: node.status))
+                .font(.system(size: 14))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(node.name).font(.system(size: 13, weight: .semibold))
+                Text(node.detail).font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Text("\(index + 1)")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary)
+            featureTreeMenu(node)
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 6)
+        .background(
+            selectedFeatureID == node.id
+                ? SwiftUI.Color(red: 1.0, green: 0.42, blue: 0.10).opacity(0.12)
+                : SwiftUI.Color.clear,
+            in: RoundedRectangle(cornerRadius: 8)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            selectedFeatureID = selectedFeatureID == node.id ? nil : node.id
+        }
+    }
+
+    @ViewBuilder
+    private func featureTreeMenu(_ node: True3DTreeNode) -> some View {
+        if let operationID = node.operationID {
+            Menu {
+                Button(node.suppressed ? "恢复" : "抑制") {
+                    toggleOperationSuppression(operationID)
+                } label: {
+                    Label(
+                        node.suppressed ? "恢复" : "抑制",
+                        systemImage: node.suppressed ? "arrow.uturn.forward" : "minus.circle"
+                    )
+                }
+                Button("删除", role: .destructive) {
+                    deleteOperation(operationID)
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
         }
     }
 
@@ -1713,11 +1724,11 @@ struct True3DModelScreen: View {
         }
     }
 
-    private func treeColor(for status: True3DTreeNode.Status) -> Color {
+    private func treeColor(for status: True3DTreeNode.Status) -> SwiftUI.Color {
         switch status {
         case .ok: return .green
         case .failed: return .orange
-        case .suppressed: return Color.secondary
+        case .suppressed: return SwiftUI.Color.secondary
         }
     }
 
@@ -2615,7 +2626,7 @@ struct True3DModelScreen: View {
             return
         }
 
-        var bestEdge: Edge?
+        var bestEdge: OCCTSwift.Edge?
         var bestDistance = Double.greatestFiniteMagnitude
         for edge in candidates {
             let samples = edge.points(count: 16)
@@ -2652,7 +2663,7 @@ struct True3DModelScreen: View {
         highlightSelectedEdge(modelRoot: modelRoot, edge: edge)
     }
 
-    private func highlightSelectedEdge(modelRoot: SCNNode, edge: Edge) {
+    private func highlightSelectedEdge(modelRoot: SCNNode, edge: OCCTSwift.Edge) {
         modelRoot.childNode(withName: "selectedEdge", recursively: false)?.removeFromParentNode()
         let points = edge.points(count: 64)
         guard points.count >= 2 else { return }
