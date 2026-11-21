@@ -1,6 +1,22 @@
 import Foundation
 import OCCTSwift
 
+enum True3DLoftShape: String, CaseIterable, Identifiable, Codable {
+    case circle = "圆"
+    case rectangle = "矩形"
+    var id: String { rawValue }
+}
+
+enum True3DEdgeSelection: String, CaseIterable, Identifiable, Codable {
+    case all = "全部边"
+    case convex = "凸边"
+    case concave = "凹边"
+    case vertical = "竖直边"
+    case top = "顶边"
+    case bottom = "底边"
+    var id: String { rawValue }
+}
+
 enum True3DEdgeMode: String, CaseIterable, Identifiable, Codable {
     case none = "无"
     case fillet = "圆角"
@@ -34,6 +50,7 @@ enum True3DFeatureKind: String, CaseIterable, Identifiable, Codable {
     case boss = "凸台"
     case rectBoss = "矩形凸台"
     case coneBoss = "锥形凸台"
+    case loftBoss = "放样凸台"
     case draft = "拔模"
     case edgeFillet = "全边圆角"
     case edgeChamfer = "全边倒角"
@@ -74,6 +91,14 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
     var angle: Double = 360
     /// 锥形凸台的顶部直径。
     var topDia: Double = 0
+    /// 放样底部 / 顶部截面形状。
+    var loftBottomShape: True3DLoftShape = .circle
+    var loftTopShape: True3DLoftShape = .circle
+    /// 放样顶部矩形尺寸。
+    var topWidth: Double = 20
+    var topDepthY: Double = 16
+    /// 全边圆角 / 倒角的边选择范围。
+    var edgeSelection: True3DEdgeSelection = .all
 
     init(kind: True3DFeatureKind = .hole, x: Double = 0, y: Double = 0) {
         self.kind = kind
@@ -88,6 +113,10 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
             name = "矩形凸台"; width = 30; depthY = 20; bossHeight = 6; cornerRadius = 0
         case .coneBoss:
             name = "锥形凸台"; dia = 24; topDia = 12; bossHeight = 8
+        case .loftBoss:
+            name = "放样凸台"; dia = 30; width = 30; depthY = 20
+            topDia = 12; topWidth = 18; topDepthY = 12; bossHeight = 10
+            loftBottomShape = .circle; loftTopShape = .circle
         case .draft:
             name = "拔模"; angle = 3
         case .edgeFillet:
@@ -134,12 +163,14 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
             return "\(fmt(width))×\(fmt(depthY)) H\(fmt(bossHeight)) R\(fmt(cornerRadius)) @ \(p)"
         case .coneBoss:
             return "Ø\(fmt(dia))→Ø\(fmt(topDia)) H\(fmt(bossHeight)) @ \(p)"
+        case .loftBoss:
+            return "放样 \(loftBottomShape.rawValue)→\(loftTopShape.rawValue) H\(fmt(bossHeight))"
         case .draft:
             return "拔模 \(fmt(angle))°"
         case .edgeFillet:
-            return "全边圆角 R\(fmt(depth))"
+            return "\(edgeSelection.rawValue)圆角 R\(fmt(depth))"
         case .edgeChamfer:
-            return "全边倒角 C\(fmt(depth))"
+            return "\(edgeSelection.rawValue)倒角 C\(fmt(depth))"
         case .shell:
             return "壁厚 \(fmt(abs(depth)))"
         case .revolveBoss:
@@ -371,6 +402,11 @@ enum True3DKernel {
                 throw True3DModelError.featureFailed("\(f.name) 锥形凸台合并失败")
             }
             return fused
+        case .loftBoss:
+            guard let tool = loftTool(f, baseHeight: h), let fused = current + tool else {
+                throw True3DModelError.featureFailed("\(f.name) 放样失败：截面尺寸或高度不合理")
+            }
+            return fused
         case .draft:
             let angle = min(max(f.angle, 0.1), 30) * .pi / 180
             guard let drafted = current.drafted(
@@ -383,12 +419,30 @@ enum True3DKernel {
             }
             return drafted
         case .edgeFillet:
-            guard let rounded = current.filleted(radius: max(f.depth, 0.05)) else {
+            let edges = selectedEdges(current, selection: f.edgeSelection, baseHeight: h)
+            guard !edges.isEmpty else {
+                throw True3DModelError.featureFailed("\(f.name) 没有匹配的边")
+            }
+            guard let rounded = current.filleted(edges: edges, radius: max(f.depth, 0.05)) else {
                 throw True3DModelError.featureFailed("\(f.name) 失败：R 可能超过相邻边允许范围")
             }
             return rounded
         case .edgeChamfer:
-            guard let bevel = current.chamfered(distance: max(f.depth, 0.05)) else {
+            let edges = selectedEdges(current, selection: f.edgeSelection, baseHeight: h)
+            guard !edges.isEmpty else {
+                throw True3DModelError.featureFailed("\(f.name) 没有匹配的边")
+            }
+            if f.edgeSelection == .all {
+                guard let bevel = current.chamfered(distance: max(f.depth, 0.05)) else {
+                    throw True3DModelError.featureFailed("\(f.name) 失败：C 可能超过相邻边允许范围")
+                }
+                return bevel
+            }
+            let tuples: [(edgeIndex: Int, faceIndex: Int, distance: Double, angleDegrees: Double)] = edges.compactMap { edge in
+                guard let face = edge.adjacentFaces(in: current)?.first else { return nil }
+                return (edge.index, face.index, max(f.depth, 0.05), 45)
+            }
+            guard !tuples.isEmpty, let bevel = current.chamferedDistAngle(tuples) else {
                 throw True3DModelError.featureFailed("\(f.name) 失败：C 可能超过相邻边允许范围")
             }
             return bevel
@@ -476,6 +530,58 @@ enum True3DKernel {
             height: f.depthY,
             depth: height
         )
+    }
+
+    private static func selectedEdges(_ shape: Shape, selection: True3DEdgeSelection, baseHeight h: Double) -> [Edge] {
+        switch selection {
+        case .all:
+            return shape.edges()
+        case .convex:
+            return shape.convexEdges()
+        case .concave:
+            return shape.concaveEdges()
+        case .vertical:
+            return shape.edges(parallelTo: SIMD3<Double>(0, 0, 1))
+        case .top:
+            let maxZ = shape.bounds?.max.z ?? h
+            return shape.edges(where: { edge in
+                let p = edge.endpoints
+                return abs(p.start.z - maxZ) < 0.15 && abs(p.end.z - maxZ) < 0.15
+            })
+        case .bottom:
+            let minZ = shape.bounds?.min.z ?? 0
+            return shape.edges(where: { edge in
+                let p = edge.endpoints
+                return abs(p.start.z - minZ) < 0.15 && abs(p.end.z - minZ) < 0.15
+            })
+        }
+    }
+
+    private static func loftTool(_ f: True3DFeatureSpec, baseHeight h: Double) -> Shape? {
+        func wire(shape: True3DLoftShape, radius: Double, width: Double, depth: Double, z: Double) -> Wire? {
+            let base: Wire?
+            switch shape {
+            case .circle:
+                base = Wire.circle(radius: max(radius, 0.1))
+            case .rectangle:
+                base = Wire.rectangle(width: max(width, 0.2), height: max(depth, 0.2))
+            }
+            return base?.offset3D(distance: z, direction: SIMD3<Double>(0, 0, 1))
+        }
+        guard let bottom = wire(
+            shape: f.loftBottomShape,
+            radius: f.dia / 2,
+            width: f.width,
+            depth: f.depthY,
+            z: f.topZ ?? h
+        ), let top = wire(
+            shape: f.loftTopShape,
+            radius: f.topDia / 2,
+            width: f.topWidth,
+            depth: f.topDepthY,
+            z: (f.topZ ?? h) + max(f.bossHeight, 0.1)
+        ) else { return nil }
+        return Shape.loft(profiles: [bottom, top], solid: true, ruled: false)
     }
 
     private static func revolveTool(_ f: True3DFeatureSpec, baseHeight h: Double) -> Shape? {
@@ -642,6 +748,11 @@ enum True3DKernel {
                 guard abs(f.x) + r <= p.width / 2 - edgeInset - 0.02,
                       abs(f.y) + r <= p.depth / 2 - edgeInset - 0.02 else {
                     throw True3DModelError.invalidParameter("\(f.name) 必须完整落在基础块顶面")
+                }
+            case .loftBoss:
+                guard f.bossHeight > 0.1 else { throw True3DModelError.invalidParameter("\(f.name) 高度必须大于 0.1 mm") }
+                guard f.dia > 0.1, f.topDia > 0.1, f.width > 0.1, f.depthY > 0.1, f.topWidth > 0.1, f.topDepthY > 0.1 else {
+                    throw True3DModelError.invalidParameter("\(f.name) 截面尺寸必须大于 0.1 mm")
                 }
             case .draft:
                 guard f.angle > 0.1, f.angle <= 30 else {

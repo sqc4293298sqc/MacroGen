@@ -815,6 +815,7 @@ struct True3DModelScreen: View {
                     modelTool("凸台", "arrow.up.circle") { addFeature(.boss) }
                     modelTool("矩形凸台", "rectangle") { addFeature(.rectBoss) }
                     modelTool("锥形凸台", "triangle") { addFeature(.coneBoss) }
+                    modelTool("放样凸台", "square.stack.3d.up") { addFeature(.loftBoss) }
                     modelTool("拔模", "square.on.square.dashed") { addFeature(.draft) }
                     modelTool("全边圆角", "circle.dashed") { addFeature(.edgeFillet) }
                     modelTool("全边倒角", "square.dashed") { addFeature(.edgeChamfer) }
@@ -1092,6 +1093,7 @@ struct True3DModelScreen: View {
                     Button("凸台") { addFeature(.boss) }
                     Button("矩形凸台") { addFeature(.rectBoss) }
                     Button("锥形凸台") { addFeature(.coneBoss) }
+                    Button("放样凸台") { addFeature(.loftBoss) }
                     Button("拔模") { addFeature(.draft) }
                     Button("全边圆角") { addFeature(.edgeFillet) }
                     Button("全边倒角") { addFeature(.edgeChamfer) }
@@ -1281,13 +1283,53 @@ struct True3DModelScreen: View {
                 numRow("高度 H", f.bossHeight)
                 numRow("中心 X", f.x)
                 numRow("中心 Y", f.y)
+            case .loftBoss:
+                Picker("底截面", selection: f.loftBottomShape) {
+                    ForEach(True3DLoftShape.allCases) { shape in
+                        Text(shape.rawValue).tag(shape)
+                    }
+                }
+                .font(.system(size: 12))
+                if f.wrappedValue.loftBottomShape == .circle {
+                    numRow("底直径", f.dia)
+                } else {
+                    numRow("底 X", f.width)
+                    numRow("底 Y", f.depthY)
+                }
+                Picker("顶截面", selection: f.loftTopShape) {
+                    ForEach(True3DLoftShape.allCases) { shape in
+                        Text(shape.rawValue).tag(shape)
+                    }
+                }
+                .font(.system(size: 12))
+                if f.wrappedValue.loftTopShape == .circle {
+                    numRow("顶直径", f.topDia)
+                } else {
+                    numRow("顶 X", f.topWidth)
+                    numRow("顶 Y", f.topDepthY)
+                }
+                numRow("高度 H", f.bossHeight)
+                numRow("中心 X", f.x)
+                numRow("中心 Y", f.y)
             case .draft:
                 numRow("拔模角 °", f.angle)
                 Text("拔模面：当前实体所有竖直面，中性面 Z=0")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             case .edgeFillet:
+                Picker("边选择", selection: f.edgeSelection) {
+                    ForEach(True3DEdgeSelection.allCases) { item in
+                        Text(item.rawValue).tag(item)
+                    }
+                }
+                .font(.system(size: 12))
                 numRow("圆角 R", f.depth)
             case .edgeChamfer:
+                Picker("边选择", selection: f.edgeSelection) {
+                    ForEach(True3DEdgeSelection.allCases) { item in
+                        Text(item.rawValue).tag(item)
+                    }
+                }
+                .font(.system(size: 12))
                 numRow("倒角 C", f.depth)
             case .shell:
                 numRow("壁厚", f.depth)
@@ -1399,6 +1441,7 @@ struct True3DModelScreen: View {
         case .boss: return "cylinder"
         case .rectBoss: return "rectangle"
         case .coneBoss: return "triangle"
+        case .loftBoss: return "square.stack.3d.up"
         case .draft: return "square.on.square.dashed"
         case .edgeFillet: return "circle.dashed"
         case .edgeChamfer: return "square.dashed"
@@ -1426,6 +1469,9 @@ struct True3DModelScreen: View {
         case .coneBoss:
             f.name = "锥形凸台"; f.x = params.width * 0.25; f.y = params.depth * 0.15
             f.dia = 24; f.topDia = 12; f.bossHeight = 8
+        case .loftBoss:
+            f.name = "放样凸台"; f.x = 0; f.y = 0
+            f.bossHeight = 10
         case .draft:
             f.name = "拔模"; f.angle = 3
         case .edgeFillet:

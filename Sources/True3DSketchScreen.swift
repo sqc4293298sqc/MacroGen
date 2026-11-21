@@ -97,6 +97,10 @@ struct True3DSketchScreen: View {
     @State private var offsetDistance: Double = 5
     @State private var editingPointIndex: Int?
     @State private var savedProfiles: [[True3DPoint]] = []
+    @State private var patternRows = 2
+    @State private var patternCols = 2
+    @State private var patternPitchX: Double = 30
+    @State private var patternPitchY: Double = 20
 
     private var baseWidth: CGFloat { CGFloat(max(canvasWidth, 1)) }
     private var baseDepth: CGFloat { CGFloat(max(canvasDepth, 1)) }
@@ -230,6 +234,27 @@ struct True3DSketchScreen: View {
                     Button("清空") { clear() }.buttonStyle(.bordered)
                 }
                 .font(.system(size: 11))
+                Divider()
+                Text("草图阵列").font(.system(size: 12, weight: .semibold))
+                HStack(spacing: 6) {
+                    Stepper("行 \(patternRows)", value: $patternRows, in: 1...6)
+                        .font(.system(size: 10))
+                    Stepper("列 \(patternCols)", value: $patternCols, in: 1...6)
+                        .font(.system(size: 10))
+                }
+                HStack(spacing: 6) {
+                    TextField("X 距", value: $patternPitchX, format: .number.precision(.fractionLength(1)))
+                        .keyboardType(.decimalPad).multilineTextAlignment(.trailing)
+                        .frame(width: 62).textFieldStyle(.roundedBorder)
+                    TextField("Y 距", value: $patternPitchY, format: .number.precision(.fractionLength(1)))
+                        .keyboardType(.decimalPad).multilineTextAlignment(.trailing)
+                        .frame(width: 62).textFieldStyle(.roundedBorder)
+                    Button("生成阵列") { patternProfiles() }
+                        .font(.system(size: 10, weight: .semibold))
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
+                }
+                Divider()
                 if closed {
                     Button("存为轮廓并新建 \(savedProfiles.count + 1)") { stashProfile() }
                         .font(.system(size: 11, weight: .semibold))
@@ -1018,6 +1043,41 @@ struct True3DSketchScreen: View {
             sum += a.x * b.y - b.x * a.y
         }
         return sum / 2
+    }
+
+    private func patternProfiles() {
+        var bases = savedProfiles
+        if closed, points.count >= 3 {
+            bases.append(points)
+        }
+        guard !bases.isEmpty else {
+            error = "先画一个闭合轮廓，或存入至少一个轮廓"
+            return
+        }
+        let rows = max(1, min(patternRows, 6))
+        let cols = max(1, min(patternCols, 6))
+        guard rows * cols <= 36 else {
+            error = "阵列数量过多，最多 36 个"
+            return
+        }
+        var all: [[True3DPoint]] = []
+        for base in bases {
+            for r in 0..<rows {
+                for c in 0..<cols {
+                    if r == 0 && c == 0 { continue }
+                    let offsetX = Double(c) * patternPitchX
+                    let offsetY = Double(r) * patternPitchY
+                    all.append(base.map { True3DPoint(x: $0.x + offsetX, y: $0.y + offsetY) })
+                }
+            }
+        }
+        savedProfiles = bases + all
+        points = []
+        closed = false
+        dimensionW = 0
+        dimensionH = 0
+        ensureCanvasContains(savedProfiles.flatMap { $0 })
+        error = nil
     }
 
     private func stashProfile() {
