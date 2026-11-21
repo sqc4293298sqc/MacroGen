@@ -816,6 +816,7 @@ struct True3DModelScreen: View {
                     modelTool("矩形凸台", "rectangle") { addFeature(.rectBoss) }
                     modelTool("锥形凸台", "triangle") { addFeature(.coneBoss) }
                     modelTool("放样凸台", "square.stack.3d.up") { addFeature(.loftBoss) }
+                    modelTool("螺旋扫掠", "point.3.connected.trianglepath.dotted") { addFeature(.sweepBoss) }
                     modelTool("拔模", "square.on.square.dashed") { addFeature(.draft) }
                     modelTool("全边圆角", "circle.dashed") { addFeature(.edgeFillet) }
                     modelTool("全边倒角", "square.dashed") { addFeature(.edgeChamfer) }
@@ -1094,6 +1095,7 @@ struct True3DModelScreen: View {
                     Button("矩形凸台") { addFeature(.rectBoss) }
                     Button("锥形凸台") { addFeature(.coneBoss) }
                     Button("放样凸台") { addFeature(.loftBoss) }
+                    Button("螺旋扫掠") { addFeature(.sweepBoss) }
                     Button("拔模") { addFeature(.draft) }
                     Button("全边圆角") { addFeature(.edgeFillet) }
                     Button("全边倒角") { addFeature(.edgeChamfer) }
@@ -1311,6 +1313,11 @@ struct True3DModelScreen: View {
                 numRow("高度 H", f.bossHeight)
                 numRow("中心 X", f.x)
                 numRow("中心 Y", f.y)
+            case .sweepBoss:
+                numRow("截面 Ø", f.dia)
+                numRow("路径 R", f.sweepPathRadius)
+                numRow("螺距", f.sweepPitch)
+                numRow("圈数", f.sweepTurns)
             case .draft:
                 numRow("拔模角 °", f.angle)
                 Text("拔模面：当前实体所有竖直面，中性面 Z=0")
@@ -1448,6 +1455,7 @@ struct True3DModelScreen: View {
         case .rectBoss: return "rectangle"
         case .coneBoss: return "triangle"
         case .loftBoss: return "square.stack.3d.up"
+        case .sweepBoss: return "point.3.connected.trianglepath.dotted"
         case .draft: return "square.on.square.dashed"
         case .edgeFillet: return "circle.dashed"
         case .edgeChamfer: return "square.dashed"
@@ -1478,6 +1486,9 @@ struct True3DModelScreen: View {
         case .loftBoss:
             f.name = "放样凸台"; f.x = 0; f.y = 0
             f.bossHeight = 10
+        case .sweepBoss:
+            f.name = "螺旋扫掠"; f.x = 0; f.y = 0
+            f.dia = 8; f.sweepPathRadius = 25; f.sweepPitch = 12; f.sweepTurns = 2
         case .draft:
             f.name = "拔模"; f.angle = 3
         case .edgeFillet:
