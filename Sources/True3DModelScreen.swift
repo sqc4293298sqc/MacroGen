@@ -1509,10 +1509,23 @@ struct True3DModelScreen: View {
                 numRow("中心 X", f.x)
                 numRow("中心 Y", f.y)
             case .sweepBoss:
+                Picker("路径", selection: f.sweepPathKind) {
+                    ForEach(True3DSweepPath.allCases) { item in
+                        Text(item.rawValue).tag(item)
+                    }
+                }
+                .font(.system(size: 12))
                 numRow("截面 Ø", f.dia)
-                numRow("路径 R", f.sweepPathRadius)
-                numRow("螺距", f.sweepPitch)
-                numRow("圈数", f.sweepTurns)
+                if f.wrappedValue.sweepPathKind != .line {
+                    numRow("路径 R", f.sweepPathRadius)
+                }
+                if f.wrappedValue.sweepPathKind == .helix {
+                    numRow("螺距", f.sweepPitch)
+                    numRow("圈数", f.sweepTurns)
+                }
+                if f.wrappedValue.sweepPathKind == .line {
+                    numRow("路径长度", f.sweepLength)
+                }
             case .draft:
                 numRow("拔模角 °", f.angle)
                 Text("拔模面：当前实体所有竖直面，中性面 Z=0")
@@ -1688,8 +1701,9 @@ struct True3DModelScreen: View {
             f.name = "放样凸台"; f.x = 0; f.y = 0
             f.bossHeight = 10
         case .sweepBoss:
-            f.name = "螺旋扫掠"; f.x = 0; f.y = 0
-            f.dia = 8; f.sweepPathRadius = 25; f.sweepPitch = 12; f.sweepTurns = 2
+            f.name = "扫掠凸台"; f.x = 0; f.y = 0
+            f.dia = 8; f.sweepPathKind = .helix
+            f.sweepPathRadius = 25; f.sweepPitch = 12; f.sweepTurns = 2; f.sweepLength = 60
         case .draft:
             f.name = "拔模"; f.angle = 3
         case .edgeFillet:

@@ -24,6 +24,13 @@ enum True3DRevolvePlane: String, CaseIterable, Identifiable, Codable {
     var id: String { rawValue }
 }
 
+enum True3DSweepPath: String, CaseIterable, Identifiable, Codable {
+    case helix = "螺旋"
+    case circle = "圆周"
+    case line = "直线"
+    var id: String { rawValue }
+}
+
 enum True3DRevolveAxis: String, CaseIterable, Identifiable, Codable {
     case x = "X 轴"
     case y = "Y 轴"
@@ -114,10 +121,12 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
     var topDepthY: Double = 16
     /// 全边圆角 / 倒角的边选择范围。
     var edgeSelection: True3DEdgeSelection = .all
-    /// 螺旋扫掠路径半径、螺距、圈数；截面用 dia。
+    /// 扫掠路径：螺旋/圆周/直线；截面用 dia。
+    var sweepPathKind: True3DSweepPath = .helix
     var sweepPathRadius: Double = 25
     var sweepPitch: Double = 12
     var sweepTurns: Double = 2
+    var sweepLength: Double = 60
     /// 旋转特征所在基准面，以及旋转轴。
     var revolvePlane: True3DRevolvePlane = .xz
     var revolveAxis: True3DRevolveAxis = .z
@@ -140,7 +149,8 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
             topDia = 12; topWidth = 18; topDepthY = 12; bossHeight = 10
             loftBottomShape = .circle; loftTopShape = .circle
         case .sweepBoss:
-            name = "螺旋扫掠"; dia = 8; sweepPathRadius = 25; sweepPitch = 12; sweepTurns = 2
+            name = "扫掠凸台"; dia = 8; sweepPathKind = .helix
+            sweepPathRadius = 25; sweepPitch = 12; sweepTurns = 2; sweepLength = 60
         case .draft:
             name = "拔模"; angle = 3
         case .edgeFillet:
@@ -190,7 +200,14 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
         case .loftBoss:
             return "放样 \(loftBottomShape.rawValue)→\(loftTopShape.rawValue) H\(fmt(bossHeight))"
         case .sweepBoss:
-            return "螺旋扫掠 Ø\(fmt(dia)) 路径R\(fmt(sweepPathRadius)) 螺距\(fmt(sweepPitch)) \(fmt(sweepTurns))圈"
+            switch sweepPathKind {
+            case .helix:
+                return "扫掠 Ø\(fmt(dia)) 螺旋 R\(fmt(sweepPathRadius)) 螺距\(fmt(sweepPitch)) \(fmt(sweepTurns))圈"
+            case .circle:
+                return "扫掠 Ø\(fmt(dia)) 圆周 R\(fmt(sweepPathRadius))"
+            case .line:
+                return "扫掠 Ø\(fmt(dia)) 直线 L\(fmt(sweepLength))"
+            }
         case .draft:
             return "拔模 \(fmt(angle))°"
         case .edgeFillet:
@@ -619,24 +636,50 @@ enum True3DKernel {
     private static func sweepTool(_ f: True3DFeatureSpec, baseHeight h: Double) -> Shape? {
         let pathRadius = max(f.sweepPathRadius, 0.5)
         let sectionRadius = max(f.dia, 0.1) / 2
-        guard sectionRadius < pathRadius, f.sweepPitch > 0.01, f.sweepTurns > 0.01 else { return nil }
-        guard let path = Wire.helix(
-            origin: SIMD3<Double>(0, 0, h),
-            axis: SIMD3<Double>(0, 0, 1),
-            radius: pathRadius,
-            pitch: f.sweepPitch,
-            turns: f.sweepTurns
-        ) else { return nil }
-        let tangent = normalize3(SIMD3<Double>(0, pathRadius, f.sweepPitch / (2 * .pi)))
-        let normal1 = normalize3(cross3(tangent, SIMD3<Double>(0, 0, 1)))
-        let normal2 = normalize3(cross3(tangent, normal1))
-        let start = SIMD3<Double>(pathRadius, 0, h)
-        let section = (0..<32).map { i -> SIMD3<Double> in
-            let a = Double(i) / 32.0 * 2 * .pi
-            return start + sectionRadius * (cos(a) * normal1 + sin(a) * normal2)
+        let path: Wire
+        let start: SIMD3<Double>
+        let tangent: SIMD3<Double>
+        switch f.sweepPathKind {
+        case .helix:
+            guard sectionRadius < pathRadius, f.sweepPitch > 0.01, f.sweepTurns > 0.01 else { return nil }
+            guard let helix = Wire.helix(
+                origin: SIMD3<Double>(0, 0, h),
+                axis: SIMD3<Double>(0, 0, 1),
+                radius: pathRadius,
+                pitch: f.sweepPitch,
+                turns: f.sweepTurns
+            ) else { return nil }
+            path = helix
+            start = SIMD3<Double>(pathRadius, 0, h)
+            tangent = normalize3(SIMD3<Double>(0, pathRadius, f.sweepPitch / (2 * .pi)))
+        case .circle:
+            guard sectionRadius < pathRadius else { return nil }
+            guard let circle = Wire.circle(radius: pathRadius),
+                  let lifted = circle.offset3D(distance: h, direction: SIMD3<Double>(0, 0, 1)) else { return nil }
+            path = lifted
+            start = SIMD3<Double>(pathRadius, 0, h)
+            tangent = SIMD3<Double>(0, 1, 0)
+        case .line:
+            let length = max(f.sweepLength, 1)
+            let a = SIMD3<Double>(-length / 2, 0, h)
+            let b = SIMD3<Double>(length / 2, 0, h)
+            guard let line = Wire.polygon3D([a, b]) else { return nil }
+            path = line
+            start = a
+            tangent = SIMD3<Double>(1, 0, 0)
         }
-        guard let profile = Wire.polygon3D(section) else { return nil }
+        guard let profile = sectionWire(at: start, tangent: tangent, radius: sectionRadius) else { return nil }
         return Shape.sweep(profile: profile, along: path)
+    }
+
+    private static func sectionWire(at center: SIMD3<Double>, tangent: SIMD3<Double>, radius: Double) -> Wire? {
+        let n1 = normalize3(cross3(tangent, SIMD3<Double>(0, 0, 1)))
+        let n2 = normalize3(cross3(tangent, n1))
+        let pts = (0..<32).map { i -> SIMD3<Double> in
+            let a = Double(i) / 32.0 * 2 * .pi
+            return center + radius * (cos(a) * n1 + sin(a) * n2)
+        }
+        return Wire.polygon3D(pts)
     }
 
     private static func cross3(_ a: SIMD3<Double>, _ b: SIMD3<Double>) -> SIMD3<Double> {
@@ -834,9 +877,23 @@ enum True3DKernel {
                     throw True3DModelError.invalidParameter("\(f.name) 截面尺寸必须大于 0.1 mm")
                 }
             case .sweepBoss:
-                guard f.dia > 0.1, f.sweepPathRadius > f.dia / 2 + 0.05,
-                      f.sweepPitch > 0.1, f.sweepTurns > 0.05, f.sweepTurns <= 30 else {
-                    throw True3DModelError.invalidParameter("\(f.name) 截面必须小于路径半径，螺距/圈数需大于 0")
+                guard f.dia > 0.1 else {
+                    throw True3DModelError.invalidParameter("\(f.name) 截面直径必须大于 0.1")
+                }
+                switch f.sweepPathKind {
+                case .helix:
+                    guard f.sweepPathRadius > f.dia / 2 + 0.05,
+                          f.sweepPitch > 0.1, f.sweepTurns > 0.05, f.sweepTurns <= 30 else {
+                        throw True3DModelError.invalidParameter("\(f.name) 截面必须小于路径半径，螺距/圈数需大于 0")
+                    }
+                case .circle:
+                    guard f.sweepPathRadius > f.dia / 2 + 0.05 else {
+                        throw True3DModelError.invalidParameter("\(f.name) 截面必须小于圆周路径半径")
+                    }
+                case .line:
+                    guard f.sweepLength > f.dia + 0.1 else {
+                        throw True3DModelError.invalidParameter("\(f.name) 直线路径长度必须大于截面直径")
+                    }
                 }
             case .draft:
                 guard f.angle > 0.1, f.angle <= 30 else {
