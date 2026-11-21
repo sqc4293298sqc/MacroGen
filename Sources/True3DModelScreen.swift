@@ -3314,6 +3314,7 @@ struct True3DModelScreen: View {
             return
         }
 
+        captureCameraOrbit()
         clearFilletPreview(restoreScene: true)
         filletPreviewGeneration += 1
         let generation = filletPreviewGeneration
@@ -3340,9 +3341,11 @@ struct True3DModelScreen: View {
                     )
                 }
                 guard !Task.isCancelled, generation == self.filletPreviewGeneration else { return }
+                self.captureCameraOrbit()
                 self.filletPreview = preview
                 self.filletPreviewRadius = radius
                 self.scene = self.makePreviewScene(preview)
+                self.applyOrbit()
                 self.isPreviewingFillet = false
                 self.message = self.edgeFeatureIsChamfer
                     ? "倒角预览 C\(String(format: "%.2f", radius))"
