@@ -243,7 +243,7 @@ struct True3DSketchScreen: View {
                 .padding(.bottom, 92)
 
             if points.isEmpty {
-                Text("从下方选一个绘制工具开始画图")
+                Text("从左侧选择绘制工具，右侧调节图层与约束")
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(darkCanvas ? .white.opacity(0.55) : .black.opacity(0.34))
             }

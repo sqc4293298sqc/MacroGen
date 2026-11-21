@@ -32,6 +32,7 @@ private enum True3DViewOrientation {
     case top
     case front
     case right
+    case back
 }
 
 private enum True3DImportMode {
@@ -829,8 +830,11 @@ struct True3DModelScreen: View {
             cubeFaceButton("右", x: 74, y: 72, width: 44, height: 42) {
                 setViewOrientation(.right)
             }
+            cubeFaceButton("后", x: 48, y: 111, width: 78, height: 30) {
+                setViewOrientation(.back)
+            }
         }
-        .frame(width: 96, height: 100)
+        .frame(width: 96, height: 128)
         .background(
             Ellipse()
                 .fill(SwiftUI.Color.black.opacity(0.06))
@@ -978,7 +982,7 @@ struct True3DModelScreen: View {
 
     private func supportsCoordinates(_ kind: True3DFeatureKind) -> Bool {
         switch kind {
-        case .hole, .boss, .rectBoss, .coneBoss, .loftBoss, .circularPocket, .rectPocket, .slot, .profileBoss, .profileCut:
+        case .hole, .boss, .rectBoss, .coneBoss, .loftBoss, .circularPocket, .rectPocket, .slot, .profileBoss, .profileCut, .revolveBoss, .revolveCut:
             return true
         default:
             return false
@@ -3404,6 +3408,8 @@ struct True3DModelScreen: View {
             draft.bossHeight = max(draft.bossHeight, 0.1)
         }
         draft.name = draft.name.isEmpty ? draft.kind.rawValue : draft.name
+        selectedFace = nil
+        scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
         params.features.append(draft)
         selectedFeatureID = draft.id
         pendingFeatureID = draft.id
@@ -4100,6 +4106,9 @@ struct True3DModelScreen: View {
             orbitPitch = 0
         case .right:
             orbitYaw = 90
+            orbitPitch = 0
+        case .back:
+            orbitYaw = 180
             orbitPitch = 0
         }
         applyOrbit(animated: true)

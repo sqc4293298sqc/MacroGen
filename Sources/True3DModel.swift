@@ -748,7 +748,7 @@ enum True3DKernel {
     private static func revolveTool(_ f: True3DFeatureSpec, baseHeight h: Double) -> Shape? {
         let pts = f.profile
         guard pts.count >= 3 else { return nil }
-        let axisOrigin = SIMD3<Double>(0, 0, h)
+        let axisOrigin = SIMD3<Double>(f.x, f.y, f.topZ ?? h)
         let axisDirection: SIMD3<Double>
         switch f.revolveAxis {
         case .x: axisDirection = SIMD3<Double>(1, 0, 0)
@@ -758,11 +758,11 @@ enum True3DKernel {
         let wirePts: [SIMD3<Double>]
         switch f.revolvePlane {
         case .xz:
-            wirePts = pts.map { SIMD3<Double>($0.x, 0, $0.y + h) }
+            wirePts = pts.map { SIMD3<Double>(axisOrigin.x + $0.x, axisOrigin.y, axisOrigin.z + $0.y) }
         case .xy:
-            wirePts = pts.map { SIMD3<Double>($0.x, $0.y, h) }
+            wirePts = pts.map { SIMD3<Double>(axisOrigin.x + $0.x, axisOrigin.y + $0.y, axisOrigin.z) }
         case .yz:
-            wirePts = pts.map { SIMD3<Double>(0, $0.x, $0.y + h) }
+            wirePts = pts.map { SIMD3<Double>(axisOrigin.x, axisOrigin.y + $0.x, axisOrigin.z + $0.y) }
         }
         guard let wire = Wire.polygon3D(wirePts),
               let face = Shape.face(from: wire, planar: true) else { return nil }
