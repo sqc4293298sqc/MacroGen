@@ -17,6 +17,13 @@ enum True3DEdgeSelection: String, CaseIterable, Identifiable, Codable {
     var id: String { rawValue }
 }
 
+enum True3DRevolvePlane: String, CaseIterable, Identifiable, Codable {
+    case xz = "XZ 基准面"
+    case xy = "XY 基准面"
+    case yz = "YZ 基准面"
+    var id: String { rawValue }
+}
+
 enum True3DEdgeMode: String, CaseIterable, Identifiable, Codable {
     case none = "无"
     case fillet = "圆角"
@@ -99,6 +106,8 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
     var topDepthY: Double = 16
     /// 全边圆角 / 倒角的边选择范围。
     var edgeSelection: True3DEdgeSelection = .all
+    /// 旋转特征所在基准面：XZ 绕 Z、XY 绕 X、YZ 绕 Y。
+    var revolvePlane: True3DRevolvePlane = .xz
 
     init(kind: True3DFeatureKind = .hole, x: Double = 0, y: Double = 0) {
         self.kind = kind
@@ -174,9 +183,9 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
         case .shell:
             return "壁厚 \(fmt(abs(depth)))"
         case .revolveBoss:
-            return "\(profile.count) 点旋转 \(fmt(angle))° H\(fmt(bossHeight))"
+            return "\(profile.count) 点 \(revolvePlane.rawValue)旋转 \(fmt(angle))° H\(fmt(bossHeight))"
         case .revolveCut:
-            return "\(profile.count) 点旋转切除 \(fmt(angle))°"
+            return "\(profile.count) 点 \(revolvePlane.rawValue)旋转切除 \(fmt(angle))°"
         case .circularPocket:
             return "Ø\(fmt(dia)) 深\(fmt(depth)) @ \(p)"
         case .rectPocket:
@@ -587,14 +596,30 @@ enum True3DKernel {
 
     private static func revolveTool(_ f: True3DFeatureSpec, baseHeight h: Double) -> Shape? {
         let pts = f.profile
-        guard pts.count >= 3, pts.allSatisfy({ $0.x >= -0.001 }) else { return nil }
-        let wirePts = pts.map { SIMD3<Double>(max($0.x, 0.0), 0, $0.y + h) }
+        guard pts.count >= 3 else { return nil }
+        let axisOrigin = SIMD3<Double>(0, 0, h)
+        let axisDirection: SIMD3<Double>
+        let wirePts: [SIMD3<Double>]
+        switch f.revolvePlane {
+        case .xz:
+            guard pts.allSatisfy({ $0.x >= -0.001 }) else { return nil }
+            axisDirection = SIMD3<Double>(0, 0, 1)
+            wirePts = pts.map { SIMD3<Double>(max($0.x, 0.0), 0, $0.y + h) }
+        case .xy:
+            guard pts.allSatisfy({ $0.y >= -0.001 }) else { return nil }
+            axisDirection = SIMD3<Double>(1, 0, 0)
+            wirePts = pts.map { SIMD3<Double>($0.x, max($0.y, 0.0), h) }
+        case .yz:
+            guard pts.allSatisfy({ $0.x >= -0.001 }) else { return nil }
+            axisDirection = SIMD3<Double>(0, 1, 0)
+            wirePts = pts.map { SIMD3<Double>(max($0.x, 0.0), $0.y, h) }
+        }
         guard let wire = Wire.polygon3D(wirePts) else { return nil }
         let angle = min(max(f.angle, 0.1), 360) * .pi / 180
         guard let solid = Shape.revolve(
             profile: wire,
-            axisOrigin: SIMD3<Double>(0, 0, 0),
-            axisDirection: SIMD3<Double>(0, 0, 1),
+            axisOrigin: axisOrigin,
+            axisDirection: axisDirection,
             angle: angle
         ) else { return nil }
         return solid
@@ -768,8 +793,13 @@ enum True3DKernel {
                     throw True3DModelError.invalidParameter("\(f.name) 壁厚必须大于 0.05，且小于最小外形的一半")
                 }
             case .revolveBoss, .revolveCut:
-                guard f.profile.count >= 3, f.profile.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.x >= 0.01 }) else {
-                    throw True3DModelError.invalidParameter("\(f.name) 旋转轮廓需要至少 3 个点，且 X 必须大于 0")
+                let radialOK: Bool
+                switch f.revolvePlane {
+                case .xz, .yz: radialOK = f.profile.allSatisfy { $0.x.isFinite && $0.y.isFinite && $0.x >= -0.001 }
+                case .xy: radialOK = f.profile.allSatisfy { $0.x.isFinite && $0.y.isFinite && $0.y >= -0.001 }
+                }
+                guard f.profile.count >= 3, radialOK else {
+                    throw True3DModelError.invalidParameter("\(f.name) 旋转轮廓需要至少 3 个点，且径向坐标不能为负")
                 }
                 guard f.angle > 0.1, f.angle <= 360 else {
                     throw True3DModelError.invalidParameter("\(f.name) 旋转角度必须在 0.1°～360°")

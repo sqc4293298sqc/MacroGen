@@ -1336,7 +1336,13 @@ struct True3DModelScreen: View {
                 Text("开口面：当前实体所有朝上的面")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             case .revolveBoss, .revolveCut:
-                Text("旋转轮廓：\(f.wrappedValue.profile.count) 点，X 为半径、Y 为轴向")
+                Picker("基准面", selection: f.revolvePlane) {
+                    ForEach(True3DRevolvePlane.allCases) { item in
+                        Text(item.rawValue).tag(item)
+                    }
+                }
+                .font(.system(size: 12))
+                Text("旋转轮廓：\(f.wrappedValue.profile.count) 点；XZ 以 X 为半径、Y 为轴向，XY 以 Y 为半径、X 为轴向，YZ 绕 Y 轴")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                 numRow("角度 °", f.angle)
                 if f.wrappedValue.kind == .revolveBoss {
