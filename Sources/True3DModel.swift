@@ -1,6 +1,13 @@
 import Foundation
 import OCCTSwift
 
+enum True3DChamferMode: String, CaseIterable, Identifiable, Codable {
+    case symmetric = "对称"
+    case twoDistance = "双距离"
+    case distanceAngle = "距离+角度"
+    var id: String { rawValue }
+}
+
 enum True3DLoftShape: String, CaseIterable, Identifiable, Codable {
     case circle = "圆"
     case rectangle = "矩形"
@@ -156,7 +163,8 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
         case .edgeFillet:
             name = "全边圆角"; depth = 1.5
         case .edgeChamfer:
-            name = "全边倒角"; depth = 1
+            name = "全边倒角"; depth = 1; chamferMode = .symmetric
+            chamferSecondDistance = 2; chamferAngle = 30
         case .shell:
             name = "抽壳"; depth = 2
         case .revolveBoss:
@@ -213,7 +221,11 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
         case .edgeFillet:
             return "\(edgeSelection.rawValue)圆角 R\(fmt(depth))"
         case .edgeChamfer:
-            return "\(edgeSelection.rawValue)倒角 C\(fmt(depth))"
+            switch chamferMode {
+            case .symmetric: return "\(edgeSelection.rawValue)倒角 C\(fmt(depth))"
+            case .twoDistance: return "\(edgeSelection.rawValue)倒角 C\(fmt(depth))/C\(fmt(chamferSecondDistance))"
+            case .distanceAngle: return "\(edgeSelection.rawValue)倒角 C\(fmt(depth)) @\(fmt(chamferAngle))°"
+            }
         case .shell:
             return "壁厚 \(fmt(abs(depth)))"
         case .revolveBoss:
@@ -480,21 +492,49 @@ enum True3DKernel {
             guard !edges.isEmpty else {
                 throw True3DModelError.featureFailed("\(f.name) 没有匹配的边")
             }
-            if f.edgeSelection == .all {
+            if f.edgeSelection == .all, f.chamferMode == .symmetric {
                 guard let bevel = current.chamfered(distance: max(f.depth, 0.05)) else {
                     throw True3DModelError.featureFailed("\(f.name) 失败：C 可能超过相邻边允许范围")
                 }
                 return bevel
             }
-            let tuples: [(edgeIndex: Int, faceIndex: Int, distance: Double, angleDegrees: Double)] = edges.compactMap { edge in
+            let faceEdges: [(edge: Edge, face: Face)] = edges.compactMap { edge in
                 guard let faces = edge.adjacentFaces(in: current) else { return nil }
-                let face = faces.0
-                return (edge.index, face.index, max(f.depth, 0.05), 45)
+                return (edge, faces.0)
             }
-            guard !tuples.isEmpty, let bevel = current.chamferedDistAngle(tuples) else {
-                throw True3DModelError.featureFailed("\(f.name) 失败：C 可能超过相邻边允许范围")
+            guard !faceEdges.isEmpty else {
+                throw True3DModelError.featureFailed("\(f.name) 失败：找不到相邻参考面")
             }
-            return bevel
+            switch f.chamferMode {
+            case .twoDistance:
+                let tuples = faceEdges.map {
+                    (edgeIndex: $0.edge.index, faceIndex: $0.face.index,
+                     dist1: max(f.depth, 0.05), dist2: max(f.chamferSecondDistance, 0.05))
+                }
+                guard let bevel = current.chamferedTwoDistances(tuples) else {
+                    throw True3DModelError.featureFailed("\(f.name) 失败：双距离倒角可能超过相邻边允许范围")
+                }
+                return bevel
+            case .distanceAngle:
+                let angle = min(max(f.chamferAngle, 0.5), 89.5)
+                let tuples = faceEdges.map {
+                    (edgeIndex: $0.edge.index, faceIndex: $0.face.index,
+                     distance: max(f.depth, 0.05), angleDegrees: angle)
+                }
+                guard let bevel = current.chamferedDistAngle(tuples) else {
+                    throw True3DModelError.featureFailed("\(f.name) 失败：距离+角度倒角可能超过相邻边允许范围")
+                }
+                return bevel
+            case .symmetric:
+                let tuples = faceEdges.map {
+                    (edgeIndex: $0.edge.index, faceIndex: $0.face.index,
+                     distance: max(f.depth, 0.05), angleDegrees: 45.0)
+                }
+                guard let bevel = current.chamferedDistAngle(tuples) else {
+                    throw True3DModelError.featureFailed("\(f.name) 失败：C 可能超过相邻边允许范围")
+                }
+                return bevel
+            }
         case .shell:
             guard let shelled = current.shelled(thickness: -abs(f.depth), openFaces: current.upwardFaces()) else {
                 throw True3DModelError.featureFailed("\(f.name) 抽壳失败：壁厚可能过大，或顶面被特征打断")
@@ -902,6 +942,16 @@ enum True3DKernel {
             case .edgeFillet, .edgeChamfer:
                 guard f.depth > 0.05, f.depth < min(p.width, p.depth, p.height) / 2 - 0.01 else {
                     throw True3DModelError.invalidParameter("\(f.name) 半径/距离必须大于 0.05，且小于最小外形的一半")
+                }
+                if f.kind == .edgeChamfer, f.chamferMode == .twoDistance {
+                    guard f.chamferSecondDistance > 0.05 else {
+                        throw True3DModelError.invalidParameter("\(f.name) 第二距离必须大于 0.05")
+                    }
+                }
+                if f.kind == .edgeChamfer, f.chamferMode == .distanceAngle {
+                    guard f.chamferAngle > 0.5, f.chamferAngle < 89.5 else {
+                        throw True3DModelError.invalidParameter("\(f.name) 倒角角度必须在 0.5°～89.5°")
+                    }
                 }
             case .shell:
                 guard f.depth > 0.05, f.depth < min(p.width, p.depth, p.height) / 2 else {

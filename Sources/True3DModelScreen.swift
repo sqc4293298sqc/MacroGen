@@ -1545,7 +1545,19 @@ struct True3DModelScreen: View {
                     }
                 }
                 .font(.system(size: 12))
+                Picker("倒角方式", selection: f.chamferMode) {
+                    ForEach(True3DChamferMode.allCases) { item in
+                        Text(item.rawValue).tag(item)
+                    }
+                }
+                .font(.system(size: 12))
                 numRow("倒角 C", f.depth)
+                if f.wrappedValue.chamferMode == .twoDistance {
+                    numRow("第二距离", f.chamferSecondDistance)
+                }
+                if f.wrappedValue.chamferMode == .distanceAngle {
+                    numRow("角度°", f.chamferAngle)
+                }
             case .shell:
                 numRow("壁厚", f.depth)
                 Text("开口面：当前实体所有朝上的面")
