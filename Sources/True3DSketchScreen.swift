@@ -20,6 +20,7 @@ enum True3DSketchTool: String, CaseIterable, Identifiable {
     case roundedRect = "圆角矩形"
     case slot = "腰形"
     case editPoint = "编辑点"
+    case constraint = "约束"
 
     var id: String { rawValue }
 
@@ -35,6 +36,35 @@ enum True3DSketchTool: String, CaseIterable, Identifiable {
         case .roundedRect: return "rectangle.roundedtop"
         case .slot: return "capsule"
         case .editPoint: return "hand.point.up.left"
+        case .constraint: return "lock.fill"
+        }
+    }
+}
+
+enum True3DSketchConstraintKind: String, CaseIterable, Identifiable {
+    case horizontal = "水平"
+    case vertical = "垂直"
+    case distance = "距离"
+    case fixed = "固定"
+
+    var id: String { rawValue }
+}
+
+struct True3DSketchConstraint: Identifiable {
+    var id = UUID()
+    var kind: True3DSketchConstraintKind
+    var a: Int
+    var b: Int?
+    var value: Double = 0
+    var anchorX: Double = 0
+    var anchorY: Double = 0
+
+    var label: String {
+        switch kind {
+        case .horizontal: return "水平 P\(a + 1)-P\((b ?? a) + 1)"
+        case .vertical: return "垂直 P\(a + 1)-P\((b ?? a) + 1)"
+        case .distance: return "距离 P\(a + 1)-P\((b ?? a) + 1) = \(String(format: "%.1f", value))"
+        case .fixed: return "固定 P\(a + 1)"
         }
     }
 }
@@ -101,6 +131,9 @@ struct True3DSketchScreen: View {
     @State private var patternCols = 2
     @State private var patternPitchX: Double = 30
     @State private var patternPitchY: Double = 20
+    @State private var constraints: [True3DSketchConstraint] = []
+    @State private var constraintSelections: [Int] = []
+    @State private var constraintDistance: Double = 20
 
     private var baseWidth: CGFloat { CGFloat(max(canvasWidth, 1)) }
     private var baseDepth: CGFloat { CGFloat(max(canvasDepth, 1)) }
@@ -234,6 +267,47 @@ struct True3DSketchScreen: View {
                     Button("清空") { clear() }.buttonStyle(.bordered)
                 }
                 .font(.system(size: 11))
+                Divider()
+                Text("约束求解").font(.system(size: 12, weight: .semibold))
+                Text("切到“约束”工具点选控制点；已选 \(constraintSelections.count) 个，自由度 \(constraintDOF)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Button("水平") { addConstraint(.horizontal) }.buttonStyle(.bordered)
+                    Button("垂直") { addConstraint(.vertical) }.buttonStyle(.bordered)
+                    Button("固定") { addConstraint(.fixed) }.buttonStyle(.bordered)
+                }
+                .font(.system(size: 11))
+                .disabled(constraintSelections.isEmpty)
+                HStack(spacing: 6) {
+                    TextField("距离", value: $constraintDistance, format: .number.precision(.fractionLength(1)))
+                        .keyboardType(.decimalPad).multilineTextAlignment(.trailing)
+                        .frame(width: 64).textFieldStyle(.roundedBorder)
+                    Button("距离约束") { addConstraint(.distance) }
+                        .font(.system(size: 11)).buttonStyle(.bordered)
+                        .disabled(constraintSelections.count < 2)
+                }
+                Button("求解全部约束") { solveConstraints() }
+                    .font(.system(size: 11, weight: .semibold))
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
+                    .disabled(constraints.isEmpty)
+                if !constraints.isEmpty {
+                    ForEach(constraints) { c in
+                        HStack(spacing: 6) {
+                            Image(systemName: "lock").font(.system(size: 9))
+                            Text(c.label).font(.system(size: 10))
+                            Spacer()
+                            Button {
+                                constraints.removeAll { $0.id == c.id }
+                                solveConstraints()
+                            } label: {
+                                Image(systemName: "xmark.circle").font(.system(size: 10))
+                            }
+                            .buttonStyle(.plain).foregroundStyle(.red.opacity(0.7))
+                        }
+                    }
+                }
                 Divider()
                 Text("草图阵列").font(.system(size: 12, weight: .semibold))
                 HStack(spacing: 6) {
@@ -427,6 +501,8 @@ struct True3DSketchScreen: View {
                      ? "逐点点击画折线；点回起点或按“闭合轮廓”结束"
                      : tool == .editPoint
                      ? "拖动已有控制点修改轮廓；松手即更新尺寸"
+                     : tool == .constraint
+                     ? "点选控制点（最多 2 个），再到右侧抽屉加水平/垂直/距离/固定约束"
                      : "按住拖动画\(tool.rawValue)，松开生成闭合轮廓")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
@@ -439,6 +515,7 @@ struct True3DSketchScreen: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         let b = worldPoint(value.location, in: geo.size)
+                        if tool == .constraint { return }
                         if tool == .editPoint {
                             guard closed else { return }
                             if dragStart == nil {
@@ -448,6 +525,7 @@ struct True3DSketchScreen: View {
                             if let index = editingPointIndex, index < points.count {
                                 points[index] = snapped(b)
                                 ensureCanvasContains(points)
+                                solveConstraints(quiet: true)
                             }
                             return
                         }
@@ -462,12 +540,16 @@ struct True3DSketchScreen: View {
                             previewPoints = []
                             editingPointIndex = nil
                         }
-                        if tool == .editPoint { syncDimensions(); error = nil; return }
-                        guard !closed else { return }
+                        if tool == .editPoint { solveConstraints(quiet: true); syncDimensions(); error = nil; return }
                         let a = worldPoint(value.startLocation, in: geo.size)
                         let b = worldPoint(value.location, in: geo.size)
+                        if tool == .constraint {
+                            handleConstraintTap(snapped(b))
+                            return
+                        }
+                        guard !closed else { return }
                         switch tool {
-                        case .editPoint:
+                        case .editPoint, .constraint:
                             break
                         case .polyline:
                             addPolylinePoint(snapped(b))
@@ -572,9 +654,10 @@ struct True3DSketchScreen: View {
         context.stroke(path, with: .color(Color(red: 0.9, green: 0.33, blue: 0.05)), lineWidth: 1.8)
 
         for (index, p) in mapped.enumerated() {
-            let r: CGFloat = index == 0 ? 5 : 3.2
+            let selected = constraintSelections.contains(index)
+            let r: CGFloat = selected ? 5.5 : (index == 0 ? 5 : 3.2)
             let dot = Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2))
-            context.fill(dot, with: .color(index == 0 ? Color.orange : Color.black.opacity(0.55)))
+            context.fill(dot, with: .color(selected ? Color.blue : (index == 0 ? Color.orange : Color.black.opacity(0.55))))
         }
     }
 
@@ -716,6 +799,106 @@ struct True3DSketchScreen: View {
         )
     }
 
+    // MARK: 约束求解
+
+    private var constraintDOF: Int {
+        var dof = points.count * 2
+        for c in constraints { dof -= c.kind == .fixed ? 2 : 1 }
+        return max(dof, 0)
+    }
+
+    private func handleConstraintTap(_ p: True3DPoint) {
+        guard let index = nearestPointIndex(to: p) else {
+            error = "没点中控制点；切到“约束”工具后点蓝色圆点"
+            return
+        }
+        if let existing = constraintSelections.firstIndex(of: index) {
+            constraintSelections.remove(at: existing)
+        } else {
+            if constraintSelections.count >= 2 { constraintSelections.removeFirst() }
+            constraintSelections.append(index)
+        }
+        error = nil
+    }
+
+    private func addConstraint(_ kind: True3DSketchConstraintKind) {
+        guard !points.isEmpty else {
+            error = "先画轮廓再添加约束"
+            return
+        }
+        let needed = kind == .fixed ? 1 : 2
+        guard constraintSelections.count >= needed else {
+            error = "\(kind.rawValue)约束需要先选 \(needed) 个控制点"
+            return
+        }
+        let a = constraintSelections[0]
+        let b = needed == 2 ? constraintSelections[1] : nil
+        guard a >= 0, a < points.count, (b ?? 0) < points.count else {
+            constraintSelections = []
+            return
+        }
+        if kind == .distance, constraintDistance <= 0.01 {
+            error = "距离必须大于 0.01 mm"
+            return
+        }
+        constraints.append(True3DSketchConstraint(
+            kind: kind, a: a, b: b,
+            value: kind == .distance ? constraintDistance : 0,
+            anchorX: points[a].x, anchorY: points[a].y
+        ))
+        constraintSelections = []
+        solveConstraints()
+    }
+
+    private func solveConstraints(quiet: Bool = false) {
+        guard !constraints.isEmpty, points.count >= 2 else { return }
+        var p = points
+        for _ in 0..<80 {
+            for c in constraints {
+                guard c.a >= 0, c.a < p.count else { continue }
+                switch c.kind {
+                case .horizontal:
+                    if let b = c.b, b >= 0, b < p.count {
+                        let y = (p[c.a].y + p[b].y) / 2
+                        p[c.a].y = y; p[b].y = y
+                    }
+                case .vertical:
+                    if let b = c.b, b >= 0, b < p.count {
+                        let x = (p[c.a].x + p[b].x) / 2
+                        p[c.a].x = x; p[b].x = x
+                    }
+                case .distance:
+                    if let b = c.b, b >= 0, b < p.count, c.value > 0.001 {
+                        let dx = p[b].x - p[c.a].x
+                        let dy = p[b].y - p[c.a].y
+                        let len = hypot(dx, dy)
+                        if len > 1e-9 {
+                            let ux = dx / len, uy = dy / len
+                            let target = c.value
+                            let mx = (p[c.a].x + p[b].x) / 2
+                            let my = (p[c.a].y + p[b].y) / 2
+                            p[c.a].x = mx - ux * target / 2
+                            p[c.a].y = my - uy * target / 2
+                            p[b].x = mx + ux * target / 2
+                            p[b].y = my + uy * target / 2
+                        } else {
+                            p[b].x = p[c.a].x + c.value
+                        }
+                    }
+                case .fixed:
+                    p[c.a].x = c.anchorX
+                    p[c.a].y = c.anchorY
+                }
+            }
+        }
+        points = p
+        if !quiet {
+            ensureCanvasContains(points)
+            syncDimensions()
+            error = nil
+        }
+    }
+
     private func nearestPointIndex(to p: True3DPoint) -> Int? {
         guard !points.isEmpty else { return nil }
         var best: (Int, Double)?
@@ -757,7 +940,7 @@ struct True3DSketchScreen: View {
                 let angle = Double(i) / 48.0 * 2 * .pi
                 return True3DPoint(x: a.x + r * cos(angle), y: a.y + r * sin(angle))
             }
-        case .arc, .spline, .editPoint:
+        case .arc, .spline, .editPoint, .constraint:
             return []
         case .ellipse:
             let rx = abs(b.x - a.x), ry = abs(b.y - a.y)
