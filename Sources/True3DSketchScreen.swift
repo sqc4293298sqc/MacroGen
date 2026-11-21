@@ -50,6 +50,9 @@ enum True3DSketchConstraintKind: String, CaseIterable, Identifiable {
     case vertical = "垂直"
     case distance = "距离"
     case fixed = "固定"
+    case coincident = "重合"
+    case tangent = "相切"
+    case radius = "半径"
     case parallel = "平行"
     case perpendicular = "垂直段"
     case equalLength = "等长"
@@ -65,6 +68,7 @@ struct True3DSketchConstraint: Identifiable {
     var b: Int?
     var c: Int? = nil
     var d: Int? = nil
+    var members: [Int] = []
     var value: Double = 0
     var anchorX: Double = 0
     var anchorY: Double = 0
@@ -75,6 +79,9 @@ struct True3DSketchConstraint: Identifiable {
         case .vertical: return "垂直 P\(a + 1)-P\((b ?? a) + 1)"
         case .distance: return "距离 P\(a + 1)-P\((b ?? a) + 1) = \(String(format: "%.1f", value))"
         case .fixed: return "固定 P\(a + 1)"
+        case .coincident: return "重合 P\(a + 1)=P\((b ?? a) + 1)"
+        case .tangent: return "相切 P\(a + 1) 共点两段"
+        case .radius: return "半径 P\(a + 1) 组 = \(String(format: "%.1f", value))"
         case .parallel: return "平行 P\(a + 1)-P\((b ?? a) + 1) ∥ P\((c ?? a) + 1)-P\((d ?? a) + 1)"
         case .perpendicular: return "垂直段 P\(a + 1)-P\((b ?? a) + 1) ⊥ P\((c ?? a) + 1)-P\((d ?? a) + 1)"
         case .equalLength: return "等长 P\(a + 1)-P\((b ?? a) + 1) = P\((c ?? a) + 1)-P\((d ?? a) + 1)"
@@ -149,6 +156,7 @@ struct True3DSketchScreen: View {
     @State private var constraintSelections: [Int] = []
     @State private var constraintDistance: Double = 20
     @State private var constraintAngle: Double = 90
+    @State private var constraintRadius: Double = 20
 
     private var baseWidth: CGFloat { CGFloat(max(canvasWidth, 1)) }
     private var baseDepth: CGFloat { CGFloat(max(canvasDepth, 1)) }
@@ -291,6 +299,7 @@ struct True3DSketchScreen: View {
                     Button("水平") { addConstraint(.horizontal) }.buttonStyle(.bordered)
                     Button("垂直") { addConstraint(.vertical) }.buttonStyle(.bordered)
                     Button("固定") { addConstraint(.fixed) }.buttonStyle(.bordered)
+                    Button("重合") { addConstraint(.coincident) }.buttonStyle(.bordered)
                 }
                 .font(.system(size: 10))
                 .disabled(constraintSelections.isEmpty)
@@ -304,16 +313,27 @@ struct True3DSketchScreen: View {
                 HStack(spacing: 5) {
                     TextField("距离", value: $constraintDistance, format: .number.precision(.fractionLength(1)))
                         .keyboardType(.decimalPad).multilineTextAlignment(.trailing)
-                        .frame(width: 58).textFieldStyle(.roundedBorder)
+                        .frame(width: 52).textFieldStyle(.roundedBorder)
                     Button("距离") { addConstraint(.distance) }
                         .font(.system(size: 10)).buttonStyle(.bordered)
                         .disabled(constraintSelections.count < 2)
                     TextField("角度°", value: $constraintAngle, format: .number.precision(.fractionLength(1)))
                         .keyboardType(.decimalPad).multilineTextAlignment(.trailing)
-                        .frame(width: 54).textFieldStyle(.roundedBorder)
+                        .frame(width: 48).textFieldStyle(.roundedBorder)
                     Button("角度") { addConstraint(.angle) }
                         .font(.system(size: 10)).buttonStyle(.bordered)
                         .disabled(constraintSelections.count < 4)
+                }
+                HStack(spacing: 5) {
+                    Button("相切") { addConstraint(.tangent) }
+                        .font(.system(size: 10)).buttonStyle(.bordered)
+                        .disabled(constraintSelections.count < 3)
+                    TextField("R", value: $constraintRadius, format: .number.precision(.fractionLength(1)))
+                        .keyboardType(.decimalPad).multilineTextAlignment(.trailing)
+                        .frame(width: 48).textFieldStyle(.roundedBorder)
+                    Button("半径") { addConstraint(.radius) }
+                        .font(.system(size: 10)).buttonStyle(.bordered)
+                        .disabled(constraintSelections.count < 3)
                 }
                 Button("求解全部约束") { solveConstraints() }
                     .font(.system(size: 11, weight: .semibold))
@@ -887,9 +907,37 @@ struct True3DSketchScreen: View {
 
     // MARK: 约束求解
 
+    private func circumcenter(_ a: True3DPoint, _ b: True3DPoint, _ c: True3DPoint) -> True3DPoint? {
+        let d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y))
+        guard abs(d) > 1e-7 else { return nil }
+        let a2 = a.x * a.x + a.y * a.y
+        let b2 = b.x * b.x + b.y * b.y
+        let c2 = c.x * c.x + c.y * c.y
+        let ux = (a2 * (b.y - c.y) + b2 * (c.y - a.y) + c2 * (a.y - b.y)) / d
+        let uy = (a2 * (c.x - b.x) + b2 * (a.x - c.x) + c2 * (b.x - a.x)) / d
+        return True3DPoint(x: ux, y: uy)
+    }
+
+    private func cleanedProfile(_ source: [True3DPoint]) -> [True3DPoint] {
+        var result: [True3DPoint] = []
+        for p in source {
+            if let last = result.last, hypot(p.x - last.x, p.y - last.y) < 0.05 { continue }
+            result.append(p)
+        }
+        if result.count > 2, let first = result.first, let last = result.last,
+           hypot(first.x - last.x, first.y - last.y) < 0.05 {
+            result.removeLast()
+        }
+        return result
+    }
+
     private var constraintDOF: Int {
         var dof = points.count * 2
-        for c in constraints { dof -= c.kind == .fixed ? 2 : 1 }
+        for c in constraints {
+            if c.kind == .fixed { dof -= 2 }
+            else if c.kind == .coincident { dof -= 2 }
+            else { dof -= 1 }
+        }
         return max(dof, 0)
     }
 
@@ -915,8 +963,9 @@ struct True3DSketchScreen: View {
         let needed: Int
         switch kind {
         case .fixed: needed = 1
+        case .tangent, .radius: needed = 3
         case .parallel, .perpendicular, .equalLength, .angle: needed = 4
-        case .horizontal, .vertical, .distance: needed = 2
+        case .horizontal, .vertical, .distance, .coincident: needed = 2
         }
         guard constraintSelections.count >= needed else {
             error = "\(kind.rawValue)约束需要先选 \(needed) 个控制点"
@@ -942,9 +991,31 @@ struct True3DSketchScreen: View {
             error = "角度必须在 0°～180° 之间"
             return
         }
+        if kind == .radius, constraintRadius <= 0.01 {
+            error = "半径必须大于 0.01 mm"
+            return
+        }
+        var members: [Int] = []
+        var value: Double = 0
+        if kind == .distance { value = constraintDistance }
+        if kind == .angle { value = constraintAngle }
+        if kind == .radius {
+            value = constraintRadius
+            let c1 = points[a]
+            let c2 = points[b ?? a]
+            let c3 = points[c ?? a]
+            if let center = circumcenter(c1, c2, c3) {
+                let base = (hypot(c1.x - center.x, c1.y - center.y)
+                    + hypot(c2.x - center.x, c2.y - center.y)
+                    + hypot(c3.x - center.x, c3.y - center.y)) / 3
+                members = points.indices.filter { idx in
+                    let d = hypot(points[idx].x - center.x, points[idx].y - center.y)
+                    return d > base * 0.55 && d < base * 1.45
+                }
+            }
+        }
         constraints.append(True3DSketchConstraint(
-            kind: kind, a: a, b: b, c: c, d: d,
-            value: kind == .distance ? constraintDistance : (kind == .angle ? constraintAngle : 0),
+            kind: kind, a: a, b: b, c: c, d: d, members: members, value: value,
             anchorX: points[a].x, anchorY: points[a].y
         ))
         constraintSelections = []
@@ -984,6 +1055,38 @@ struct True3DSketchScreen: View {
                             p[b].y = my + uy * target / 2
                         } else {
                             p[b].x = p[c.a].x + c.value
+                        }
+                    }
+                case .coincident:
+                    if let b = c.b, b >= 0, b < p.count {
+                        p[b].x = p[c.a].x; p[b].y = p[c.a].y
+                    }
+                case .tangent:
+                    guard let b = c.b, let cIdx = c.c, b >= 0, b < p.count, cIdx >= 0, cIdx < p.count else { continue }
+                    let l1x = p[b].x - p[c.a].x, l1y = p[b].y - p[c.a].y
+                    let l2x = p[cIdx].x - p[c.a].x, l2y = p[cIdx].y - p[c.a].y
+                    let len1 = hypot(l1x, l1y), len2 = hypot(l2x, l2y)
+                    guard len1 > 1e-8, len2 > 1e-8 else { continue }
+                    var tx = l1x / len1 - l2x / len2
+                    var ty = l1y / len1 - l2y / len2
+                    if hypot(tx, ty) < 1e-8 { tx = l1x / len1; ty = l1y / len1 }
+                    let tl = hypot(tx, ty)
+                    tx /= tl; ty /= tl
+                    p[b].x = p[c.a].x + tx * len1; p[b].y = p[c.a].y + ty * len1
+                    p[cIdx].x = p[c.a].x - tx * len2; p[cIdx].y = p[c.a].y - ty * len2
+                case .radius:
+                    guard let b = c.b, let cIdx = c.c, !c.members.isEmpty,
+                          b >= 0, b < p.count, cIdx >= 0, cIdx < p.count else { continue }
+                    let rr = max(c.value, 0.05)
+                    let center = circumcenter(p[c.a], p[b], p[cIdx])
+                        ?? True3DPoint(x: (p[c.a].x + p[b].x + p[cIdx].x) / 3,
+                                       y: (p[c.a].y + p[b].y + p[cIdx].y) / 3)
+                    for idx in c.members where idx >= 0 && idx < p.count {
+                        let dx = p[idx].x - center.x, dy = p[idx].y - center.y
+                        let d = hypot(dx, dy)
+                        if d > 1e-9 {
+                            p[idx].x = center.x + dx / d * rr
+                            p[idx].y = center.y + dy / d * rr
                         }
                     }
                 case .parallel, .perpendicular, .equalLength, .angle:
@@ -1380,9 +1483,9 @@ struct True3DSketchScreen: View {
     }
 
     private func patternProfiles() {
-        var bases = savedProfiles
+        var bases = savedProfiles.map { cleanedProfile($0) }.filter { $0.count >= 3 }
         if closed, points.count >= 3 {
-            bases.append(points)
+            bases.append(cleanedProfile(points))
         }
         guard !bases.isEmpty else {
             error = "先画一个闭合轮廓，或存入至少一个轮廓"
@@ -1421,7 +1524,7 @@ struct True3DSketchScreen: View {
             error = "当前轮廓还没闭合"
             return
         }
-        savedProfiles.append(points)
+        savedProfiles.append(cleanedProfile(points))
         points = []
         constraints = []
         constraintSelections = []
@@ -1535,14 +1638,16 @@ struct True3DSketchScreen: View {
         onBaseChange?(canvasWidth, canvasDepth)
         switch operation {
         case .base:
-            onCommit(.base(points))
+            onCommit(.base(cleanedProfile(points)))
         case .boss, .cut:
             var profiles = savedProfiles
             if currentIsValid { profiles.append(points) }
-            let specs = profiles.map { profile -> True3DFeatureSpec in
+            let specs = profiles.compactMap { profile -> True3DFeatureSpec? in
+                let clean = cleanedProfile(profile)
+                guard clean.count >= 3 else { return nil }
                 var feature = True3DFeatureSpec(kind: operation == .boss ? .profileBoss : .profileCut)
                 feature.name = operation == .boss ? "草图凸台" : "草图切除"
-                feature.profile = profile
+                feature.profile = clean
                 feature.depth = max(extrudeDepth, 0.1)
                 feature.bossHeight = max(extrudeDepth, 0.1)
                 return feature
