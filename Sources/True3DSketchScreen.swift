@@ -21,6 +21,8 @@ enum True3DSketchTool: String, CaseIterable, Identifiable {
     case slot = "腰形"
     case editPoint = "编辑点"
     case constraint = "约束"
+    case trim = "修剪"
+    case extend = "延伸"
 
     var id: String { rawValue }
 
@@ -37,6 +39,8 @@ enum True3DSketchTool: String, CaseIterable, Identifiable {
         case .slot: return "capsule"
         case .editPoint: return "hand.point.up.left"
         case .constraint: return "lock.fill"
+        case .trim: return "scissors"
+        case .extend: return "arrow.right.to.line"
         }
     }
 }
@@ -503,6 +507,10 @@ struct True3DSketchScreen: View {
                      ? "拖动已有控制点修改轮廓；松手即更新尺寸"
                      : tool == .constraint
                      ? "点选控制点（最多 2 个），再到右侧抽屉加水平/垂直/距离/固定约束"
+                     : tool == .trim
+                     ? "点中要删除的控制点，轮廓自动把两侧线段接起来"
+                     : tool == .extend
+                     ? "点最后一个控制点外侧，末段沿延长线拉到你点的位置"
                      : "按住拖动画\(tool.rawValue)，松开生成闭合轮廓")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
@@ -515,7 +523,7 @@ struct True3DSketchScreen: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         let b = worldPoint(value.location, in: geo.size)
-                        if tool == .constraint { return }
+                        if tool == .constraint || tool == .trim || tool == .extend { return }
                         if tool == .editPoint {
                             guard closed else { return }
                             if dragStart == nil {
@@ -547,9 +555,17 @@ struct True3DSketchScreen: View {
                             handleConstraintTap(snapped(b))
                             return
                         }
+                        if tool == .trim {
+                            trimNearestPoint(snapped(b))
+                            return
+                        }
+                        if tool == .extend {
+                            extendLastPoint(to: snapped(b))
+                            return
+                        }
                         guard !closed else { return }
                         switch tool {
-                        case .editPoint, .constraint:
+                        case .editPoint, .constraint, .trim, .extend:
                             break
                         case .polyline:
                             addPolylinePoint(snapped(b))
@@ -799,6 +815,52 @@ struct True3DSketchScreen: View {
         )
     }
 
+    // MARK: 修剪 / 延伸
+
+    private func trimNearestPoint(_ p: True3DPoint) {
+        guard points.count > 3 else {
+            error = "至少保留 3 个点"
+            return
+        }
+        guard let index = nearestPointIndex(to: p) else {
+            error = "点中要修剪掉的控制点"
+            return
+        }
+        points.remove(at: index)
+        constraints = []
+        constraintSelections = []
+        if closed, points.count < 3 { closed = false }
+        syncDimensions()
+        error = nil
+    }
+
+    private func extendLastPoint(to target: True3DPoint) {
+        guard !closed, points.count >= 2 else {
+            error = "延伸只作用于未闭合的折线/样条末段"
+            return
+        }
+        let a = points[points.count - 2]
+        let b = points[points.count - 1]
+        let dx = b.x - a.x, dy = b.y - a.y
+        let len = hypot(dx, dy)
+        guard len > 1e-6 else {
+            error = "末段长度为 0，无法延伸"
+            return
+        }
+        let ux = dx / len, uy = dy / len
+        let projection = (target.x - a.x) * ux + (target.y - a.y) * uy
+        guard projection > len + 1e-6 else {
+            error = "点在末段内侧；请点到末点外侧的延长线上"
+            return
+        }
+        points[points.count - 1] = True3DPoint(x: a.x + ux * projection, y: a.y + uy * projection)
+        ensureCanvasContains(points)
+        constraints = []
+        constraintSelections = []
+        syncDimensions()
+        error = nil
+    }
+
     // MARK: 约束求解
 
     private var constraintDOF: Int {
@@ -940,7 +1002,7 @@ struct True3DSketchScreen: View {
                 let angle = Double(i) / 48.0 * 2 * .pi
                 return True3DPoint(x: a.x + r * cos(angle), y: a.y + r * sin(angle))
             }
-        case .arc, .spline, .editPoint, .constraint:
+        case .arc, .spline, .editPoint, .constraint, .trim, .extend:
             return []
         case .ellipse:
             let rx = abs(b.x - a.x), ry = abs(b.y - a.y)
