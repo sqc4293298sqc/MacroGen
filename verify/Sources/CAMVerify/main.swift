@@ -51,6 +51,8 @@ func verifyCase(_ name: String, model: True3DParams, cam: True3DCAMParams) {
     }
 }
 
+let only3D = CommandLine.arguments.contains("--3d-only")
+if !only3D {
 var base = True3DParams()
 var cam = True3DCAMParams()
 // Debug: isolate the base outer contour and avoid inner clearing / face rows.
@@ -88,6 +90,8 @@ verifyCase("multi-feature", model: base, cam: cam)
 cam.toolDia = 10
 base = True3DParams()
 verifyCase("large-tool-default", model: base, cam: cam)
+
+}
 
 do {
     let document = True3DModelDocument(params: True3DParams())

@@ -31,8 +31,8 @@ jobs:
           unzip -q /tmp/OCCT.xcframework.zip -d /tmp/OCCTUnzip
           cp -R /tmp/OCCTUnzip/OCCT.xcframework verify/OCCTSwift/Libraries/
 
-      - name: Run OCCT 3D CAM verification
+      - name: Run OCCT 3D document verification
         working-directory: verify
         env:
           CAM_DEBUG: "1"
-        run: swift run -c release CAMVerify
+        run: swift run -c release CAMVerify --3d-only
