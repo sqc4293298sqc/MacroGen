@@ -764,10 +764,10 @@ enum True3DKernel {
         case .yz:
             wirePts = pts.map { SIMD3<Double>(0, $0.x, $0.y + h) }
         }
-        guard let wire = Wire.polygon3D(wirePts) else { return nil }
+        guard let wire = Wire.polygon3D(wirePts),
+              let face = Shape.face(from: wire, planar: true) else { return nil }
         let angle = min(max(f.angle, 0.1), 360) * .pi / 180
-        guard let solid = Shape.revolve(
-            profile: wire,
+        guard let solid = face.revolved(
             axisOrigin: axisOrigin,
             axisDirection: axisDirection,
             angle: angle
