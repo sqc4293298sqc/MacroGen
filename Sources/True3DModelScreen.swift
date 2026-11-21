@@ -52,6 +52,7 @@ struct True3DModelScreen: View {
     @State private var modelDocumentID = UUID()
     @State private var importedPart: True3DImportedPart?
     @State private var modelOperations: [True3DHistoryOperation] = []
+    @State private var selectedEdge: True3DEdgeRef?
     @State private var importMode: True3DImportMode = .dxf
     @State private var scene = SCNScene()
     @State private var result: True3DResult?
@@ -375,7 +376,9 @@ struct True3DModelScreen: View {
                     .disabled(importedPart != nil)
                     .opacity(importedPart == nil ? 1 : 0.45)
 
-                True3DSceneView(scene: scene, showWire: showWire)
+                True3DSceneView(scene: scene, showWire: showWire, onPickEdge: { view, point, size in
+                    pickEdge(in: view, at: point, viewSize: size)
+                })
                     .frame(height: 400)
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                     .overlay(
@@ -457,6 +460,7 @@ struct True3DModelScreen: View {
                 if let importedPart {
                     importedPartDrawer(importedPart)
                 } else {
+                    edgeSelectionSection
                     parametersArea
                     featureListArea
                     patternArea
@@ -470,6 +474,41 @@ struct True3DModelScreen: View {
             Rectangle().fill(Color.black.opacity(0.12)).frame(width: 0.5)
         }
         .ignoresSafeArea(edges: .bottom)
+    }
+
+    @ViewBuilder
+    private var edgeSelectionSection: some View {
+        if let edge = selectedEdge {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label("已选中一条边", systemImage: "line.diagonal")
+                        .font(.system(size: 12, weight: .semibold))
+                    Spacer()
+                    Button("清除") { clearEdgeSelection() }
+                        .font(.system(size: 10))
+                        .buttonStyle(.borderless)
+                }
+                Text("边 #\(edge.edgeIndex) · 长 \(String(format: "%.1f", edge.length)) mm · 相邻面 \(edge.adjacentFaceIndices.count)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Text("下一步：设圆角半径并预览（P1.5）")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color(red: 0.85, green: 0.30, blue: 0.05))
+            }
+            .padding(10)
+            .background(Color(red: 1.0, green: 0.42, blue: 0.10).opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+        } else if result != nil {
+            HStack(spacing: 8) {
+                Image(systemName: "hand.tap")
+                    .foregroundStyle(Color(red: 0.85, green: 0.30, blue: 0.05))
+                Text("轻点模型边线，选中一条边")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(10)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+        }
     }
 
     private func importedPartBanner(_ part: True3DImportedPart) -> some View {
@@ -510,6 +549,7 @@ struct True3DModelScreen: View {
 
     private func importedPartDrawer(_ part: True3DImportedPart) -> some View {
         VStack(alignment: .leading, spacing: 10) {
+            edgeSelectionSection
             sectionTitle("STEP 模型源")
             Text(part.name)
                 .font(.system(size: 13, weight: .semibold))
@@ -1398,6 +1438,21 @@ struct True3DModelScreen: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+                if let selectedEdge {
+                    HStack(spacing: 8) {
+                        Label("已选边 · \(String(format: "%.1f", selectedEdge.length)) mm", systemImage: "line.diagonal")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color(red: 0.85, green: 0.30, blue: 0.05))
+                        Spacer()
+                        Button("清除") { clearEdgeSelection() }
+                            .font(.system(size: 11))
+                            .buttonStyle(.borderless)
+                    }
+                } else {
+                    Label("轻点模型边线，选中一条边", systemImage: "hand.tap")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                 }
             }
             .padding(12)
@@ -2295,6 +2350,7 @@ struct True3DModelScreen: View {
                 guard !Task.isCancelled, generation == self.buildGeneration else { return }
                 self.result = newResult
                 self.message = "构建完成"
+                self.selectedEdge = nil
                 self.scene = self.makeScene(result: newResult)
                 self.isBuilding = false
             } catch is CancellationError {
@@ -2310,10 +2366,121 @@ struct True3DModelScreen: View {
         }
     }
 
+    private func pickEdge(in view: SCNView, at point: CGPoint, viewSize: CGSize) {
+        guard stage == .model, !isBuilding, !importBusy, !isDirty, let result else { return }
+        guard let scene = view.scene,
+              let modelRoot = scene.rootNode.childNode(withName: "modelRoot", recursively: false) else {
+            return
+        }
+
+        let nearWorld = view.unprojectPoint(SCNVector3(Float(point.x), Float(point.y), 0))
+        let farWorld = view.unprojectPoint(SCNVector3(Float(point.x), Float(point.y), 1))
+        let nearLocal = modelRoot.convertPosition(nearWorld, from: nil)
+        let farLocal = modelRoot.convertPosition(farWorld, from: nil)
+        let delta = SIMD3<Double>(
+            Double(farLocal.x - nearLocal.x),
+            Double(farLocal.y - nearLocal.y),
+            Double(farLocal.z - nearLocal.z)
+        )
+        let length = (delta.x * delta.x + delta.y * delta.y + delta.z * delta.z).squareRoot()
+        guard length > 1e-9 else { return }
+        let origin = SIMD3<Double>(Double(nearLocal.x), Double(nearLocal.y), Double(nearLocal.z))
+        let direction = SIMD3<Double>(delta.x / length, delta.y / length, delta.z / length)
+
+        guard let hit = result.shape.raycastNearest(origin: origin, direction: direction) else {
+            clearEdgeSelection()
+            notice = "没点到实体；轻点模型边线再试"
+            return
+        }
+
+        let candidates = result.shape.edges().filter { edge in
+            guard let faces = edge.adjacentFaces(in: result.shape) else { return false }
+            return faces.0.index == hit.faceIndex || faces.1?.index == hit.faceIndex
+        }
+        guard !candidates.isEmpty else {
+            clearEdgeSelection()
+            notice = "点到面，但这条面没有可选的边"
+            return
+        }
+
+        var bestEdge: Edge?
+        var bestDistance = Double.greatestFiniteMagnitude
+        for edge in candidates {
+            let samples = edge.points(count: 16)
+            for sample in samples {
+                let world = modelRoot.convertPosition(
+                    SCNVector3(Float(sample.x), Float(sample.y), Float(sample.z)),
+                    to: nil
+                )
+                let projected = view.projectPoint(world)
+                guard projected.z >= 0, projected.z <= 1 else { continue }
+                let dx = Double(projected.x) - Double(point.x)
+                let dy = Double(projected.y) - Double(point.y)
+                let distance = (dx * dx + dy * dy).squareRoot()
+                if distance < bestDistance {
+                    bestDistance = distance
+                    bestEdge = edge
+                }
+            }
+        }
+
+        let tolerance = max(16, min(30, Double(viewSize.width) * 0.045))
+        guard let edge = bestEdge, bestDistance <= tolerance else {
+            clearEdgeSelection()
+            notice = "没点到边；靠近边线再试"
+            return
+        }
+
+        let reference = True3DEdgeRef.make(edge: edge, in: result.shape)
+        selectedEdge = reference
+        selectedFeatureID = nil
+        error = nil
+        notice = nil
+        message = "已选中边 #\(reference.edgeIndex)，可设圆角/倒角"
+        highlightSelectedEdge(modelRoot: modelRoot, edge: edge)
+    }
+
+    private func highlightSelectedEdge(modelRoot: SCNNode, edge: Edge) {
+        modelRoot.childNode(withName: "selectedEdge", recursively: false)?.removeFromParentNode()
+        let points = edge.points(count: 64)
+        guard points.count >= 2 else { return }
+
+        let vertices = points.map {
+            SCNVector3(Float($0.x), Float($0.y), Float($0.z))
+        }
+        let source = SCNGeometrySource(vertices: vertices)
+        var indices: [Int32] = []
+        indices.reserveCapacity((vertices.count - 1) * 2)
+        for index in 0..<(vertices.count - 1) {
+            indices.append(Int32(index))
+            indices.append(Int32(index + 1))
+        }
+        let element = SCNGeometryElement(indices: indices, primitiveType: .line)
+        let geometry = SCNGeometry(sources: [source], elements: [element])
+        let material = SCNMaterial()
+        material.lightingModel = .constant
+        material.diffuse.contents = UIColor(red: 1.0, green: 0.32, blue: 0.05, alpha: 1)
+        material.emission.contents = UIColor(red: 1.0, green: 0.32, blue: 0.05, alpha: 1)
+        material.isDoubleSided = true
+        material.readsFromDepthBuffer = false
+        geometry.materials = [material]
+        let node = SCNNode(geometry: geometry)
+        node.name = "selectedEdge"
+        node.renderingOrder = 200
+        modelRoot.addChildNode(node)
+    }
+
+    private func clearEdgeSelection() {
+        selectedEdge = nil
+        notice = nil
+        scene.rootNode.childNode(withName: "selectedEdge", recursively: true)?.removeFromParentNode()
+    }
+
     private func makeScene(result: True3DResult) -> SCNScene {
         let newScene = SCNScene()
         newScene.background.contents = UIColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1)
         let modelRoot = SCNNode()
+        modelRoot.name = "modelRoot"
         modelRoot.eulerAngles.x = -Float.pi / 2
         newScene.rootNode.addChildNode(modelRoot)
         let geometry = result.mesh.sceneKitGeometry()
@@ -2720,6 +2887,37 @@ struct True3DModelScreen: View {
 private struct True3DSceneView: UIViewRepresentable {
     let scene: SCNScene
     let showWire: Bool
+    var onPickEdge: ((SCNView, CGPoint, CGSize) -> Void)?
+
+    init(
+        scene: SCNScene,
+        showWire: Bool,
+        onPickEdge: ((SCNView, CGPoint, CGSize) -> Void)? = nil
+    ) {
+        self.scene = scene
+        self.showWire = showWire
+        self.onPickEdge = onPickEdge
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var onPickEdge: ((SCNView, CGPoint, CGSize) -> Void)?
+
+        @objc func handleTap(_ gesture: UITapGestureRecognizer) {
+            guard let view = gesture.view as? SCNView else { return }
+            onPickEdge?(view, gesture.location(in: view), view.bounds.size)
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
 
     func makeUIView(context: Context) -> SCNView {
         let view = SCNView()
@@ -2730,11 +2928,19 @@ private struct True3DSceneView: UIViewRepresentable {
         view.antialiasingMode = .multisampling4X
         view.preferredFramesPerSecond = 60
         view.isPlaying = true
+
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
+        tap.numberOfTapsRequired = 1
+        tap.cancelsTouchesInView = false
+        tap.delegate = context.coordinator
+        view.addGestureRecognizer(tap)
+        context.coordinator.onPickEdge = onPickEdge
         return view
     }
 
     func updateUIView(_ uiView: SCNView, context: Context) {
         uiView.scene = scene
+        context.coordinator.onPickEdge = onPickEdge
         uiView.scene?.rootNode.enumerateChildNodes { node, _ in
             if node.name == "wireOverlay" {
                 node.isHidden = !showWire
