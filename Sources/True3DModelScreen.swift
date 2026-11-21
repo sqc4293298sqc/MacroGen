@@ -1666,7 +1666,7 @@ struct True3DModelScreen: View {
     private func featureTreeMenu(_ node: True3DTreeNode) -> some View {
         if let operationID = node.operationID {
             Menu {
-                Button(node.suppressed ? "恢复" : "抑制") {
+                Button {
                     toggleOperationSuppression(operationID)
                 } label: {
                     Label(
