@@ -134,6 +134,10 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
     var sweepPitch: Double = 12
     var sweepTurns: Double = 2
     var sweepLength: Double = 60
+    /// 倒角方式与第二距离/角度。
+    var chamferMode: True3DChamferMode = .symmetric
+    var chamferSecondDistance: Double = 2
+    var chamferAngle: Double = 30
     /// 旋转特征所在基准面，以及旋转轴。
     var revolvePlane: True3DRevolvePlane = .xz
     var revolveAxis: True3DRevolveAxis = .z
