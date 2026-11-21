@@ -823,96 +823,6 @@ struct True3DModelScreen: View {
         .background(SwiftUI.Color.white.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private var digit3DTreePanel: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Text("建模树")
-                    .font(.system(size: 18, weight: .bold))
-                Spacer()
-                Image(systemName: "line.3.horizontal.decrease")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                Button {
-                    withAnimation(.easeOut(duration: 0.2)) { showTreePanel = false }
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 13, weight: .semibold))
-                        .frame(width: 28, height: 28)
-                        .background(SwiftUI.Color.black.opacity(0.06), in: Circle())
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
-
-            Divider().opacity(0.4)
-
-            ScrollView {
-                if let result {
-                    featureTree(result)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 8)
-                } else {
-                    Text("模型尚未构建")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .padding(20)
-                }
-            }
-        }
-        .frame(width: min(330, UIScreen.main.bounds.width * 0.80))
-        .frame(maxHeight: 500)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(SwiftUI.Color.white.opacity(0.5), lineWidth: 0.5))
-    }
-
-    private var digit3DToolbox: some View {
-        VStack(spacing: 10) {
-            HStack {
-                Text("工具箱")
-                    .font(.system(size: 17, weight: .bold))
-                Spacer()
-                Button {
-                    withAnimation(.easeOut(duration: 0.2)) { showToolbox = false }
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 13, weight: .semibold))
-                        .frame(width: 28, height: 28)
-                        .background(SwiftUI.Color.black.opacity(0.06), in: Circle())
-                }
-                .buttonStyle(.plain)
-            }
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                ForEach(Array(toolboxItems.enumerated()), id: \.offset) { _, item in
-                    Button {
-                        runRailFeature(item.kind)
-                        withAnimation(.easeOut(duration: 0.2)) { showToolbox = false }
-                    } label: {
-                        HStack(spacing: 7) {
-                            Image(systemName: icon(for: item.kind))
-                                .font(.system(size: 14))
-                                .frame(width: 22)
-                            Text(item.title)
-                                .font(.system(size: 12, weight: .medium))
-                            Spacer(minLength: 0)
-                        }
-                        .foregroundStyle(.primary.opacity(0.78))
-                        .padding(.horizontal, 8)
-                        .frame(height: 40)
-                        .background(SwiftUI.Color.white.opacity(0.58), in: RoundedRectangle(cornerRadius: 9))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-        .padding(12)
-        .frame(width: min(310, UIScreen.main.bounds.width * 0.78))
-        .frame(maxHeight: 520)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(SwiftUI.Color.white.opacity(0.5), lineWidth: 0.5))
-    }
-
     private var toolboxItems: [(title: String, kind: True3DFeatureKind)] {
         [
             ("孔", .hole),
@@ -3446,7 +3356,7 @@ struct True3DModelScreen: View {
         )
     }
 
-    private func brepLineGeometry(shape: Shape, samplesPerEdge: Int = 24) -> SCNGeometry {
+    private func brepLineGeometry(shape: OCCTSwift.Shape, samplesPerEdge: Int = 24) -> SCNGeometry {
         var vertices: [SCNVector3] = []
         var indices: [Int32] = []
         for edge in shape.edges() {
@@ -3472,7 +3382,7 @@ struct True3DModelScreen: View {
     private func makeScene(
         mesh: Mesh,
         stats: True3DStats,
-        shape: Shape,
+        shape: OCCTSwift.Shape,
         materialColor: UIColor,
         isPreview: Bool
     ) -> SCNScene {
