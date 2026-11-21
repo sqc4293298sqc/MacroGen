@@ -856,8 +856,8 @@ struct True3DModelScreen: View {
         .position(x: x, y: y)
     }
 
-    private func featureDrawer(_ draft: True3DFeatureSpec) -> some View {
-        VStack(spacing: 0) {
+    private func featureDrawer(_ draft: True3DFeatureSpec) -> AnyView {
+        AnyView(VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: icon(for: draft.kind))
                     .font(.system(size: 16, weight: .semibold))
@@ -930,12 +930,11 @@ struct True3DModelScreen: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(SwiftUI.Color.white.opacity(0.5), lineWidth: 0.5))
         .padding(.horizontal, 10)
-        .padding(.bottom, 8)
+        .padding(.bottom, 8))
     }
 
-    @ViewBuilder
-    private func edgeDrawerFields(_ draft: True3DFeatureSpec) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func edgeDrawerFields(_ draft: True3DFeatureSpec) -> AnyView {
+        AnyView(VStack(alignment: .leading, spacing: 8) {
             Text("边选择").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
             if let edge = selectedEdge {
                 HStack {
@@ -977,7 +976,7 @@ struct True3DModelScreen: View {
             }
             Text(draft.kind == .edgeChamfer ? "倒角方式：等距离" : "连续性：G1，等半径")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
-        }
+        })
     }
 
     private func supportsCoordinates(_ kind: True3DFeatureKind) -> Bool {
@@ -989,8 +988,8 @@ struct True3DModelScreen: View {
         }
     }
 
-    private func coordinateEditor(_ f: Binding<True3DFeatureSpec>) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func coordinateEditor(_ f: Binding<True3DFeatureSpec>) -> AnyView {
+        AnyView(VStack(alignment: .leading, spacing: 8) {
             Text("位置坐标")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
@@ -1006,7 +1005,7 @@ struct True3DModelScreen: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
             }
-        }
+        })
     }
 
     private var digit3DFilletCard: some View {
@@ -3005,201 +3004,193 @@ struct True3DModelScreen: View {
     }
 
     @ViewBuilder
-    private func featureEditor(_ f: Binding<True3DFeatureSpec>, showPosition: Bool = true) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func featureEditor(_ f: Binding<True3DFeatureSpec>, showPosition: Bool = true) -> AnyView {
+        var rows: [AnyView] = []
+        rows.append(AnyView(
             TextField("特征名称", text: f.name)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12))
-            switch f.wrappedValue.kind {
-            case .hole:
-                numRow("直径 Ø", f.dia)
-                if showPosition {
-                    numRow("中心 X", f.x)
-                    numRow("中心 Y", f.y)
-                }
-                Picker("孔类型", selection: f.holeKind) {
-                    ForEach(True3DHoleKind.allCases) { kind in
-                        Text(kind.rawValue).tag(kind)
-                    }
-                }
-                .font(.system(size: 12))
-                if f.wrappedValue.holeKind == .blind || f.wrappedValue.holeKind == .thread {
-                    numRow("深度", f.holeDepth)
-                }
-                if f.wrappedValue.holeKind == .counterbore {
-                    optRow("沉头 Ø", f.cbDia, fallback: f.wrappedValue.dia + 2)
-                    optRow("沉头深", f.cbDepth, fallback: 2)
-                }
-                if f.wrappedValue.holeKind == .countersink {
-                    optRow("沉孔 Ø", f.csDia, fallback: f.wrappedValue.dia + 2)
-                    optRow("沉孔角", f.csAngle, fallback: 90)
-                }
-            case .boss:
-                numRow("直径 Ø", f.dia)
-                numRow("高度 H", f.bossHeight)
-                if showPosition {
-                    numRow("中心 X", f.x)
-                    numRow("中心 Y", f.y)
-                }
-            case .rectBoss:
-                numRow("X 长", f.width)
-                numRow("Y 宽", f.depthY)
-                numRow("高度 H", f.bossHeight)
-                numRow("圆角 R", f.cornerRadius)
-                if showPosition {
-                    numRow("中心 X", f.x)
-                    numRow("中心 Y", f.y)
-                }
-            case .coneBoss:
-                numRow("底直径", f.dia)
-                numRow("顶直径", f.topDia)
-                numRow("高度 H", f.bossHeight)
-                if showPosition {
-                    numRow("中心 X", f.x)
-                    numRow("中心 Y", f.y)
-                }
-            case .loftBoss:
-                Picker("底截面", selection: f.loftBottomShape) {
-                    ForEach(True3DLoftShape.allCases) { shape in
-                        Text(shape.rawValue).tag(shape)
-                    }
-                }
-                .font(.system(size: 12))
-                if f.wrappedValue.loftBottomShape == .circle {
-                    numRow("底直径", f.dia)
-                } else {
-                    numRow("底 X", f.width)
-                    numRow("底 Y", f.depthY)
-                }
-                Picker("顶截面", selection: f.loftTopShape) {
-                    ForEach(True3DLoftShape.allCases) { shape in
-                        Text(shape.rawValue).tag(shape)
-                    }
-                }
-                .font(.system(size: 12))
-                if f.wrappedValue.loftTopShape == .circle {
-                    numRow("顶直径", f.topDia)
-                } else {
-                    numRow("顶 X", f.topWidth)
-                    numRow("顶 Y", f.topDepthY)
-                }
-                numRow("高度 H", f.bossHeight)
-                if showPosition {
-                    numRow("中心 X", f.x)
-                    numRow("中心 Y", f.y)
-                }
-            case .sweepBoss:
-                Picker("路径", selection: f.sweepPathKind) {
-                    ForEach(True3DSweepPath.allCases) { item in
-                        Text(item.rawValue).tag(item)
-                    }
-                }
-                .font(.system(size: 12))
-                numRow("截面 Ø", f.dia)
-                if f.wrappedValue.sweepPathKind != .line {
-                    numRow("路径 R", f.sweepPathRadius)
-                }
-                if f.wrappedValue.sweepPathKind == .helix {
-                    numRow("螺距", f.sweepPitch)
-                    numRow("圈数", f.sweepTurns)
-                }
-                if f.wrappedValue.sweepPathKind == .line {
-                    numRow("路径长度", f.sweepLength)
-                }
-            case .draft:
-                numRow("拔模角 °", f.angle)
-                Text("拔模面：当前实体所有竖直面，中性面 Z=0")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-            case .edgeFillet:
-                Picker("边选择", selection: f.edgeSelection) {
-                    ForEach(True3DEdgeSelection.allCases) { item in
-                        Text(item.rawValue).tag(item)
-                    }
-                }
-                .font(.system(size: 12))
-                numRow("圆角 R", f.depth)
-            case .edgeChamfer:
-                Picker("边选择", selection: f.edgeSelection) {
-                    ForEach(True3DEdgeSelection.allCases) { item in
-                        Text(item.rawValue).tag(item)
-                    }
-                }
-                .font(.system(size: 12))
-                Picker("倒角方式", selection: f.chamferMode) {
-                    ForEach(True3DChamferMode.allCases) { item in
-                        Text(item.rawValue).tag(item)
-                    }
-                }
-                .font(.system(size: 12))
-                numRow("倒角 C", f.depth)
-                if f.wrappedValue.chamferMode == .twoDistance {
-                    numRow("第二距离", f.chamferSecondDistance)
-                }
-                if f.wrappedValue.chamferMode == .distanceAngle {
-                    numRow("角度°", f.chamferAngle)
-                }
-            case .shell:
-                numRow("壁厚", f.depth)
-                Text("开口面：当前实体所有朝上的面")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-            case .revolveBoss, .revolveCut:
-                Picker("基准面", selection: f.revolvePlane) {
-                    ForEach(True3DRevolvePlane.allCases) { item in
-                        Text(item.rawValue).tag(item)
-                    }
-                }
-                .font(.system(size: 12))
-                Picker("旋转轴", selection: f.revolveAxis) {
-                    ForEach(True3DRevolveAxis.allCases) { item in
-                        Text(item.rawValue).tag(item)
-                    }
-                }
-                .font(.system(size: 12))
-                Text("旋转轮廓：\(f.wrappedValue.profile.count) 点；基准面决定 2D 坐标映射，旋转轴可独立选 X/Y/Z")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-                numRow("角度 °", f.angle)
-                if f.wrappedValue.kind == .revolveBoss {
-                    numRow("高度 H", f.bossHeight)
-                } else {
-                    numRow("切除深度", f.depth)
-                }
-            case .circularPocket:
-                numRow("直径 Ø", f.dia)
-                numRow("深度", f.depth)
-                if showPosition {
-                    numRow("中心 X", f.x)
-                    numRow("中心 Y", f.y)
-                }
-            case .rectPocket:
-                numRow("X 长", f.width)
-                numRow("Y 宽", f.depthY)
-                numRow("深度", f.depth)
-                numRow("圆角 R", f.cornerRadius)
-                if showPosition {
-                    numRow("中心 X", f.x)
-                    numRow("中心 Y", f.y)
-                }
-            case .slot:
-                numRow("总长", f.width)
-                numRow("槽宽", f.depthY)
-                numRow("深度", f.depth)
-                if showPosition {
-                    numRow("中心 X", f.x)
-                    numRow("中心 Y", f.y)
-                }
-            case .profileBoss:
-                Text("草图轮廓：\(f.wrappedValue.profile.count) 个点")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                numRow("拉伸高度", f.bossHeight)
-            case .profileCut:
-                Text("草图轮廓：\(f.wrappedValue.profile.count) 个点")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                numRow("切除深度", f.depth)
+        ))
+        switch f.wrappedValue.kind {
+        case .hole:
+            rows.append(AnyView(numRow("直径 Ø", f.dia)))
+            if showPosition {
+                rows.append(AnyView(numRow("中心 X", f.x)))
+                rows.append(AnyView(numRow("中心 Y", f.y)))
             }
-            if showPosition { topZEditor(f) }
+            rows.append(AnyView(
+                Picker("孔类型", selection: f.holeKind) {
+                    ForEach(True3DHoleKind.allCases) { kind in Text(kind.rawValue).tag(kind) }
+                }.font(.system(size: 12))
+            ))
+            if f.wrappedValue.holeKind == .blind || f.wrappedValue.holeKind == .thread {
+                rows.append(AnyView(numRow("深度", f.holeDepth)))
+            }
+            if f.wrappedValue.holeKind == .counterbore {
+                rows.append(AnyView(optRow("沉头 Ø", f.cbDia, fallback: f.wrappedValue.dia + 2)))
+                rows.append(AnyView(optRow("沉头深", f.cbDepth, fallback: 2)))
+            }
+            if f.wrappedValue.holeKind == .countersink {
+                rows.append(AnyView(optRow("沉孔 Ø", f.csDia, fallback: f.wrappedValue.dia + 2)))
+                rows.append(AnyView(optRow("沉孔角", f.csAngle, fallback: 90)))
+            }
+        case .boss:
+            rows.append(AnyView(numRow("直径 Ø", f.dia)))
+            rows.append(AnyView(numRow("高度 H", f.bossHeight)))
+            if showPosition {
+                rows.append(AnyView(numRow("中心 X", f.x)))
+                rows.append(AnyView(numRow("中心 Y", f.y)))
+            }
+        case .rectBoss:
+            rows.append(AnyView(numRow("X 长", f.width)))
+            rows.append(AnyView(numRow("Y 宽", f.depthY)))
+            rows.append(AnyView(numRow("高度 H", f.bossHeight)))
+            rows.append(AnyView(numRow("圆角 R", f.cornerRadius)))
+            if showPosition {
+                rows.append(AnyView(numRow("中心 X", f.x)))
+                rows.append(AnyView(numRow("中心 Y", f.y)))
+            }
+        case .coneBoss:
+            rows.append(AnyView(numRow("底直径", f.dia)))
+            rows.append(AnyView(numRow("顶直径", f.topDia)))
+            rows.append(AnyView(numRow("高度 H", f.bossHeight)))
+            if showPosition {
+                rows.append(AnyView(numRow("中心 X", f.x)))
+                rows.append(AnyView(numRow("中心 Y", f.y)))
+            }
+        case .loftBoss:
+            rows.append(AnyView(
+                Picker("底截面", selection: f.loftBottomShape) {
+                    ForEach(True3DLoftShape.allCases) { shape in Text(shape.rawValue).tag(shape) }
+                }.font(.system(size: 12))
+            ))
+            if f.wrappedValue.loftBottomShape == .circle {
+                rows.append(AnyView(numRow("底直径", f.dia)))
+            } else {
+                rows.append(AnyView(numRow("底 X", f.width)))
+                rows.append(AnyView(numRow("底 Y", f.depthY)))
+            }
+            rows.append(AnyView(
+                Picker("顶截面", selection: f.loftTopShape) {
+                    ForEach(True3DLoftShape.allCases) { shape in Text(shape.rawValue).tag(shape) }
+                }.font(.system(size: 12))
+            ))
+            if f.wrappedValue.loftTopShape == .circle {
+                rows.append(AnyView(numRow("顶直径", f.topDia)))
+            } else {
+                rows.append(AnyView(numRow("顶 X", f.topWidth)))
+                rows.append(AnyView(numRow("顶 Y", f.topDepthY)))
+            }
+            rows.append(AnyView(numRow("高度 H", f.bossHeight)))
+            if showPosition {
+                rows.append(AnyView(numRow("中心 X", f.x)))
+                rows.append(AnyView(numRow("中心 Y", f.y)))
+            }
+        case .sweepBoss:
+            rows.append(AnyView(
+                Picker("路径", selection: f.sweepPathKind) {
+                    ForEach(True3DSweepPath.allCases) { item in Text(item.rawValue).tag(item) }
+                }.font(.system(size: 12))
+            ))
+            rows.append(AnyView(numRow("截面 Ø", f.dia)))
+            if f.wrappedValue.sweepPathKind != .line {
+                rows.append(AnyView(numRow("路径 R", f.sweepPathRadius)))
+            }
+            if f.wrappedValue.sweepPathKind == .helix {
+                rows.append(AnyView(numRow("螺距", f.sweepPitch)))
+                rows.append(AnyView(numRow("圈数", f.sweepTurns)))
+            }
+            if f.wrappedValue.sweepPathKind == .line {
+                rows.append(AnyView(numRow("路径长度", f.sweepLength)))
+            }
+        case .draft:
+            rows.append(AnyView(numRow("拔模角 °", f.angle)))
+            rows.append(AnyView(Text("拔模面：当前实体所有竖直面，中性面 Z=0").font(.system(size: 10)).foregroundStyle(.secondary)))
+        case .edgeFillet:
+            rows.append(AnyView(
+                Picker("边选择", selection: f.edgeSelection) {
+                    ForEach(True3DEdgeSelection.allCases) { item in Text(item.rawValue).tag(item) }
+                }.font(.system(size: 12))
+            ))
+            rows.append(AnyView(numRow("圆角 R", f.depth)))
+        case .edgeChamfer:
+            rows.append(AnyView(
+                Picker("边选择", selection: f.edgeSelection) {
+                    ForEach(True3DEdgeSelection.allCases) { item in Text(item.rawValue).tag(item) }
+                }.font(.system(size: 12))
+            ))
+            rows.append(AnyView(
+                Picker("倒角方式", selection: f.chamferMode) {
+                    ForEach(True3DChamferMode.allCases) { item in Text(item.rawValue).tag(item) }
+                }.font(.system(size: 12))
+            ))
+            rows.append(AnyView(numRow("倒角 C", f.depth)))
+            if f.wrappedValue.chamferMode == .twoDistance {
+                rows.append(AnyView(numRow("第二距离", f.chamferSecondDistance)))
+            }
+            if f.wrappedValue.chamferMode == .distanceAngle {
+                rows.append(AnyView(numRow("角度°", f.chamferAngle)))
+            }
+        case .shell:
+            rows.append(AnyView(numRow("壁厚", f.depth)))
+            rows.append(AnyView(Text("开口面：当前实体所有朝上的面").font(.system(size: 10)).foregroundStyle(.secondary)))
+        case .revolveBoss, .revolveCut:
+            rows.append(AnyView(
+                Picker("基准面", selection: f.revolvePlane) {
+                    ForEach(True3DRevolvePlane.allCases) { item in Text(item.rawValue).tag(item) }
+                }.font(.system(size: 12))
+            ))
+            rows.append(AnyView(
+                Picker("旋转轴", selection: f.revolveAxis) {
+                    ForEach(True3DRevolveAxis.allCases) { item in Text(item.rawValue).tag(item) }
+                }.font(.system(size: 12))
+            ))
+            rows.append(AnyView(Text("旋转轮廓：\(f.wrappedValue.profile.count) 点；基准面决定 2D 坐标映射").font(.system(size: 10)).foregroundStyle(.secondary)))
+            rows.append(AnyView(numRow("角度 °", f.angle)))
+            if f.wrappedValue.kind == .revolveBoss {
+                rows.append(AnyView(numRow("高度 H", f.bossHeight)))
+            } else {
+                rows.append(AnyView(numRow("切除深度", f.depth)))
+            }
+        case .circularPocket:
+            rows.append(AnyView(numRow("直径 Ø", f.dia)))
+            rows.append(AnyView(numRow("深度", f.depth)))
+            if showPosition {
+                rows.append(AnyView(numRow("中心 X", f.x)))
+                rows.append(AnyView(numRow("中心 Y", f.y)))
+            }
+        case .rectPocket:
+            rows.append(AnyView(numRow("X 长", f.width)))
+            rows.append(AnyView(numRow("Y 宽", f.depthY)))
+            rows.append(AnyView(numRow("深度", f.depth)))
+            rows.append(AnyView(numRow("圆角 R", f.cornerRadius)))
+            if showPosition {
+                rows.append(AnyView(numRow("中心 X", f.x)))
+                rows.append(AnyView(numRow("中心 Y", f.y)))
+            }
+        case .slot:
+            rows.append(AnyView(numRow("总长", f.width)))
+            rows.append(AnyView(numRow("槽宽", f.depthY)))
+            rows.append(AnyView(numRow("深度", f.depth)))
+            if showPosition {
+                rows.append(AnyView(numRow("中心 X", f.x)))
+                rows.append(AnyView(numRow("中心 Y", f.y)))
+            }
+        case .profileBoss:
+            rows.append(AnyView(Text("草图轮廓：\(f.wrappedValue.profile.count) 个点").font(.system(size: 11)).foregroundStyle(.secondary)))
+            rows.append(AnyView(numRow("拉伸高度", f.bossHeight)))
+        case .profileCut:
+            rows.append(AnyView(Text("草图轮廓：\(f.wrappedValue.profile.count) 个点").font(.system(size: 11)).foregroundStyle(.secondary)))
+            rows.append(AnyView(numRow("切除深度", f.depth)))
         }
-        .padding(10)
-        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
+        if showPosition { rows.append(AnyView(topZEditor(f))) }
+        return AnyView(
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(rows.indices, id: \.self) { index in rows[index] }
+            }
+            .padding(10)
+            .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
+        )
     }
 
     @ViewBuilder
