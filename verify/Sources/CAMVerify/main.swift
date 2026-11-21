@@ -123,6 +123,20 @@ do {
         fail("history: fillet did not produce a valid node")
     }
     print("PASS history: nodes=\(filleted.nodes.count) faces=\(filleted.stats.faces)")
+
+    let suppressedOperation = True3DHistoryOperation(
+        kind: .fillet(edge: ref, radius: 3),
+        suppressed: true
+    )
+    var suppressedDocument = document
+    suppressedDocument.append(suppressedOperation)
+    let suppressed = try suppressedDocument.build()
+    guard suppressed.stats.valid, suppressed.nodes.count == 2,
+          suppressed.nodes[1].operationID == suppressedOperation.id,
+          suppressed.nodes[1].status == .suppressed else {
+        fail("history: suppressed operation did not stay suppressed")
+    }
+    print("PASS history: suppressed operation node retained")
 } catch {
     fail("history: \(error.localizedDescription)")
 }

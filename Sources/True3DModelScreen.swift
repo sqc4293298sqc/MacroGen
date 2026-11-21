@@ -53,6 +53,12 @@ struct True3DModelScreen: View {
     @State private var importedPart: True3DImportedPart?
     @State private var modelOperations: [True3DHistoryOperation] = []
     @State private var selectedEdge: True3DEdgeRef?
+    @State private var filletRadius: Double = 2
+    @State private var filletPreview: True3DPreview?
+    @State private var filletPreviewRadius: Double?
+    @State private var isPreviewingFillet = false
+    @State private var filletPreviewTask: Task<Void, Never>?
+    @State private var filletPreviewGeneration = 0
     @State private var importMode: True3DImportMode = .dxf
     @State private var scene = SCNScene()
     @State private var result: True3DResult?
@@ -263,9 +269,12 @@ struct True3DModelScreen: View {
         .onDisappear {
             buildTask?.cancel()
             assemblyBuildTask?.cancel()
+            filletPreviewTask?.cancel()
             buildGeneration += 1
             assemblyGeneration += 1
+            filletPreviewGeneration += 1
             isBuilding = false
+            isPreviewingFillet = false
         }
     }
 
@@ -491,12 +500,52 @@ struct True3DModelScreen: View {
                 Text("边 #\(edge.edgeIndex) · 长 \(String(format: "%.1f", edge.length)) mm · 相邻面 \(edge.adjacentFaceIndices.count)")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
-                Text("下一步：设圆角半径并预览（P1.5）")
+                numRow("圆角 R", $filletRadius)
+                HStack(spacing: 8) {
+                    Button {
+                        previewFillet()
+                    } label: {
+                        Label(isPreviewingFillet ? "预览中…" : "预览圆角", systemImage: "eye")
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
+                    .disabled(isPreviewingFillet || isBuilding || importBusy || isDirty)
+
+                    Button {
+                        commitFillet()
+                    } label: {
+                        Label("确认圆角", systemImage: "checkmark.circle")
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(
+                        filletPreview == nil
+                            || (filletPreviewRadius ?? -1) != filletRadius
+                            || isPreviewingFillet
+                            || isBuilding
+                            || importBusy
+                            || isDirty
+                    )
+                }
+                if let filletPreview {
+                    Text("预览 R\(String(format: "%.2f", filletPreviewRadius ?? filletRadius)) · \(filletPreview.stats.faces) 面")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color(red: 0.85, green: 0.30, blue: 0.05))
+                }
+                Text("先预览，确认后才写入操作历史并重建。")
                     .font(.system(size: 10))
-                    .foregroundStyle(Color(red: 0.85, green: 0.30, blue: 0.05))
+                    .foregroundStyle(.secondary)
             }
             .padding(10)
             .background(Color(red: 1.0, green: 0.42, blue: 0.10).opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+            .onChange(of: filletRadius) { _ in
+                if filletPreview != nil || isPreviewingFillet {
+                    clearFilletPreview(restoreScene: true)
+                }
+            }
         } else if result != nil {
             HStack(spacing: 8) {
                 Image(systemName: "hand.tap")
@@ -1439,12 +1488,26 @@ struct True3DModelScreen: View {
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if let filletPreview {
+                    HStack(spacing: 8) {
+                        Label("圆角预览 R\(String(format: "%.2f", filletPreviewRadius ?? filletRadius))", systemImage: "eye")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color(red: 0.85, green: 0.30, blue: 0.05))
+                        Spacer()
+                        Button("取消预览") { clearFilletPreview(restoreScene: true) }
+                            .font(.system(size: 11))
+                            .buttonStyle(.borderless)
+                    }
+                }
                 if let selectedEdge {
                     HStack(spacing: 8) {
                         Label("已选边 · \(String(format: "%.1f", selectedEdge.length)) mm", systemImage: "line.diagonal")
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(Color(red: 0.85, green: 0.30, blue: 0.05))
                         Spacer()
+                        Button("设参数") { showModelDrawer = true }
+                            .font(.system(size: 11, weight: .semibold))
+                            .buttonStyle(.borderless)
                         Button("清除") { clearEdgeSelection() }
                             .font(.system(size: 11))
                             .buttonStyle(.borderless)
@@ -1549,7 +1612,15 @@ struct True3DModelScreen: View {
     private func featureTree(_ result: True3DResult) -> some View {
         let nodes = result.nodes.isEmpty ? fallbackNodes(from: result.features) : result.nodes
         return VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("建模树")
+            HStack {
+                sectionTitle("建模树")
+                Spacer()
+                if let selectedFeatureID {
+                    Button("清除选择") { self.selectedFeatureID = nil }
+                        .font(.system(size: 10))
+                        .buttonStyle(.borderless)
+                }
+            }
             VStack(spacing: 0) {
                 ForEach(Array(nodes.enumerated()), id: \.element.id) { index, node in
                     HStack(spacing: 10) {
@@ -1565,14 +1636,59 @@ struct True3DModelScreen: View {
                         Text("\(index + 1)")
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.tertiary)
+                        if let operationID = node.operationID {
+                            Menu {
+                                Button(node.suppressed ? "恢复" : "抑制") {
+                                    toggleOperationSuppression(operationID)
+                                } label: {
+                                    Label(node.suppressed ? "恢复" : "抑制",
+                                          systemImage: node.suppressed ? "arrow.uturn.forward" : "minus.circle")
+                                }
+                                Button("删除", role: .destructive) {
+                                    deleteOperation(operationID)
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.borderless)
+                        }
                     }
                     .padding(.vertical, 8)
+                    .padding(.horizontal, 6)
+                    .background(
+                        selectedFeatureID == node.id
+                            ? Color(red: 1.0, green: 0.42, blue: 0.10).opacity(0.12)
+                            : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 8)
+                    )
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        selectedFeatureID = selectedFeatureID == node.id ? nil : node.id
+                    }
                     if index < nodes.count - 1 { Divider().padding(.leading, 24) }
                 }
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 6)
             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
         }
+    }
+
+    private func toggleOperationSuppression(_ operationID: UUID) {
+        guard let index = modelOperations.firstIndex(where: { $0.id == operationID }) else { return }
+        modelOperations[index].suppressed.toggle()
+        selectedFeatureID = nil
+        rebuild()
+    }
+
+    private func deleteOperation(_ operationID: UUID) {
+        modelOperations.removeAll { $0.id == operationID }
+        if selectedFeatureID != nil {
+            selectedFeatureID = nil
+        }
+        clearEdgeSelection()
+        rebuild()
     }
 
     private func fallbackNodes(from features: [True3DFeature]) -> [True3DTreeNode] {
@@ -2320,6 +2436,7 @@ struct True3DModelScreen: View {
         buildGeneration += 1
         let generation = buildGeneration
         buildTask?.cancel()
+        clearFilletPreview(restoreScene: true)
 
         error = nil
         notice = nil
@@ -2366,8 +2483,103 @@ struct True3DModelScreen: View {
         }
     }
 
+    private func previewFillet() {
+        guard let edgeRef = selectedEdge,
+              let result,
+              !isDirty,
+              !isBuilding,
+              !importBusy else {
+            return
+        }
+        guard filletRadius > 0 else {
+            error = "圆角半径必须大于 0"
+            return
+        }
+        guard let edge = result.shape.edge(at: edgeRef.edgeIndex) else {
+            error = "选中的边已经失效，请重新选边"
+            return
+        }
+
+        clearFilletPreview(restoreScene: true)
+        filletPreviewGeneration += 1
+        let generation = filletPreviewGeneration
+        filletPreviewTask?.cancel()
+        isPreviewingFillet = true
+        error = nil
+        notice = nil
+        let radius = filletRadius
+        let shape = result.shape
+        filletPreviewTask = Task { @MainActor in
+            do {
+                let preview = try await self.kernelService.previewFillet(
+                    on: shape,
+                    edge: edge,
+                    radius: radius
+                )
+                guard !Task.isCancelled, generation == self.filletPreviewGeneration else { return }
+                self.filletPreview = preview
+                self.filletPreviewRadius = radius
+                self.scene = self.makePreviewScene(preview)
+                self.isPreviewingFillet = false
+                self.message = "圆角预览 R\(String(format: "%.2f", radius))"
+            } catch is CancellationError {
+                guard generation == self.filletPreviewGeneration else { return }
+                self.isPreviewingFillet = false
+            } catch {
+                guard generation == self.filletPreviewGeneration else { return }
+                self.error = error.localizedDescription
+                self.isPreviewingFillet = false
+            }
+        }
+    }
+
+    private func commitFillet() {
+        guard let edge = selectedEdge,
+              filletRadius > 0,
+              filletPreview != nil,
+              (filletPreviewRadius ?? -1) == filletRadius,
+              !isDirty,
+              !isPreviewingFillet,
+              !isBuilding else {
+            return
+        }
+        modelOperations.append(
+            True3DHistoryOperation(kind: .fillet(edge: edge, radius: filletRadius))
+        )
+        selectedEdge = nil
+        selectedFeatureID = nil
+        error = nil
+        notice = nil
+        clearFilletPreview(restoreScene: true)
+        rebuild()
+    }
+
+    private func clearFilletPreview(restoreScene: Bool) {
+        let hadPreview = filletPreview != nil || isPreviewingFillet
+        filletPreviewGeneration += 1
+        filletPreviewTask?.cancel()
+        filletPreviewTask = nil
+        filletPreview = nil
+        filletPreviewRadius = nil
+        isPreviewingFillet = false
+        if restoreScene, hadPreview, let result {
+            scene = makeScene(result: result)
+            if let selectedEdge,
+               let edge = result.shape.edge(at: selectedEdge.edgeIndex),
+               let modelRoot = scene.rootNode.childNode(withName: "modelRoot", recursively: false) {
+                highlightSelectedEdge(modelRoot: modelRoot, edge: edge)
+            }
+        }
+    }
+
     private func pickEdge(in view: SCNView, at point: CGPoint, viewSize: CGSize) {
-        guard stage == .model, !isBuilding, !importBusy, !isDirty, let result else { return }
+        guard stage == .model,
+              !isBuilding,
+              !importBusy,
+              !isDirty,
+              filletPreview == nil,
+              !isPreviewingFillet,
+              let result else { return }
         guard let scene = view.scene,
               let modelRoot = scene.rootNode.childNode(withName: "modelRoot", recursively: false) else {
             return
@@ -2471,41 +2683,65 @@ struct True3DModelScreen: View {
     }
 
     private func clearEdgeSelection() {
+        clearFilletPreview(restoreScene: true)
         selectedEdge = nil
         notice = nil
         scene.rootNode.childNode(withName: "selectedEdge", recursively: true)?.removeFromParentNode()
     }
 
     private func makeScene(result: True3DResult) -> SCNScene {
+        makeScene(
+            mesh: result.mesh,
+            stats: result.stats,
+            materialColor: UIColor(red: 0.46, green: 0.58, blue: 0.70, alpha: 1),
+            isPreview: false
+        )
+    }
+
+    private func makePreviewScene(_ preview: True3DPreview) -> SCNScene {
+        makeScene(
+            mesh: preview.mesh,
+            stats: preview.stats,
+            materialColor: UIColor(red: 1.0, green: 0.58, blue: 0.16, alpha: 1),
+            isPreview: true
+        )
+    }
+
+    private func makeScene(
+        mesh: Mesh,
+        stats: True3DStats,
+        materialColor: UIColor,
+        isPreview: Bool
+    ) -> SCNScene {
         let newScene = SCNScene()
         newScene.background.contents = UIColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1)
         let modelRoot = SCNNode()
         modelRoot.name = "modelRoot"
         modelRoot.eulerAngles.x = -Float.pi / 2
         newScene.rootNode.addChildNode(modelRoot)
-        let geometry = result.mesh.sceneKitGeometry()
+        let geometry = mesh.sceneKitGeometry()
         let material = SCNMaterial()
         material.lightingModel = .physicallyBased
-        material.diffuse.contents = UIColor(red: 0.46, green: 0.58, blue: 0.70, alpha: 1)
+        material.diffuse.contents = materialColor
         material.metalness.contents = 0.18
         material.roughness.contents = 0.48
         geometry.materials = [material]
         let solidNode = SCNNode(geometry: geometry)
-        solidNode.name = "solid"
+        solidNode.name = isPreview ? "previewSolid" : "solid"
         modelRoot.addChildNode(solidNode)
         let wireMaterial = SCNMaterial()
         wireMaterial.lightingModel = .constant
         wireMaterial.diffuse.contents = UIColor(red: 0.10, green: 0.15, blue: 0.20, alpha: 0.72)
         wireMaterial.fillMode = .lines
         wireMaterial.isDoubleSided = true
-        let wireGeometry = result.mesh.sceneKitGeometry()
+        let wireGeometry = mesh.sceneKitGeometry()
         wireGeometry.materials = [wireMaterial]
         let wireNode = SCNNode(geometry: wireGeometry)
         wireNode.name = "wireOverlay"
         wireNode.scale = SCNVector3(1.002, 1.002, 1.002)
         wireNode.isHidden = !showWire
         modelRoot.addChildNode(wireNode)
-        let maxSize = max(result.stats.sizeX, result.stats.sizeY, result.stats.sizeZ, 20)
+        let maxSize = max(stats.sizeX, stats.sizeY, stats.sizeZ, 20)
         let camera = SCNNode()
         camera.camera = SCNCamera()
         camera.camera?.fieldOfView = 38
@@ -2513,7 +2749,8 @@ struct True3DModelScreen: View {
         camera.camera?.zFar = 10000
         camera.position = SCNVector3(Float(maxSize * 1.55), Float(maxSize * 1.35), Float(maxSize * 1.55))
         let target = SCNNode()
-        target.position = SCNVector3(0, Float(result.stats.sizeZ / 2), 0)
+        target.name = "cameraTarget"
+        target.position = SCNVector3(0, Float(stats.sizeZ / 2), 0)
         newScene.rootNode.addChildNode(target)
         camera.constraints = [SCNLookAtConstraint(target: target)]
         newScene.rootNode.addChildNode(camera)
