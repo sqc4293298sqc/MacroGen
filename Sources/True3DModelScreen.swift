@@ -398,6 +398,40 @@ struct True3DModelScreen: View {
                 .padding(.bottom, 70)
                 .transition(.move(edge: .leading))
             }
+
+            if let toast = error ?? notice {
+                VStack {
+                    Spacer()
+                    Text(toast)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(error == nil ? SwiftUI.Color.primary.opacity(0.72) : SwiftUI.Color(red: 0.82, green: 0.20, blue: 0.16))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(3)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .padding(.horizontal, 30)
+                        .padding(.bottom, 58)
+                        .onTapGesture { error = nil; notice = nil }
+                }
+                .transition(.opacity)
+            }
+
+            if isBuilding {
+                VStack {
+                    Spacer()
+                    HStack(spacing: 7) {
+                        ProgressView().scaleEffect(0.7)
+                        Text(message ?? "正在构建…")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.bottom, 28)
+                }
+            }
         }
         .background(SwiftUI.Color(red: 0.95, green: 0.96, blue: 0.98))
         .onChange(of: filletRadius) { _ in
@@ -548,18 +582,13 @@ struct True3DModelScreen: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 2) {
                 railItem("pencil", "草图", highlighted: false) { stage = .sketch }
-                railItem("circle.grid.cross", "基准面") { notice = "基准面功能暂未开放" }
-                railItem("arrow.up.to.line", "拉伸") { notice = "STEP 模型暂只支持圆角/倒角" }
-                railItem("arrow.triangle.2.circlepath", "旋转体") { notice = "旋转体功能暂未开放" }
-                railItem("square.on.square", "同步") { notice = "同步建模功能暂未开放" }
-                railItem("arrow.left.and.right", "变换") { notice = "变换功能暂未开放" }
-                railItem("square.stack.3d.up", "曲面") { notice = "曲面功能暂未开放" }
-                railItem("circle.circle", "布尔") { notice = "布尔功能暂未开放" }
+                railItem("arrow.up.to.line", "拉伸") { runRailFeature(.boss) }
+                railItem("arrow.triangle.2.circlepath", "旋转体") { runRailFeature(.revolveBoss) }
+                railItem("circle.circle", "孔") { runRailFeature(.hole) }
                 railItem("line.diagonal", "圆角", highlighted: selectedEdge != nil) {
                     if selectedEdge == nil { notice = "先在模型上轻点一条边" }
                 }
-                railItem("square.dashed", "抽壳") { notice = "抽壳功能暂未开放" }
-                railItem("scribble", "3D曲线") { notice = "3D 曲线功能暂未开放" }
+                railItem("square.dashed", "抽壳") { runRailFeature(.shell) }
                 railItem("plus.square", "更多") {
                     withAnimation(.easeOut(duration: 0.2)) { showToolbox = true }
                 }
@@ -581,13 +610,10 @@ struct True3DModelScreen: View {
                 railItem("point.3.connected.trianglepath.dotted", "模型树") {
                     withAnimation(.easeOut(duration: 0.2)) { showTreePanel.toggle() }
                 }
-                railItem("square.split.2x1", "剖切") { notice = "剖切功能暂未开放" }
                 railItem("eye", "显示", highlighted: showWire) { showWire.toggle() }
-                railItem("ruler", "测量") { notice = "测量功能暂未开放" }
-                railItem("magnifyingglass", "分析") { notice = "分析功能暂未开放" }
-                railItem("square.stack.3d.down.right", "爆炸图") { notice = "爆炸图功能暂未开放" }
-                railItem("character.cursor.ibeam", "3D标注") { notice = "3D 标注功能暂未开放" }
-                railItem("sparkles", "渲染") { notice = "渲染设置暂未开放" }
+                railItem("arrow.counterclockwise", "视图复位") {
+                    if let result { scene = makeScene(result: result) }
+                }
             }
             .padding(.vertical, 5)
             .padding(.horizontal, 4)
@@ -858,15 +884,126 @@ struct True3DModelScreen: View {
                 .buttonStyle(.plain)
             }
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                ForEach(Array(toolboxNames.enumerated()), id: \.offset) { _, item in
+                ForEach(Array(toolboxItems.enumerated()), id: \.offset) { _, item in
                     Button {
-                        notice = "\(item) 暂未接入"
+                        runRailFeature(item.kind)
+                        withAnimation(.easeOut(duration: 0.2)) { showToolbox = false }
                     } label: {
                         HStack(spacing: 7) {
-                            Image(systemName: itemIcon(item))
+                            Image(systemName: icon(for: item.kind))
                                 .font(.system(size: 14))
                                 .frame(width: 22)
-                            Text(item)
+                            Text(item.title)
+                                .font(.system(size: 12, weight: .medium))
+                            Spacer(minLength: 0)
+                        }
+                        .foregroundStyle(.primary.opacity(0.78))
+                        .padding(.horizontal, 8)
+                        .frame(height: 40)
+                        .background(SwiftUI.Color.white.opacity(0.58), in: RoundedRectangle(cornerRadius: 9))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(12)
+        .frame(width: min(310, UIScreen.main.bounds.width * 0.78))
+        .frame(maxHeight: 520)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(SwiftUI.Color.white.opacity(0.5), lineWidth: 0.5))
+    }
+
+    private var toolboxItems: [(title: String, kind: True3DFeatureKind)] {
+        [
+            ("孔", .hole),
+            ("凸台", .boss),
+            ("矩形凸台", .rectBoss),
+            ("锥形凸台", .coneBoss),
+            ("放样凸台", .loftBoss),
+            ("螺旋扫掠", .sweepBoss),
+            ("拔模", .draft),
+            ("全边圆角", .edgeFillet),
+            ("全边倒角", .edgeChamfer),
+            ("抽壳", .shell),
+            ("旋转凸台", .revolveBoss),
+            ("旋转切除", .revolveCut),
+            ("圆腔", .circularPocket),
+            ("方腔", .rectPocket),
+            ("腰形槽", .slot)
+        ]
+    }
+
+    private var digit3DTreePanel: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Text("建模树")
+                    .font(.system(size: 18, weight: .bold))
+                Spacer()
+                Image(systemName: "line.3.horizontal.decrease")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) { showTreePanel = false }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                        .background(SwiftUI.Color.black.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
+
+            Divider().opacity(0.4)
+
+            ScrollView {
+                if let result {
+                    featureTree(result)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 8)
+                } else {
+                    Text("模型尚未构建")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .padding(20)
+                }
+            }
+        }
+        .frame(width: min(330, UIScreen.main.bounds.width * 0.80))
+        .frame(maxHeight: 500)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(SwiftUI.Color.white.opacity(0.5), lineWidth: 0.5))
+    }
+
+    private var digit3DToolbox: some View {
+        VStack(spacing: 10) {
+            HStack {
+                Text("工具箱")
+                    .font(.system(size: 17, weight: .bold))
+                Spacer()
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) { showToolbox = false }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                        .background(SwiftUI.Color.black.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                ForEach(Array(toolboxItems.enumerated()), id: \.offset) { _, item in
+                    Button {
+                        runRailFeature(item.kind)
+                        withAnimation(.easeOut(duration: 0.2)) { showToolbox = false }
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: icon(for: item.kind))
+                                .font(.system(size: 14))
+                                .frame(width: 22)
+                            Text(item.title)
                                 .font(.system(size: 12, weight: .medium))
                             Spacer(minLength: 0)
                         }
@@ -2802,6 +2939,14 @@ struct True3DModelScreen: View {
         }
     }
 
+    private func runRailFeature(_ kind: True3DFeatureKind) {
+        guard importedPart == nil else {
+            notice = "STEP 模型只能做圆角/倒角；请先“退出 STEP”再用参数化特征"
+            return
+        }
+        addFeature(kind)
+    }
+
     private func addFeature(_ kind: True3DFeatureKind) {
         var f = True3DFeatureSpec(kind: kind)
         switch kind {
@@ -3013,8 +3158,8 @@ struct True3DModelScreen: View {
         modelOperations = []
         modelDocumentID = UUID()
         selectedFeatureID = nil
-        notice = "已新建空白工程：先画草图，或直接添加孔/凸台/型腔"
-        stage = .sketch
+        notice = "已新建空白工程：可直接添加孔/凸台/型腔，或进入草图"
+        stage = .model
         rebuild()
     }
 
@@ -3285,6 +3430,7 @@ struct True3DModelScreen: View {
         makeScene(
             mesh: result.mesh,
             stats: result.stats,
+            shape: result.shape,
             materialColor: UIColor(red: 0.52, green: 0.54, blue: 0.57, alpha: 1),
             isPreview: false
         )
@@ -3294,14 +3440,39 @@ struct True3DModelScreen: View {
         makeScene(
             mesh: preview.mesh,
             stats: preview.stats,
+            shape: preview.shape,
             materialColor: UIColor(red: 0.20, green: 0.47, blue: 0.92, alpha: 1),
             isPreview: true
         )
     }
 
+    private func brepLineGeometry(shape: Shape, samplesPerEdge: Int = 24) -> SCNGeometry {
+        var vertices: [SCNVector3] = []
+        var indices: [Int32] = []
+        for edge in shape.edges() {
+            let points = edge.points(count: samplesPerEdge)
+            guard points.count > 1 else { continue }
+            let start = Int32(vertices.count)
+            for point in points {
+                vertices.append(SCNVector3(Float(point.x), Float(point.y), Float(point.z)))
+            }
+            for index in 0..<(points.count - 1) {
+                indices.append(start + Int32(index))
+                indices.append(start + Int32(index + 1))
+            }
+        }
+        guard !vertices.isEmpty, !indices.isEmpty else {
+            return SCNGeometry()
+        }
+        let source = SCNGeometrySource(vertices: vertices)
+        let element = SCNGeometryElement(indices: indices, primitiveType: .line)
+        return SCNGeometry(sources: [source], elements: [element])
+    }
+
     private func makeScene(
         mesh: Mesh,
         stats: True3DStats,
+        shape: Shape,
         materialColor: UIColor,
         isPreview: Bool
     ) -> SCNScene {
@@ -3326,7 +3497,7 @@ struct True3DModelScreen: View {
         wireMaterial.diffuse.contents = UIColor(red: 0.10, green: 0.15, blue: 0.20, alpha: 0.72)
         wireMaterial.fillMode = .lines
         wireMaterial.isDoubleSided = true
-        let wireGeometry = mesh.sceneKitGeometry()
+        let wireGeometry = brepLineGeometry(shape: shape)
         wireGeometry.materials = [wireMaterial]
         let wireNode = SCNNode(geometry: wireGeometry)
         wireNode.name = "wireOverlay"
