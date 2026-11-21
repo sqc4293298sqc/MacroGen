@@ -186,13 +186,8 @@ struct True3DSketchScreen: View {
                     }
                     .buttonStyle(.plain)
 
-                    HStack(spacing: 8) {
-                        Text("草图")
-                            .font(.system(size: 17, weight: .semibold))
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
+                    Text("草图")
+                        .font(.system(size: 17, weight: .semibold))
                     .padding(.horizontal, 14)
                     .frame(height: 42)
                     .background(.ultraThinMaterial, in: Capsule())

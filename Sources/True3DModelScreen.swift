@@ -692,19 +692,12 @@ struct True3DModelScreen: View {
                 }
             }
             filletCardRow("连续性") {
-                HStack(spacing: 5) {
-                    Text("G1")
-                    Image(systemName: "chevron.down").font(.system(size: 8))
-                }
-                .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
+                Text(edgeFeatureIsChamfer ? "—" : "G1")
+                    .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
             }
             filletCardRow("方法") {
-                HStack(spacing: 5) {
-                    Image(systemName: "line.diagonal")
-                    Text(edgeFeatureIsChamfer ? "等距离" : "等半径")
-                    Image(systemName: "chevron.down").font(.system(size: 8))
-                }
-                .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
+                Text(edgeFeatureIsChamfer ? "等距离" : "等半径")
+                    .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
             }
             HStack(spacing: 8) {
                 Text(edgeFeatureIsChamfer ? "距离" : "半径")
@@ -726,20 +719,6 @@ struct True3DModelScreen: View {
                         .background(SwiftUI.Color.black.opacity(0.06), in: Circle())
                 }
                 .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 9)
-            .frame(height: 32)
-            .background(SwiftUI.Color.white.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
-
-            HStack {
-                Text("变半径")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Toggle("", isOn: .constant(false))
-                    .labelsHidden()
-                    .scaleEffect(0.72)
-                    .disabled(true)
             }
             .padding(.horizontal, 9)
             .frame(height: 32)
