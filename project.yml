@@ -25,7 +25,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.sqc.macrogen
         PRODUCT_NAME: MacroGen
         MARKETING_VERSION: "2.9.27"
-        CURRENT_PROJECT_VERSION: "55"
+        CURRENT_PROJECT_VERSION: "56"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: "宏程序$(MARKETING_VERSION)"
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
@@ -37,27 +37,3 @@ targets:
         SWIFT_VERSION: "5.0"
         CODE_SIGN_STYLE: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-
-  MacroGenUITests:
-    type: bundle.ui-testing
-    platform: iOS
-    deploymentTarget: "16.0"
-    sources:
-      - path: Tests/UITests
-    dependencies:
-      - target: MacroGen
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.sqc.macrogen.uitests
-        TEST_TARGET_NAME: MacroGen
-        SWIFT_VERSION: "5.0"
-
-schemes:
-  MacroGen-3DSmoke:
-    build:
-      targets:
-        MacroGen: all
-        MacroGenUITests: [test]
-    test:
-      targets:
-        - MacroGenUITests

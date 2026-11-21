@@ -1913,16 +1913,30 @@ struct True3DModelScreen: View {
         }
 
         func label(_ text: String, _ color: UIColor, _ position: SCNVector3) {
-            let textGeometry = SCNText(string: text, extrusionDepth: 0.1)
-            textGeometry.font = UIFont.systemFont(ofSize: 1.4, weight: .bold)
-            textGeometry.flatness = 0.1
+            let side: CGFloat = 64
+            let image = UIGraphicsImageRenderer(size: CGSize(width: side, height: side)).image { context in
+                UIColor.clear.setFill()
+                context.fill(CGRect(x: 0, y: 0, width: side, height: side))
+                let attributes: [NSAttributedString.Key: Any] = [
+                    .font: UIFont.systemFont(ofSize: 52, weight: .heavy),
+                    .foregroundColor: color
+                ]
+                let string = text as NSString
+                let textSize = string.size(withAttributes: attributes)
+                string.draw(
+                    at: CGPoint(x: (side - textSize.width) / 2, y: (side - textSize.height) / 2),
+                    withAttributes: attributes
+                )
+            }
+            let plane = SCNPlane(width: 7, height: 7)
             let material = SCNMaterial()
             material.lightingModel = .constant
-            material.diffuse.contents = color
-            textGeometry.materials = [material]
-            let node = SCNNode(geometry: textGeometry)
+            material.diffuse.contents = image
+            material.isDoubleSided = true
+            material.transparencyMode = .aOne
+            plane.materials = [material]
+            let node = SCNNode(geometry: plane)
             node.position = position
-            node.scale = SCNVector3(1.7, 1.7, 1.7)
             let billboard = SCNBillboardConstraint()
             billboard.freeAxes = .all
             node.constraints = [billboard]
@@ -4241,6 +4255,7 @@ struct True3DModelScreen: View {
         let maxSize = max(meshSizeX, meshSizeY, meshSizeZ, 1)
         let worldCenter = modelRoot.convertPosition(meshCenter, to: nil)
         let camera = SCNNode()
+        camera.name = "workbenchCamera"
         camera.camera = SCNCamera()
         camera.camera?.fieldOfView = 34
         camera.camera?.zNear = max(0.01, maxSize / 5000)
