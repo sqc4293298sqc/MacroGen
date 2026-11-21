@@ -1,4 +1,5 @@
 import Foundation
+import QuartzCore
 import SceneKit
 import SwiftUI
 import UIKit
@@ -3489,10 +3490,10 @@ struct True3DModelScreen: View {
             orbitYaw = 90
             orbitPitch = 10
         }
-        applyOrbit()
+        applyOrbit(animated: true)
     }
 
-    private func applyOrbit() {
+    private func applyOrbit(animated: Bool = false) {
         guard let camera = scene.rootNode.childNode(withName: "workbenchCamera", recursively: true),
               let target = scene.rootNode.childNode(withName: "cameraTarget", recursively: true) else {
             return
@@ -3512,11 +3513,20 @@ struct True3DModelScreen: View {
             (direction.x * direction.x + direction.y * direction.y + direction.z * direction.z).squareRoot(),
             0.001
         )
-        camera.position = SCNVector3(
+        let newPosition = SCNVector3(
             target.position.x + direction.x / length * distance,
             target.position.y + direction.y / length * distance,
             target.position.z + direction.z / length * distance
         )
+        if animated {
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = 0.45
+            SCNTransaction.animationTimingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            camera.position = newPosition
+            SCNTransaction.commit()
+        } else {
+            camera.position = newPosition
+        }
     }
 
     private func makeScene(result: True3DResult) -> SCNScene {
