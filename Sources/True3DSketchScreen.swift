@@ -530,7 +530,7 @@ struct True3DSketchScreen: View {
                      : tool == .editPoint
                      ? "拖动已有控制点修改轮廓；松手即更新尺寸"
                      : tool == .constraint
-                     ? "点选控制点（最多 2 个），再到右侧抽屉加水平/垂直/距离/固定约束"
+                     ? "点选控制点（最多 4 个）加约束：2 点用于水平/垂直/距离，4 点用于平行/垂直段/等长/角度"
                      : tool == .trim
                      ? "点中要删除的控制点，轮廓自动把两侧线段接起来"
                      : tool == .extend
