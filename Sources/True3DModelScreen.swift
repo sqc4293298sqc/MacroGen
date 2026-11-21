@@ -814,6 +814,10 @@ struct True3DModelScreen: View {
                     modelTool("孔", "circle.dashed") { addFeature(.hole) }
                     modelTool("凸台", "arrow.up.circle") { addFeature(.boss) }
                     modelTool("矩形凸台", "rectangle") { addFeature(.rectBoss) }
+                    modelTool("锥形凸台", "triangle") { addFeature(.coneBoss) }
+                    modelTool("拔模", "square.on.square.dashed") { addFeature(.draft) }
+                    modelTool("全边圆角", "circle.dashed") { addFeature(.edgeFillet) }
+                    modelTool("全边倒角", "square.dashed") { addFeature(.edgeChamfer) }
                     modelTool("抽壳", "cube.transparent") { addFeature(.shell) }
                     modelTool("旋转凸台", "rotate.3d") { addFeature(.revolveBoss) }
                     modelTool("旋转切除", "rotate.3d.fill") { addFeature(.revolveCut) }
@@ -1087,6 +1091,10 @@ struct True3DModelScreen: View {
                     Button("孔") { addFeature(.hole) }
                     Button("凸台") { addFeature(.boss) }
                     Button("矩形凸台") { addFeature(.rectBoss) }
+                    Button("锥形凸台") { addFeature(.coneBoss) }
+                    Button("拔模") { addFeature(.draft) }
+                    Button("全边圆角") { addFeature(.edgeFillet) }
+                    Button("全边倒角") { addFeature(.edgeChamfer) }
                     Button("抽壳") { addFeature(.shell) }
                     Button("旋转凸台") { addFeature(.revolveBoss) }
                     Button("旋转切除") { addFeature(.revolveCut) }
@@ -1267,6 +1275,20 @@ struct True3DModelScreen: View {
                 numRow("圆角 R", f.cornerRadius)
                 numRow("中心 X", f.x)
                 numRow("中心 Y", f.y)
+            case .coneBoss:
+                numRow("底直径", f.dia)
+                numRow("顶直径", f.topDia)
+                numRow("高度 H", f.bossHeight)
+                numRow("中心 X", f.x)
+                numRow("中心 Y", f.y)
+            case .draft:
+                numRow("拔模角 °", f.angle)
+                Text("拔模面：当前实体所有竖直面，中性面 Z=0")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            case .edgeFillet:
+                numRow("圆角 R", f.depth)
+            case .edgeChamfer:
+                numRow("倒角 C", f.depth)
             case .shell:
                 numRow("壁厚", f.depth)
                 Text("开口面：当前实体所有朝上的面")
@@ -1376,6 +1398,10 @@ struct True3DModelScreen: View {
         case .hole: return "circle.circle"
         case .boss: return "cylinder"
         case .rectBoss: return "rectangle"
+        case .coneBoss: return "triangle"
+        case .draft: return "square.on.square.dashed"
+        case .edgeFillet: return "circle.dashed"
+        case .edgeChamfer: return "square.dashed"
         case .shell: return "cube.transparent"
         case .revolveBoss: return "rotate.3d"
         case .revolveCut: return "rotate.3d.fill"
@@ -1397,6 +1423,15 @@ struct True3DModelScreen: View {
         case .rectBoss:
             f.name = "新矩形凸台"; f.x = params.width * 0.25; f.y = params.depth * 0.15
             f.width = 30; f.depthY = 20; f.bossHeight = 6
+        case .coneBoss:
+            f.name = "锥形凸台"; f.x = params.width * 0.25; f.y = params.depth * 0.15
+            f.dia = 24; f.topDia = 12; f.bossHeight = 8
+        case .draft:
+            f.name = "拔模"; f.angle = 3
+        case .edgeFillet:
+            f.name = "全边圆角"; f.depth = 1.5
+        case .edgeChamfer:
+            f.name = "全边倒角"; f.depth = 1
         case .shell:
             f.name = "抽壳"; f.depth = min(2, min(params.width, params.depth, params.height) / 4)
         case .revolveBoss:

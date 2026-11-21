@@ -33,6 +33,10 @@ enum True3DFeatureKind: String, CaseIterable, Identifiable, Codable {
     case hole = "孔"
     case boss = "凸台"
     case rectBoss = "矩形凸台"
+    case coneBoss = "锥形凸台"
+    case draft = "拔模"
+    case edgeFillet = "全边圆角"
+    case edgeChamfer = "全边倒角"
     case shell = "抽壳"
     case revolveBoss = "旋转凸台"
     case revolveCut = "旋转切除"
@@ -66,8 +70,10 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
     var cornerRadius: Double = 0
     /// 草图拉伸特征的闭合轮廓，坐标是基础块坐标系（mm）。
     var profile: [True3DPoint] = []
-    /// 旋转特征的角度（度）。
+    /// 旋转 / 拔模角度（度）。
     var angle: Double = 360
+    /// 锥形凸台的顶部直径。
+    var topDia: Double = 0
 
     init(kind: True3DFeatureKind = .hole, x: Double = 0, y: Double = 0) {
         self.kind = kind
@@ -80,6 +86,14 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
             name = "凸台"; dia = 20; bossHeight = 6
         case .rectBoss:
             name = "矩形凸台"; width = 30; depthY = 20; bossHeight = 6; cornerRadius = 0
+        case .coneBoss:
+            name = "锥形凸台"; dia = 24; topDia = 12; bossHeight = 8
+        case .draft:
+            name = "拔模"; angle = 3
+        case .edgeFillet:
+            name = "全边圆角"; depth = 1.5
+        case .edgeChamfer:
+            name = "全边倒角"; depth = 1
         case .shell:
             name = "抽壳"; depth = 2
         case .revolveBoss:
@@ -118,6 +132,14 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
             return "Ø\(fmt(dia)) H\(fmt(bossHeight)) @ \(p)"
         case .rectBoss:
             return "\(fmt(width))×\(fmt(depthY)) H\(fmt(bossHeight)) R\(fmt(cornerRadius)) @ \(p)"
+        case .coneBoss:
+            return "Ø\(fmt(dia))→Ø\(fmt(topDia)) H\(fmt(bossHeight)) @ \(p)"
+        case .draft:
+            return "拔模 \(fmt(angle))°"
+        case .edgeFillet:
+            return "全边圆角 R\(fmt(depth))"
+        case .edgeChamfer:
+            return "全边倒角 C\(fmt(depth))"
         case .shell:
             return "壁厚 \(fmt(abs(depth)))"
         case .revolveBoss:
@@ -338,6 +360,38 @@ enum True3DKernel {
                 throw True3DModelError.featureFailed("\(f.name) 布尔合并失败")
             }
             return fused
+        case .coneBoss:
+            guard let cone = Shape.cone(
+                at: SIMD3<Double>(f.x, f.y, f.topZ ?? h),
+                direction: SIMD3<Double>(0, 0, 1),
+                bottomRadius: max(f.dia, 0.1) / 2,
+                topRadius: max(f.topDia > 0 ? f.topDia : f.dia, 0.1) / 2,
+                height: max(f.bossHeight, 0.1)
+            ), let fused = current + cone else {
+                throw True3DModelError.featureFailed("\(f.name) 锥形凸台合并失败")
+            }
+            return fused
+        case .draft:
+            let angle = min(max(f.angle, 0.1), 30) * .pi / 180
+            guard let drafted = current.drafted(
+                faces: current.verticalFaces(),
+                direction: SIMD3<Double>(0, 0, 1),
+                angle: angle,
+                neutralPlane: (point: SIMD3<Double>(0, 0, 0), normal: SIMD3<Double>(0, 0, 1))
+            ) else {
+                throw True3DModelError.featureFailed("\(f.name) 拔模失败：实体没有可拔模的竖直面")
+            }
+            return drafted
+        case .edgeFillet:
+            guard let rounded = current.filleted(radius: max(f.depth, 0.05)) else {
+                throw True3DModelError.featureFailed("\(f.name) 失败：R 可能超过相邻边允许范围")
+            }
+            return rounded
+        case .edgeChamfer:
+            guard let bevel = current.chamfered(distance: max(f.depth, 0.05)) else {
+                throw True3DModelError.featureFailed("\(f.name) 失败：C 可能超过相邻边允许范围")
+            }
+            return bevel
         case .shell:
             guard let shelled = current.shelled(thickness: -abs(f.depth), openFaces: current.upwardFaces()) else {
                 throw True3DModelError.featureFailed("\(f.name) 抽壳失败：壁厚可能过大，或顶面被特征打断")
@@ -537,7 +591,7 @@ enum True3DKernel {
         }
         let edgeInset = (p.edgeMode != .none ? p.edgeSize : 0)
         for f in p.features {
-            let vals = [f.x, f.y, f.dia, f.width, f.depthY, f.depth, f.bossHeight, f.holeDepth, f.cornerRadius]
+            let vals = [f.x, f.y, f.dia, f.width, f.depthY, f.depth, f.bossHeight, f.holeDepth, f.cornerRadius, f.topDia]
             guard vals.allSatisfy({ $0.isFinite }) else {
                 throw True3DModelError.invalidParameter("\(f.name) 参数里有非有限数值")
             }
@@ -579,6 +633,23 @@ enum True3DKernel {
                 guard abs(f.x) + f.width / 2 <= p.width / 2 - edgeInset - 0.02,
                       abs(f.y) + f.depthY / 2 <= p.depth / 2 - edgeInset - 0.02 else {
                     throw True3DModelError.invalidParameter("\(f.name) 必须完整落在基础块顶面，不能悬出边缘")
+                }
+            case .coneBoss:
+                guard f.dia > 0.1, (f.topDia > 0 ? f.topDia : f.dia) > 0.1, f.bossHeight > 0.1 else {
+                    throw True3DModelError.invalidParameter("\(f.name) 直径和高度必须大于 0.1 mm")
+                }
+                let r = max(f.dia, f.topDia > 0 ? f.topDia : f.dia) / 2
+                guard abs(f.x) + r <= p.width / 2 - edgeInset - 0.02,
+                      abs(f.y) + r <= p.depth / 2 - edgeInset - 0.02 else {
+                    throw True3DModelError.invalidParameter("\(f.name) 必须完整落在基础块顶面")
+                }
+            case .draft:
+                guard f.angle > 0.1, f.angle <= 30 else {
+                    throw True3DModelError.invalidParameter("\(f.name) 角度必须在 0.1°～30°")
+                }
+            case .edgeFillet, .edgeChamfer:
+                guard f.depth > 0.05, f.depth < min(p.width, p.depth, p.height) / 2 - 0.01 else {
+                    throw True3DModelError.invalidParameter("\(f.name) 半径/距离必须大于 0.05，且小于最小外形的一半")
                 }
             case .shell:
                 guard f.depth > 0.05, f.depth < min(p.width, p.depth, p.height) / 2 else {
