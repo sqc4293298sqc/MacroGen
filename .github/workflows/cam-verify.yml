@@ -15,6 +15,7 @@ jobs:
         run: |
           mkdir -p verify/Sources/CAMVerify
           cp Sources/True3DModel.swift verify/Sources/CAMVerify/
+          cp Sources/True3DModelDocument.swift verify/Sources/CAMVerify/
           cp Sources/True3DCAM.swift verify/Sources/CAMVerify/
           cp Sources/ToolpathTypes.swift verify/Sources/CAMVerify/
 

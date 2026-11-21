@@ -44,6 +44,7 @@ struct True3DAssemblyComponent: Identifiable, Equatable {
 
 struct True3DModelScreen: View {
     @State private var params = True3DParams()
+    @State private var modelDocumentID = UUID()
     @State private var scene = SCNScene()
     @State private var result: True3DResult?
     @State private var error: String?
@@ -53,6 +54,11 @@ struct True3DModelScreen: View {
     @State private var stepURL: URL?
     @State private var stlURL: URL?
     @State private var isBuilding = false
+    @State private var buildTask: Task<Void, Never>?
+    @State private var buildGeneration = 0
+    @State private var kernelService = True3DKernelService()
+    @State private var assemblyBuildTask: Task<Void, Never>?
+    @State private var assemblyGeneration = 0
     @State private var didInitialBuild = false
     @State private var selectedFeatureID: UUID?
     @State private var stage: True3DWorkbenchStage = .model
@@ -86,7 +92,7 @@ struct True3DModelScreen: View {
 
     private var isDirty: Bool {
         guard let result else { return false }
-        return result.params != params
+        return result.params != params || result.documentID != modelDocumentID
     }
 
     private var dxfType: UTType {
@@ -198,6 +204,13 @@ struct True3DModelScreen: View {
             CameraPicker { image in
                 scanImage(image)
             }
+        }
+        .onDisappear {
+            buildTask?.cancel()
+            assemblyBuildTask?.cancel()
+            buildGeneration += 1
+            assemblyGeneration += 1
+            isBuilding = false
         }
     }
 
@@ -316,7 +329,7 @@ struct True3DModelScreen: View {
                 buildButton
 
                 if let result {
-                    featureTree(result.features)
+                    featureTree(result)
                     Button {
                         stage = .operation
                     } label: {
@@ -532,6 +545,7 @@ struct True3DModelScreen: View {
 
     private func editAssemblyPart(_ component: True3DAssemblyComponent) {
         params = component.part
+        modelDocumentID = UUID()
         selectedFeatureID = nil
         assemblyEditingID = component.id
         stage = .model
@@ -566,27 +580,54 @@ struct True3DModelScreen: View {
     }
 
     private func rebuildAssemblyScene() {
-        guard !assemblyComponents.isEmpty else {
+        assemblyBuildTask?.cancel()
+        assemblyGeneration += 1
+        let generation = assemblyGeneration
+        let components = assemblyComponents
+
+        guard !components.isEmpty else {
             assemblyScene = SCNScene()
             assemblyError = nil
             return
         }
+
+        assemblyError = nil
+        assemblyBuildTask = Task { @MainActor in
+            var builtParts: [(True3DAssemblyComponent, True3DResult)] = []
+            var failure: String?
+
+            for comp in components {
+                do {
+                    let result = try await self.kernelService.build(
+                        True3DModelDocument(params: comp.part)
+                    )
+                    guard !Task.isCancelled, generation == self.assemblyGeneration else { return }
+                    builtParts.append((comp, result))
+                } catch is CancellationError {
+                    return
+                } catch {
+                    failure = "\(comp.name) 生成失败：\(error.localizedDescription)"
+                }
+            }
+
+            guard !Task.isCancelled, generation == self.assemblyGeneration else { return }
+            self.assemblyScene = self.makeAssemblyScene(parts: builtParts)
+            self.assemblyError = failure
+        }
+    }
+
+    private func makeAssemblyScene(
+        parts: [(True3DAssemblyComponent, True3DResult)]
+    ) -> SCNScene {
         let newScene = SCNScene()
         newScene.background.contents = UIColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1)
         let root = SCNNode()
         root.eulerAngles.x = -Float.pi / 2
         newScene.rootNode.addChildNode(root)
-        var failure: String?
         var maxSize: Double = 20
         var maxHeight: Double = 0
-        for comp in assemblyComponents {
-            let partResult: True3DResult
-            do {
-                partResult = try True3DKernel.build(comp.part)
-            } catch {
-                failure = "\(comp.name) 生成失败：\(error.localizedDescription)"
-                continue
-            }
+
+        for (comp, partResult) in parts {
             let holder = SCNNode()
             holder.position = SCNVector3(Float(comp.x), Float(comp.y), Float(comp.z))
             holder.eulerAngles.z = Float(comp.rotationZ * .pi / 180)
@@ -615,7 +656,7 @@ struct True3DModelScreen: View {
             maxSize = max(maxSize, comp.part.width, comp.part.depth, comp.part.height + bossMax)
             maxHeight = max(maxHeight, comp.part.height)
         }
-        assemblyError = failure
+
         let maxSizeFinal = maxSize
         let camera = SCNNode()
         camera.camera = SCNCamera()
@@ -641,7 +682,7 @@ struct True3DModelScreen: View {
         fill.light?.intensity = 350
         fill.light?.color = UIColor(red: 0.72, green: 0.80, blue: 0.90, alpha: 1)
         newScene.rootNode.addChildNode(fill)
-        assemblyScene = newScene
+        return newScene
     }
 
     private var operationStage: some View {
@@ -1279,6 +1320,7 @@ struct True3DModelScreen: View {
 
             Button {
                 params = True3DParams()
+                modelDocumentID = UUID()
                 selectedFeatureID = nil
                 rebuild()
             } label: {
@@ -1291,18 +1333,19 @@ struct True3DModelScreen: View {
         .font(.system(size: 13, weight: .medium))
     }
 
-    private func featureTree(_ features: [True3DFeature]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("生成结果")
+    private func featureTree(_ result: True3DResult) -> some View {
+        let nodes = result.nodes.isEmpty ? fallbackNodes(from: result.features) : result.nodes
+        return VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("建模树")
             VStack(spacing: 0) {
-                ForEach(Array(features.enumerated()), id: \.element.id) { index, feature in
+                ForEach(Array(nodes.enumerated()), id: \.element.id) { index, node in
                     HStack(spacing: 10) {
-                        Image(systemName: feature.ok ? "checkmark.circle.fill" : "minus.circle")
-                            .foregroundStyle(feature.ok ? Color.green : Color.secondary)
+                        Image(systemName: treeIcon(for: node.status))
+                            .foregroundStyle(treeColor(for: node.status))
                             .font(.system(size: 14))
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(feature.name).font(.system(size: 13, weight: .semibold))
-                            Text(feature.detail).font(.system(size: 11)).foregroundStyle(.secondary)
+                            Text(node.name).font(.system(size: 13, weight: .semibold))
+                            Text(node.detail).font(.system(size: 11)).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer()
@@ -1311,11 +1354,41 @@ struct True3DModelScreen: View {
                             .foregroundStyle(.tertiary)
                     }
                     .padding(.vertical, 8)
-                    if index < features.count - 1 { Divider().padding(.leading, 24) }
+                    if index < nodes.count - 1 { Divider().padding(.leading, 24) }
                 }
             }
             .padding(.horizontal, 12)
             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private func fallbackNodes(from features: [True3DFeature]) -> [True3DTreeNode] {
+        features.enumerated().map { index, feature in
+            True3DTreeNode(
+                id: feature.id,
+                kind: index == 0 ? .root : .feature,
+                name: feature.name,
+                detail: feature.detail,
+                suppressed: false,
+                status: feature.ok ? .ok : .failed(feature.detail),
+                operationID: nil
+            )
+        }
+    }
+
+    private func treeIcon(for status: True3DTreeNode.Status) -> String {
+        switch status {
+        case .ok: return "checkmark.circle.fill"
+        case .failed: return "exclamationmark.triangle.fill"
+        case .suppressed: return "minus.circle"
+        }
+    }
+
+    private func treeColor(for status: True3DTreeNode.Status) -> Color {
+        switch status {
+        case .ok: return .green
+        case .failed: return .orange
+        case .suppressed: return Color.secondary
         }
     }
 
@@ -2021,6 +2094,7 @@ struct True3DModelScreen: View {
         params = True3DParams()
         params.projectName = "未命名工程"
         params.features = []
+        modelDocumentID = UUID()
         selectedFeatureID = nil
         notice = "已新建空白工程：先画草图，或直接添加孔/凸台/型腔"
         stage = .sketch
@@ -2028,26 +2102,39 @@ struct True3DModelScreen: View {
     }
 
     private func rebuild() {
+        buildGeneration += 1
+        let generation = buildGeneration
+        buildTask?.cancel()
+
         error = nil
         notice = nil
-        result = nil
-        scene = SCNScene()
         camResult = nil
         gcodeURL = nil
         stepURL = nil
         stlURL = nil
         isBuilding = true
         message = "正在构建 OCCT 实体…"
-        do {
-            let newResult = try True3DKernel.build(params)
-            result = newResult
-            message = "构建完成"
-            scene = makeScene(result: newResult)
-        } catch {
-            self.error = error.localizedDescription
-            message = "构建失败"
+
+        let document = True3DModelDocument(id: modelDocumentID, params: params)
+        buildTask = Task { @MainActor in
+            do {
+                let newResult = try await self.kernelService.build(document)
+                guard !Task.isCancelled, generation == self.buildGeneration else { return }
+                self.result = newResult
+                self.message = "构建完成"
+                self.scene = self.makeScene(result: newResult)
+                self.isBuilding = false
+            } catch is CancellationError {
+                guard generation == self.buildGeneration else { return }
+                self.isBuilding = false
+                self.message = "构建已取消"
+            } catch {
+                guard generation == self.buildGeneration else { return }
+                self.error = error.localizedDescription
+                self.message = "构建失败"
+                self.isBuilding = false
+            }
         }
-        isBuilding = false
     }
 
     private func makeScene(result: True3DResult) -> SCNScene {
@@ -2144,6 +2231,7 @@ struct True3DModelScreen: View {
     private func loadProject() {
         do {
             params = try True3DProjectStore.load()
+            modelDocumentID = UUID()
             selectedFeatureID = nil
             rebuild()
             notice = "已载入上次保存的 3D 工程"
@@ -2230,6 +2318,7 @@ struct True3DModelScreen: View {
         }
         p.features = spec.feats.map(convert)
         params = p
+        modelDocumentID = UUID()
         selectedFeatureID = nil
         rebuild()
         notice = note

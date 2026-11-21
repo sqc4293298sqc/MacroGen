@@ -89,4 +89,42 @@ cam.toolDia = 10
 base = True3DParams()
 verifyCase("large-tool-default", model: base, cam: cam)
 
+do {
+    let document = True3DModelDocument(params: True3DParams())
+    let built = try document.build()
+    guard built.documentID == document.id else {
+        fail("document: result lost document id")
+    }
+    guard built.nodes.count >= 2 else {
+        fail("document: expected root + feature nodes, got \(built.nodes.count)")
+    }
+    guard built.stats.valid, built.stats.faces > 0 else {
+        fail("document: invalid B-Rep")
+    }
+    print("PASS document: nodes=\(built.nodes.count) faces=\(built.stats.faces)")
+} catch {
+    fail("document: \(error.localizedDescription)")
+}
+
+do {
+    var params = True3DParams()
+    params.edgeMode = .none
+    params.features = []
+    let document = True3DModelDocument(params: params)
+    let built = try document.build()
+    guard let edge = built.shape.edge(at: 0) else {
+        fail("history: box has no edge 0")
+    }
+    let ref = True3DEdgeRef.make(edge: edge, in: built.shape)
+    var edited = document
+    edited.append(True3DHistoryOperation(kind: .fillet(edge: ref, radius: 2)))
+    let filleted = try edited.build()
+    guard filleted.stats.valid, filleted.nodes.count == 2 else {
+        fail("history: fillet did not produce a valid node")
+    }
+    print("PASS history: nodes=\(filleted.nodes.count) faces=\(filleted.stats.faces)")
+} catch {
+    fail("history: \(error.localizedDescription)")
+}
+
 print("ALL CAM CHECKS PASSED")

@@ -306,7 +306,13 @@ struct True3DResult {
     let stats: True3DStats
     let features: [True3DFeature]
     let params: True3DParams
+    /// 当前文档标识；参数化直接调用 `True3DKernel.build` 时使用临时 ID。
+    var documentID: UUID = UUID()
+    /// 可交互建模树节点；旧路径不填时为空，UI 可回退到 `features`。
+    var nodes: [True3DTreeNode] = []
 }
+
+extension True3DResult: @unchecked Sendable {}
 
 enum True3DModelError: LocalizedError {
     case baseFailed
@@ -315,6 +321,8 @@ enum True3DModelError: LocalizedError {
     case invalid
     case invalidParameter(String)
     case meshFailed
+    case importFailed(String)
+    case previewFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -324,6 +332,8 @@ enum True3DModelError: LocalizedError {
         case .invalid: return "OCCT 生成了实体，但 BRepCheck 判定无效"
         case .invalidParameter(let detail): return detail
         case .meshFailed: return "实体三角化失败"
+        case .importFailed(let detail): return detail
+        case .previewFailed(let detail): return detail
         }
     }
 }

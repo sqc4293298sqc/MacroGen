@@ -1,0 +1,500 @@
+import Foundation
+import OCCTSwift
+import simd
+
+// MARK: - Model source
+
+/// 3D 工作台的模型来源。
+///
+/// 参数化模型继续走 `True3DParams`；导入的 STEP 作为只读 B-Rep 源，
+/// 后续的圆角/倒角等操作记录在 `True3DHistoryOperation` 里，不写回
+/// `True3DParams`，避免把导入实体硬塞进参数化特征链。
+enum True3DModelSource {
+    case parametric(True3DParams)
+    case importedStep(True3DImportedPart)
+
+    var displayName: String {
+        switch self {
+        case .parametric(let params):
+            return params.projectName.isEmpty ? "未命名工程" : params.projectName
+        case .importedStep(let part):
+            return part.name
+        }
+    }
+
+    var parametricParams: True3DParams? {
+        if case .parametric(let params) = self { return params }
+        return nil
+    }
+}
+
+// MARK: - Imported part
+
+/// 从 STEP 导入的零件。`shape`/`mesh` 只保留在内存里，持久化时
+/// 只保存文件路径、bookmark 和操作历史。
+struct True3DImportedPart: Identifiable, @unchecked Sendable {
+    let id: UUID
+    var name: String
+    var localURL: URL?
+    var bookmarkData: Data?
+    var unitInMeters: Double
+    var shape: Shape
+    var mesh: Mesh
+    var stats: True3DStats
+    var importedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        localURL: URL? = nil,
+        bookmarkData: Data? = nil,
+        unitInMeters: Double = 0.001,
+        shape: Shape,
+        mesh: Mesh
+    ) {
+        self.id = id
+        self.name = name
+        self.localURL = localURL
+        self.bookmarkData = bookmarkData
+        self.unitInMeters = unitInMeters
+        self.shape = shape
+        self.mesh = mesh
+        self.stats = True3DStats.measure(shape: shape, mesh: mesh)
+        self.importedAt = Date()
+    }
+}
+
+// MARK: - Edge reference
+
+/// 选择器返回的是当前形状里的边索引；重建后索引可能变化。
+/// R1 先保存“索引 + 几何指纹”，重建时优先按索引匹配，匹配不上再按
+/// 中点/长度找最近边。R2 再换成 BRepGraph + TopologyRef 的 recipe。
+struct True3DEdgeRef: Codable, Equatable, Hashable, Sendable {
+    var edgeIndex: Int
+    var midpoint: True3DPoint3
+    var length: Double
+    var adjacentFaceIndices: [Int] = []
+
+    static func make(edge: Edge, in shape: Shape) -> True3DEdgeRef {
+        let points = edge.points(count: 9)
+        let midpoint: True3DPoint3
+        if points.isEmpty {
+            midpoint = True3DPoint3(x: 0, y: 0, z: 0)
+        } else {
+            let sum = points.reduce(SIMD3<Double>(0, 0, 0)) { $0 + $1 }
+            midpoint = True3DPoint3(
+                x: sum.x / Double(points.count),
+                y: sum.y / Double(points.count),
+                z: sum.z / Double(points.count)
+            )
+        }
+        var faceIndices: [Int] = []
+        if let faces = edge.adjacentFaces(in: shape) {
+            faceIndices.append(faces.0.index)
+            if let second = faces.1 {
+                faceIndices.append(second.index)
+            }
+        }
+        return True3DEdgeRef(
+            edgeIndex: edge.index,
+            midpoint: midpoint,
+            length: edge.length,
+            adjacentFaceIndices: faceIndices
+        )
+    }
+}
+
+struct True3DPoint3: Codable, Equatable, Hashable, Sendable {
+    var x: Double
+    var y: Double
+    var z: Double
+
+    var simd: SIMD3<Double> { SIMD3(x, y, z) }
+}
+
+// MARK: - History operation
+
+struct True3DHistoryOperation: Identifiable, Equatable, Sendable {
+    enum Kind: Equatable, Sendable {
+        case fillet(edge: True3DEdgeRef, radius: Double)
+        case chamfer(edge: True3DEdgeRef, distance: Double)
+    }
+
+    var id: UUID
+    var kind: Kind
+    var suppressed: Bool
+
+    init(id: UUID = UUID(), kind: Kind, suppressed: Bool = false) {
+        self.id = id
+        self.kind = kind
+        self.suppressed = suppressed
+    }
+
+    var name: String {
+        switch kind {
+        case .fillet: return "圆角"
+        case .chamfer: return "倒角"
+        }
+    }
+
+    var detail: String {
+        switch kind {
+        case .fillet(_, let radius):
+            return "R\(fmt(radius))"
+        case .chamfer(_, let distance):
+            return "C\(fmt(distance))"
+        }
+    }
+
+    private func fmt(_ value: Double) -> String {
+        String(format: "%.2f", value).replacingOccurrences(of: ".00", with: "")
+    }
+}
+
+// MARK: - Tree node
+
+struct True3DTreeNode: Identifiable, Equatable, Sendable {
+    enum Kind: String, Equatable, Sendable {
+        case root
+        case feature
+        case fillet
+        case chamfer
+    }
+
+    enum Status: Equatable, Sendable {
+        case ok
+        case failed(String)
+        case suppressed
+    }
+
+    var id: UUID
+    var kind: Kind
+    var name: String
+    var detail: String
+    var suppressed: Bool
+    var status: Status
+    var operationID: UUID?
+}
+
+// MARK: - Document
+
+/// 一次 3D 建模会话的完整输入：模型源 + 操作历史。
+///
+/// `build()` 是同步内核入口，真正的 UI 调用走 `True3DKernelService`，
+/// 用串行 actor 把 OCCT 计算移出主线程。
+struct True3DModelDocument: Identifiable, @unchecked Sendable {
+    let id: UUID
+    var name: String
+    var source: True3DModelSource
+    var operations: [True3DHistoryOperation]
+    var selectedNodeID: UUID?
+
+    init(
+        id: UUID = UUID(),
+        params: True3DParams,
+        operations: [True3DHistoryOperation] = [],
+        selectedNodeID: UUID? = nil
+    ) {
+        self.id = id
+        self.name = params.projectName.isEmpty ? "未命名工程" : params.projectName
+        self.source = .parametric(params)
+        self.operations = operations
+        self.selectedNodeID = selectedNodeID
+    }
+
+    init(
+        id: UUID = UUID(),
+        imported part: True3DImportedPart,
+        operations: [True3DHistoryOperation] = [],
+        selectedNodeID: UUID? = nil
+    ) {
+        self.id = id
+        self.name = part.name
+        self.source = .importedStep(part)
+        self.operations = operations
+        self.selectedNodeID = selectedNodeID
+    }
+
+    var parametricParams: True3DParams? {
+        source.parametricParams
+    }
+
+    mutating func append(_ operation: True3DHistoryOperation) {
+        operations.append(operation)
+        selectedNodeID = operation.id
+    }
+
+    /// 同步重建。调用方负责把它放到串行内核队列；UI 不要直接在主线程调用。
+    func build() throws -> True3DResult {
+        let base = try buildBase()
+        var current = base.shape
+        var features = base.features
+        var nodes = makeBaseNodes(features: base.features, params: base.params)
+
+        for operation in operations {
+            if operation.suppressed {
+                features.append(
+                    True3DFeature(name: operation.name, detail: "已抑制 · " + operation.detail, ok: false)
+                )
+                nodes.append(
+                    True3DTreeNode(
+                        id: operation.id,
+                        kind: nodeKind(for: operation),
+                        name: operation.name,
+                        detail: operation.detail,
+                        suppressed: true,
+                        status: .suppressed,
+                        operationID: operation.id
+                    )
+                )
+                continue
+            }
+
+            do {
+                current = try apply(operation, to: current)
+                features.append(True3DFeature(name: operation.name, detail: operation.detail, ok: true))
+                nodes.append(
+                    True3DTreeNode(
+                        id: operation.id,
+                        kind: nodeKind(for: operation),
+                        name: operation.name,
+                        detail: operation.detail,
+                        suppressed: false,
+                        status: .ok,
+                        operationID: operation.id
+                    )
+                )
+            } catch let error as True3DModelError {
+                throw error
+            } catch {
+                throw True3DModelError.featureFailed(
+                    "\(operation.name) 生成失败：\(error.localizedDescription)"
+                )
+            }
+        }
+
+        guard current.isValid else { throw True3DModelError.invalid }
+
+        let mesh: Mesh
+        let hasActiveOperations = operations.contains { !$0.suppressed }
+        if !hasActiveOperations {
+            mesh = base.mesh
+        } else {
+            guard let rebuiltMesh = current.mesh(linearDeflection: 0.18, angularDeflection: 0.35) else {
+                throw True3DModelError.meshFailed
+            }
+            mesh = rebuiltMesh
+        }
+
+        return True3DResult(
+            shape: current,
+            mesh: mesh,
+            stats: True3DStats.measure(shape: current, mesh: mesh, fallback: base.params),
+            features: features,
+            params: base.params,
+            documentID: id,
+            nodes: nodes
+        )
+    }
+
+    private func buildBase() throws -> True3DResult {
+        switch source {
+        case .parametric(let params):
+            return try True3DKernel.build(params)
+        case .importedStep(let part):
+            let root = True3DFeature(name: "导入的 STEP", detail: part.name, ok: true)
+            return True3DResult(
+                shape: part.shape,
+                mesh: part.mesh,
+                stats: part.stats,
+                features: [root],
+                params: True3DParams(),
+                documentID: id,
+                nodes: [
+                    True3DTreeNode(
+                        id: id,
+                        kind: .root,
+                        name: "导入的 STEP",
+                        detail: part.name,
+                        suppressed: false,
+                        status: .ok,
+                        operationID: nil
+                    )
+                ]
+            )
+        }
+    }
+
+    private func makeBaseNodes(features: [True3DFeature], params: True3DParams) -> [True3DTreeNode] {
+        guard !features.isEmpty else {
+            return [
+                True3DTreeNode(
+                    id: id,
+                    kind: .root,
+                    name: source.displayName,
+                    detail: "基础体",
+                    suppressed: false,
+                    status: .ok,
+                    operationID: nil
+                )
+            ]
+        }
+
+        var nodes: [True3DTreeNode] = [
+            True3DTreeNode(
+                id: id,
+                kind: .root,
+                name: features[0].name,
+                detail: features[0].detail,
+                suppressed: false,
+                status: features[0].ok ? .ok : .failed(features[0].detail),
+                operationID: nil
+            )
+        ]
+
+        for (index, feature) in features.dropFirst().enumerated() {
+            let syntheticCount = params.edgeMode == .none ? 0 : 1
+            let specIndex = index - syntheticCount
+            let featureID: UUID
+            if specIndex >= 0, specIndex < params.features.count {
+                featureID = params.features[specIndex].id
+            } else {
+                featureID = UUID()
+            }
+            nodes.append(
+                True3DTreeNode(
+                    id: featureID,
+                    kind: .feature,
+                    name: feature.name,
+                    detail: feature.detail,
+                    suppressed: false,
+                    status: feature.ok ? .ok : .failed(feature.detail),
+                    operationID: nil
+                )
+            )
+        }
+        return nodes
+    }
+
+    private func nodeKind(for operation: True3DHistoryOperation) -> True3DTreeNode.Kind {
+        switch operation.kind {
+        case .fillet: return .fillet
+        case .chamfer: return .chamfer
+        }
+    }
+
+    private func apply(_ operation: True3DHistoryOperation, to shape: Shape) throws -> Shape {
+        switch operation.kind {
+        case .fillet(let edgeRef, let radius):
+            guard radius > 0 else {
+                throw True3DModelError.invalidParameter("圆角半径必须大于 0")
+            }
+            guard let edge = resolve(edgeRef, in: shape) else {
+                throw True3DModelError.edgeFailed("找不到要圆角的边，可能已被上一步修改")
+            }
+            guard let builder = FilletBuilder(shape: shape) else {
+                throw True3DModelError.edgeFailed("无法创建圆角构建器")
+            }
+            guard builder.addEdge(edge, radius: radius), builder.contour(for: edge) > 0 else {
+                throw True3DModelError.edgeFailed("这条边不能加 R\(fmt(radius)) 圆角")
+            }
+            guard builder.faultyContourCount == 0, builder.faultyVertexCount == 0,
+                  let result = builder.build(), result.isValid else {
+                throw True3DModelError.edgeFailed(
+                    "R\(fmt(radius)) 圆角失败：半径可能超过实体允许范围"
+                )
+            }
+            return result
+
+        case .chamfer(let edgeRef, let distance):
+            guard distance > 0 else {
+                throw True3DModelError.invalidParameter("倒角距离必须大于 0")
+            }
+            guard let edge = resolve(edgeRef, in: shape) else {
+                throw True3DModelError.edgeFailed("找不到要倒角的边，可能已被上一步修改")
+            }
+            guard let builder = ChamferBuilder(shape: shape) else {
+                throw True3DModelError.edgeFailed("无法创建倒角构建器")
+            }
+            guard builder.addEdge(edge, distance: distance), builder.contour(for: edge) > 0 else {
+                throw True3DModelError.edgeFailed("这条边不能加 C\(fmt(distance)) 倒角")
+            }
+            guard let result = builder.build(), result.isValid else {
+                throw True3DModelError.edgeFailed(
+                    "C\(fmt(distance)) 倒角失败：距离可能超过实体允许范围"
+                )
+            }
+            return result
+        }
+    }
+
+    private func resolve(_ ref: True3DEdgeRef, in shape: Shape) -> Edge? {
+        if let exact = shape.edge(at: ref.edgeIndex), matches(ref, exact) {
+            return exact
+        }
+
+        let candidates = shape.edges()
+        let target = ref.midpoint.simd
+        let tolerance = max(ref.length * 0.02, 0.05)
+        return candidates
+            .map { edge -> (Edge, Double) in
+                let points = edge.points(count: 5)
+                let midpoint: SIMD3<Double>
+                if points.isEmpty {
+                    midpoint = SIMD3(0, 0, 0)
+                } else {
+                    midpoint = points.reduce(SIMD3<Double>(0, 0, 0)) { $0 + $1 } / Double(points.count)
+                }
+                let distance = simd_distance(midpoint, target)
+                let lengthDelta = abs(edge.length - ref.length)
+                return (edge, distance + lengthDelta * 0.5)
+            }
+            .filter { $0.1 <= tolerance }
+            .min { $0.1 < $1.1 }?
+            .0
+    }
+
+    private func matches(_ ref: True3DEdgeRef, _ edge: Edge) -> Bool {
+        guard abs(edge.length - ref.length) <= max(ref.length * 0.02, 0.05) else {
+            return false
+        }
+        let points = edge.points(count: 5)
+        guard !points.isEmpty else { return false }
+        let midpoint = points.reduce(SIMD3<Double>(0, 0, 0)) { $0 + $1 } / Double(points.count)
+        return simd_distance(midpoint, ref.midpoint.simd) <= max(ref.length * 0.02, 0.05)
+    }
+
+    private func fmt(_ value: Double) -> String {
+        String(format: "%.2f", value).replacingOccurrences(of: ".00", with: "")
+    }
+}
+
+// MARK: - Stats
+
+extension True3DStats {
+    static func measure(shape: Shape, mesh: Mesh, fallback: True3DParams? = nil) -> True3DStats {
+        let size: (Double, Double, Double)
+        if let bounds = shape.bounds {
+            size = (
+                bounds.max.x - bounds.min.x,
+                bounds.max.y - bounds.min.y,
+                bounds.max.z - bounds.min.z
+            )
+        } else if let fallback {
+            size = (fallback.width, fallback.depth, fallback.height)
+        } else {
+            size = (0, 0, 0)
+        }
+
+        return True3DStats(
+            volume: shape.volume ?? 0,
+            faces: shape.faceCount,
+            edges: shape.edgeCount,
+            triangles: mesh.triangleCount,
+            valid: shape.isValid,
+            sizeX: size.0,
+            sizeY: size.1,
+            sizeZ: size.2
+        )
+    }
+}
