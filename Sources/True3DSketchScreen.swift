@@ -203,11 +203,14 @@ struct True3DSketchScreen: View {
     @State private var showLayerPanel = false
     @State private var layerVisible = true
     @State private var redoStack: [True3DPoint] = []
+    @State private var redoClosed = false
     @State private var showAngles = false
     @State private var darkCanvas = false
     @State private var isLineMode = false
     @State private var openSegments: [True3DLineSegment] = []
     @State private var showFinishPanel = false
+    @State private var marqueeStart: CGPoint?
+    @State private var marqueeCurrent: CGPoint?
 
     private var baseWidth: CGFloat { CGFloat(max(canvasWidth, 1)) }
     private var baseDepth: CGFloat { CGFloat(max(canvasDepth, 1)) }
@@ -313,14 +316,14 @@ struct True3DSketchScreen: View {
     }
 
     private var sketchTopBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Button {
                 if let onBack { onBack() } else { dismiss() }
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(darkCanvas ? .white : .black.opacity(0.78))
-                    .frame(width: 42, height: 42)
+                    .frame(width: 40, height: 40)
                     .background(.ultraThinMaterial, in: Circle())
             }
             .buttonStyle(.plain)
@@ -339,13 +342,13 @@ struct True3DSketchScreen: View {
             HStack(spacing: 0) {
                 Button { undo() } label: {
                     Image(systemName: "arrow.uturn.backward")
-                        .frame(width: 40, height: 40)
+                        .frame(width: 36, height: 38)
                 }
                 .disabled(points.isEmpty && !closed && arcPoints.isEmpty)
                 Rectangle().fill(Color.black.opacity(0.12)).frame(width: 0.5, height: 22)
                 Button { redo() } label: {
                     Image(systemName: "arrow.uturn.forward")
-                        .frame(width: 40, height: 40)
+                        .frame(width: 36, height: 38)
                 }
                 .disabled(redoStack.isEmpty)
             }
@@ -359,7 +362,7 @@ struct True3DSketchScreen: View {
                 Image(systemName: "checkmark")
                     .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(.white)
-                    .frame(width: 42, height: 42)
+                    .frame(width: 38, height: 38)
                     .background(SwiftUI.Color(red: 0.12, green: 0.44, blue: 0.92), in: Circle())
             }
             .buttonStyle(.plain)
@@ -370,7 +373,7 @@ struct True3DSketchScreen: View {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(darkCanvas ? .white : .black.opacity(0.78))
-                    .frame(width: 42, height: 42)
+                    .frame(width: 38, height: 38)
                     .background(.ultraThinMaterial, in: Circle())
             }
             .buttonStyle(.plain)
@@ -379,7 +382,7 @@ struct True3DSketchScreen: View {
 
     private var sketchFilterBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 filterChip("框选", icon: "rectangle.dashed", active: isSelectMode) {
                     isSelectMode.toggle()
                     if isSelectMode {
@@ -423,8 +426,8 @@ struct True3DSketchScreen: View {
                 Text(title).font(.system(size: 12, weight: .medium))
             }
             .foregroundStyle(active ? SwiftUI.Color(red: 0.12, green: 0.44, blue: 0.92) : (darkCanvas ? .white.opacity(0.7) : .black.opacity(0.58)))
-            .padding(.horizontal, 13)
-            .frame(height: 38)
+            .padding(.horizontal, 9)
+            .frame(height: 36)
             .background {
                 if active {
                     Capsule().fill(SwiftUI.Color(red: 0.12, green: 0.44, blue: 0.92).opacity(0.12))
@@ -472,7 +475,7 @@ struct True3DSketchScreen: View {
 
     private var sketchToolStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
+            HStack(spacing: 2) {
                 toolButton("选择", icon: "cursorarrow", active: isSelectMode) {
                     isSelectMode = true
                     isLineMode = false
@@ -494,8 +497,8 @@ struct True3DSketchScreen: View {
                     }
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 6)
         }
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
@@ -503,13 +506,13 @@ struct True3DSketchScreen: View {
     private func toolButton(_ title: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 19, weight: .medium))
-                Text(title).font(.system(size: 11, weight: .medium))
+                Image(systemName: icon).font(.system(size: 18, weight: .medium))
+                Text(title).font(.system(size: 10.5, weight: .medium))
             }
             .foregroundStyle(active ? SwiftUI.Color(red: 0.12, green: 0.44, blue: 0.92) : (darkCanvas ? .white.opacity(0.65) : .black.opacity(0.55)))
-            .frame(minWidth: 44)
-            .padding(.horizontal, 3)
-            .padding(.vertical, 5)
+            .frame(minWidth: 40)
+            .padding(.horizontal, 1)
+            .padding(.vertical, 4)
             .background(active ? SwiftUI.Color(red: 0.12, green: 0.44, blue: 0.92).opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 10))
         }
         .buttonStyle(.plain)
@@ -546,7 +549,7 @@ struct True3DSketchScreen: View {
 
     private var sketchContextBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
+            HStack(spacing: 2) {
                 contextButton("移动", icon: "arrow.up.and.down.and.arrow.left.and.right") {
                     isSelectMode = true
                     tool = .editPoint
@@ -585,8 +588,8 @@ struct True3DSketchScreen: View {
                     showToolDrawer = true
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 7)
         }
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
@@ -594,24 +597,24 @@ struct True3DSketchScreen: View {
     private func contextButton(_ title: String, icon: String, destructive: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 18, weight: .medium))
-                Text(title).font(.system(size: 11, weight: .medium))
+                Image(systemName: icon).font(.system(size: 17, weight: .medium))
+                Text(title).font(.system(size: 10.5, weight: .medium))
             }
             .foregroundStyle(destructive ? SwiftUI.Color.red.opacity(0.78) : (darkCanvas ? .white.opacity(0.72) : .black.opacity(0.62)))
-            .frame(minWidth: 44)
-            .padding(.vertical, 5)
+            .frame(minWidth: 40)
+            .padding(.vertical, 4)
         }
         .buttonStyle(.plain)
     }
 
     private func contextLabel(_ title: String, icon: String) -> some View {
         VStack(spacing: 4) {
-            Image(systemName: icon).font(.system(size: 18, weight: .medium))
-            Text(title).font(.system(size: 11, weight: .medium))
+            Image(systemName: icon).font(.system(size: 17, weight: .medium))
+            Text(title).font(.system(size: 10.5, weight: .medium))
         }
         .foregroundStyle(darkCanvas ? .white.opacity(0.72) : .black.opacity(0.62))
-        .frame(minWidth: 44)
-        .padding(.vertical, 5)
+        .frame(minWidth: 40)
+        .padding(.vertical, 4)
     }
 
     private var emptyEditBar: some View {
@@ -1189,6 +1192,7 @@ struct True3DSketchScreen: View {
                 drawOpenSegments(context: &context, size: size)
                 drawProfile(context: &context, size: size)
                 drawDimension(context: &context, size: size)
+                drawMarquee(context: &context)
                 drawPreview(context: &context, size: size)
             }
             .background(Color(red: 0.96, green: 0.97, blue: 0.98))
@@ -1243,11 +1247,20 @@ struct True3DSketchScreen: View {
                                 selectionDragOrigin = b
                                 selectionStartPoints = points
                                 selectedEntity = pointInsideProfile(b)
+                                if !selectedEntity {
+                                    marqueeStart = value.startLocation
+                                    marqueeCurrent = value.location
+                                }
                             }
-                            guard selectedEntity, let origin = selectionDragOrigin else { return }
-                            let dx = b.x - origin.x
-                            let dy = b.y - origin.y
-                            points = selectionStartPoints.map { True3DPoint(x: $0.x + dx, y: $0.y + dy) }
+                            if selectedEntity, let origin = selectionDragOrigin {
+                                let dx = b.x - origin.x
+                                let dy = b.y - origin.y
+                                points = selectionStartPoints.map { True3DPoint(x: $0.x + dx, y: $0.y + dy) }
+                                return
+                            }
+                            if marqueeStart != nil {
+                                marqueeCurrent = value.location
+                            }
                             return
                         }
                         if tool == .constraint || tool == .trim || tool == .extend { return }
@@ -1275,6 +1288,13 @@ struct True3DSketchScreen: View {
                             previewPoints = []
                             editingPointIndex = nil
                         }
+                        if selectedEntity, !isSelectMode,
+                           hypot(value.translation.width, value.translation.height) < 4,
+                           !pointInsideProfile(worldPoint(value.location, in: geo.size)) {
+                            selectedEntity = false
+                            previewPoints = []
+                            return
+                        }
                         if isLineMode {
                             let a = worldPoint(value.startLocation, in: geo.size)
                             let b = worldPoint(value.location, in: geo.size)
@@ -1286,6 +1306,19 @@ struct True3DSketchScreen: View {
                             return
                         }
                         if isSelectMode {
+                            if let start = marqueeStart, let end = marqueeCurrent {
+                                let rect = CGRect(
+                                    x: min(start.x, end.x),
+                                    y: min(start.y, end.y),
+                                    width: abs(end.x - start.x),
+                                    height: abs(end.y - start.y)
+                                )
+                                if rect.width > 8, rect.height > 8, rect.intersects(profileScreenRect(in: geo.size)) {
+                                    selectedEntity = true
+                                }
+                            }
+                            marqueeStart = nil
+                            marqueeCurrent = nil
                             selectionDragOrigin = nil
                             selectionStartPoints = []
                             syncDimensions()
@@ -1400,6 +1433,33 @@ struct True3DSketchScreen: View {
             context.fill(path, with: .color(Color(red: 0.25, green: 0.35, blue: 0.45).opacity(0.07)))
             context.stroke(path, with: .color(Color(red: 0.25, green: 0.35, blue: 0.45).opacity(0.55)), lineWidth: 1.2)
         }
+    }
+
+    private func profileScreenRect(in size: CGSize) -> CGRect {
+        guard !points.isEmpty else { return .zero }
+        let mapped = points.map { viewPoint($0, in: size) }
+        let minX = mapped.map(\.x).min() ?? 0
+        let maxX = mapped.map(\.x).max() ?? 0
+        let minY = mapped.map(\.y).min() ?? 0
+        let maxY = mapped.map(\.y).max() ?? 0
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
+    private func drawMarquee(context: inout GraphicsContext) {
+        guard let start = marqueeStart, let end = marqueeCurrent else { return }
+        let rect = CGRect(
+            x: min(start.x, end.x),
+            y: min(start.y, end.y),
+            width: abs(end.x - start.x),
+            height: abs(end.y - start.y)
+        )
+        let path = Path(rect)
+        context.fill(path, with: .color(Color(red: 0.12, green: 0.44, blue: 0.92).opacity(0.08)))
+        context.stroke(
+            path,
+            with: .color(Color(red: 0.12, green: 0.44, blue: 0.92).opacity(0.7)),
+            style: StrokeStyle(lineWidth: 1, dash: [5, 4])
+        )
     }
 
     private func drawOpenSegments(context: inout GraphicsContext, size: CGSize) {
@@ -2441,9 +2501,12 @@ struct True3DSketchScreen: View {
             arcPoints.removeLast()
             previewPoints = arcPoints
         } else if closed {
+            redoStack = points
+            redoClosed = true
             closed = false
         } else if !points.isEmpty {
             redoStack.append(points.removeLast())
+            redoClosed = false
         }
         constraints = constraints.compactMap { c in
             let maxIndex = points.count - 1
@@ -2455,6 +2518,17 @@ struct True3DSketchScreen: View {
     }
 
     private func redo() {
+        if redoClosed {
+            guard !redoStack.isEmpty else { return }
+            points = redoStack
+            redoStack = []
+            redoClosed = false
+            closed = true
+            selectedEntity = true
+            syncDimensions()
+            error = nil
+            return
+        }
         guard !redoStack.isEmpty else { return }
         points.append(redoStack.removeLast())
         closed = false
@@ -2471,6 +2545,7 @@ struct True3DSketchScreen: View {
         lastShapeTool = .polyline
         selectedEntity = false
         redoStack = []
+        redoClosed = false
         openSegments = []
         error = nil
     }
