@@ -264,34 +264,6 @@ struct True3DSketchScreen: View {
                     .frame(maxHeight: .infinity, alignment: .bottom)
             }
 
-            if showDimensionEditor {
-                dimensionEditorCard
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 188)
-            }
-
-            if showAnnotationEditor {
-                annotationCard
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 188)
-            }
-
-            if showLayerPanel {
-                layerCard
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 188)
-            }
-
-            if showFinishPanel {
-                finishCard
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 188)
-            }
-
             if showToolDrawer {
                 Color.black.opacity(0.18).ignoresSafeArea()
                     .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { showToolDrawer = false } }
@@ -312,6 +284,26 @@ struct True3DSketchScreen: View {
                 syncDimensions()
                 selectedEntity = true
             }
+        }
+        .sheet(isPresented: $showDimensionEditor) {
+            dimensionEditorCard
+                .padding(18)
+                .presentationDetents([.height(250)])
+        }
+        .sheet(isPresented: $showAnnotationEditor) {
+            annotationCard
+                .padding(18)
+                .presentationDetents([.height(220)])
+        }
+        .sheet(isPresented: $showLayerPanel) {
+            layerCard
+                .padding(18)
+                .presentationDetents([.height(220)])
+        }
+        .sheet(isPresented: $showFinishPanel) {
+            finishCard
+                .padding(18)
+                .presentationDetents([.height(300)])
         }
     }
 
