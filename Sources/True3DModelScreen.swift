@@ -9,6 +9,7 @@ import OCCTSwift
 enum True3DWorkbenchStage: String, CaseIterable, Identifiable {
     case sketch = "草图"
     case model = "建模"
+    case assembly = "装配"
     case operation = "工序"
     case machine = "加工"
 
@@ -18,6 +19,7 @@ enum True3DWorkbenchStage: String, CaseIterable, Identifiable {
         switch self {
         case .sketch: return "pencil.tip.crop.circle"
         case .model: return "cube.transparent.2"
+        case .assembly: return "square.stack.3d.up.fill"
         case .operation: return "square.stack.3d.up"
         case .machine: return "point.3.connected.trianglepath.dotted"
         }
@@ -25,6 +27,15 @@ enum True3DWorkbenchStage: String, CaseIterable, Identifiable {
 }
 
 /// 真 3D 工作台：草图 → 建模 → 工序 → 加工 一条线完成。
+struct True3DAssemblyComponent: Identifiable, Equatable {
+    var id = UUID()
+    var name: String
+    var x: Double = 0
+    var y: Double = 0
+    var z: Double = 0
+    var rotationZ: Double = 0
+}
+
 struct True3DModelScreen: View {
     @State private var params = True3DParams()
     @State private var scene = SCNScene()
@@ -58,6 +69,12 @@ struct True3DModelScreen: View {
     @State private var showPhotoPicker = false
     @State private var photoItem: PhotosPickerItem?
     @State private var importBusy = false
+    @State private var assemblyComponents: [True3DAssemblyComponent] = []
+    @State private var assemblyScene = SCNScene()
+    @State private var assemblyX: Double = 0
+    @State private var assemblyY: Double = 0
+    @State private var assemblyZ: Double = 0
+    @State private var assemblyRotation: Double = 0
 
     private var isDirty: Bool {
         guard let result else { return false }
@@ -139,6 +156,14 @@ struct True3DModelScreen: View {
                 .disabled(isBuilding || importBusy || isGeneratingCAM)
             }
         }
+        .onChange(of: stage) { newStage in
+            if newStage == .assembly {
+                if assemblyComponents.isEmpty, result != nil {
+                    assemblyComponents = [True3DAssemblyComponent(name: "零件 1")]
+                }
+                rebuildAssemblyScene()
+            }
+        }
         .task {
             if !didInitialBuild {
                 didInitialBuild = true
@@ -210,6 +235,8 @@ struct True3DModelScreen: View {
             sketchStage
         case .model:
             modelingStage
+        case .assembly:
+            assemblyStage
         case .operation:
             operationStage
         case .machine:
@@ -329,6 +356,174 @@ struct True3DModelScreen: View {
             Rectangle().fill(Color.black.opacity(0.12)).frame(width: 0.5)
         }
         .ignoresSafeArea(edges: .bottom)
+    }
+
+    private var assemblyStage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 8) {
+                    Text("装配")
+                        .font(.system(size: 22, weight: .bold))
+                    Text("多实例")
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color(red: 0.10, green: 0.55, blue: 0.50).opacity(0.12))
+                        .foregroundStyle(Color(red: 0.08, green: 0.42, blue: 0.38))
+                        .clipShape(Capsule())
+                    Spacer()
+                }
+
+                if result == nil {
+                    Text("先在“建模”页生成实体，再回到装配添加实例。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    Button("回到建模页") { stage = .model }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
+                } else {
+                    True3DSceneView(scene: assemblyScene, showWire: showWire)
+                        .frame(height: 400)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                        )
+
+                    Text("实例偏移（基础块坐标，mm）")
+                        .font(.system(size: 12, weight: .semibold))
+                    HStack(spacing: 6) {
+                        assemblyField("X", value: $assemblyX)
+                        assemblyField("Y", value: $assemblyY)
+                        assemblyField("Z", value: $assemblyZ)
+                        assemblyField("Rz°", value: $assemblyRotation)
+                    }
+                    Button {
+                        let name = "零件 \(assemblyComponents.count + 1)"
+                        assemblyComponents.append(True3DAssemblyComponent(
+                            name: name, x: assemblyX, y: assemblyY,
+                            z: assemblyZ, rotationZ: assemblyRotation
+                        ))
+                        rebuildAssemblyScene()
+                    } label: {
+                        Label("添加当前实体副本", systemImage: "plus.square.on.square")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
+
+                    ForEach($assemblyComponents) { $component in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Image(systemName: "cube")
+                                TextField("名称", text: $component.name)
+                                    .font(.system(size: 12, weight: .semibold))
+                                Spacer()
+                                Button {
+                                    assemblyComponents.removeAll { $0.id == component.id }
+                                    rebuildAssemblyScene()
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 11))
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.red.opacity(0.7))
+                            }
+                            HStack(spacing: 6) {
+                                assemblyField("X", value: $component.x)
+                                assemblyField("Y", value: $component.y)
+                                assemblyField("Z", value: $component.z)
+                                assemblyField("Rz°", value: $component.rotationZ)
+                            }
+                        }
+                        .padding(10)
+                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                    }
+
+                    Button("刷新装配视图") { rebuildAssemblyScene() }
+                        .font(.system(size: 12, weight: .semibold))
+                        .buttonStyle(.bordered)
+                }
+            }
+            .padding(16)
+            .padding(.bottom, 24)
+        }
+        .onChange(of: assemblyComponents) { _ in rebuildAssemblyScene() }
+    }
+
+    private func assemblyField(_ label: String, value: Binding<Double>) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(.system(size: 9)).foregroundStyle(.secondary)
+            TextField(label, value: value, format: .number.precision(.fractionLength(1)))
+                .keyboardType(.numbersAndPunctuation)
+                .multilineTextAlignment(.trailing)
+                .font(.system(size: 11))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 62)
+        }
+    }
+
+    private func rebuildAssemblyScene() {
+        guard let result else { assemblyScene = SCNScene(); return }
+        let newScene = SCNScene()
+        newScene.background.contents = UIColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1)
+        let root = SCNNode()
+        root.eulerAngles.x = -Float.pi / 2
+        newScene.rootNode.addChildNode(root)
+        for comp in assemblyComponents {
+            let holder = SCNNode()
+            holder.position = SCNVector3(Float(comp.x), Float(comp.y), Float(comp.z))
+            holder.eulerAngles.z = Float(comp.rotationZ * .pi / 180)
+            let material = SCNMaterial()
+            material.lightingModel = .physicallyBased
+            material.diffuse.contents = UIColor(red: 0.46, green: 0.58, blue: 0.70, alpha: 1)
+            material.metalness.contents = 0.18
+            material.roughness.contents = 0.48
+            let geometry = result.mesh.sceneKitGeometry()
+            geometry.materials = [material]
+            holder.addChildNode(SCNNode(geometry: geometry))
+            let wireMaterial = SCNMaterial()
+            wireMaterial.lightingModel = .constant
+            wireMaterial.diffuse.contents = UIColor(red: 0.10, green: 0.15, blue: 0.20, alpha: 0.72)
+            wireMaterial.fillMode = .lines
+            wireMaterial.isDoubleSided = true
+            let wire = result.mesh.sceneKitGeometry()
+            wire.materials = [wireMaterial]
+            let wireNode = SCNNode(geometry: wire)
+            wireNode.name = "wireOverlay"
+            wireNode.scale = SCNVector3(1.002, 1.002, 1.002)
+            wireNode.isHidden = !showWire
+            holder.addChildNode(wireNode)
+            root.addChildNode(holder)
+        }
+        let model = result.params
+        let maxSize = max(model.width, model.depth, model.height + (model.bossFeatures.map(\.bossHeight).max() ?? 0), 20)
+        let camera = SCNNode()
+        camera.camera = SCNCamera()
+        camera.camera?.fieldOfView = 38
+        camera.camera?.zNear = 0.1
+        camera.camera?.zFar = 10000
+        camera.position = SCNVector3(Float(maxSize * 1.55), Float(maxSize * 1.35), Float(maxSize * 1.55))
+        let target = SCNNode()
+        target.position = SCNVector3(0, Float(model.height / 2), 0)
+        newScene.rootNode.addChildNode(target)
+        camera.constraints = [SCNLookAtConstraint(target: target)]
+        newScene.rootNode.addChildNode(camera)
+        let light = SCNNode()
+        light.light = SCNLight()
+        light.light?.type = .omni
+        light.light?.intensity = 1100
+        light.light?.temperature = 6500
+        light.position = SCNVector3(Float(maxSize * 1.2), Float(maxSize * 1.8), Float(maxSize * 1.2))
+        newScene.rootNode.addChildNode(light)
+        let fill = SCNNode()
+        fill.light = SCNLight()
+        fill.light?.type = .ambient
+        fill.light?.intensity = 350
+        fill.light?.color = UIColor(red: 0.72, green: 0.80, blue: 0.90, alpha: 1)
+        newScene.rootNode.addChildNode(fill)
+        assemblyScene = newScene
     }
 
     private var operationStage: some View {
