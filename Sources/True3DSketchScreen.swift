@@ -973,7 +973,7 @@ struct True3DSketchScreen: View {
         }
         let a = constraintSelections[0]
         let b = needed > 1 ? constraintSelections[1] : nil
-        let c = needed == 4 ? constraintSelections[2] : nil
+        let c = needed >= 3 ? constraintSelections[2] : nil
         let d = needed == 4 ? constraintSelections[3] : nil
         let maxIndex = points.count - 1
         guard a >= 0, a <= maxIndex,
