@@ -202,6 +202,16 @@ do {
     }
     print("PASS history-variable-fillet: faces=\(variable.stats.faces)")
 
+    let allEdgeRefs = built.shape.edges().map { True3DEdgeRef.make(edge: $0, in: built.shape) }
+    var multiDocument = document
+    multiDocument.append(True3DHistoryOperation(kind: .multiFillet(edges: allEdgeRefs, radius: 1)))
+    let multiFilleted = try multiDocument.build()
+    guard multiFilleted.stats.valid, multiFilleted.nodes.count == 2,
+          multiFilleted.nodes[1].name.hasPrefix("多边圆角") else {
+        fail("history-multi-fillet: multi edge fillet did not build")
+    }
+    print("PASS history-multi-fillet: edges=\(allEdgeRefs.count) faces=\(multiFilleted.stats.faces)")
+
     var moveDocument = document
     moveDocument.append(True3DHistoryOperation(kind: .translate(dx: 20, dy: 0, dz: 0, copy: false)))
     let moved = try moveDocument.build()
