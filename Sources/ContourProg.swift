@@ -128,7 +128,7 @@ enum ContourGeo {
                 for i in 1...max(arcStep * 2, 24) {
                     let t = Double(i) / Double(max(arcStep * 2, 24))
                     let a = (seg.kind == .cw ? -1.0 : 1.0) * 2 * .pi * t
-                    out.append(CGPoint(x: cx + seg.r * cos(a), y: cy + seg.r * sin(a)))
+                    out.append(CGPoint(x: cx + seg.r * CGFloat(cos(Double(a))), y: cy + seg.r * CGFloat(sin(Double(a)))))
                 }
                 continue
             }
@@ -147,7 +147,7 @@ enum ContourGeo {
             for i in 1...n {
                 let t = Double(i) / Double(n)
                 let a = a0 + (a1 - a0) * t
-                out.append(CGPoint(x: c.x + seg.r * cos(a), y: c.y + seg.r * sin(a)))
+                out.append(CGPoint(x: c.x + seg.r * CGFloat(cos(Double(a))), y: c.y + seg.r * CGFloat(sin(Double(a)))))
             }
         }
         return out

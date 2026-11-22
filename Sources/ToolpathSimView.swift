@@ -197,11 +197,11 @@ struct ToolpathSimView: View {
         let minY = by0 - toolR
         let maxY = by1 + toolR
 
-        let spanX = max(0.001, maxX - minX), spanY = max(0.001, maxY - minY)
-        let pad = 16.0
+        let spanX = CGFloat(max(0.001, maxX - minX)), spanY = CGFloat(max(0.001, maxY - minY))
+        let pad: CGFloat = 16
         let scale = min((size.width - pad * 2) / spanX, (size.height - pad * 2) / spanY)
-        let ox = (size.width - spanX * scale) / 2 - minX * scale
-        let oy = (size.height - spanY * scale) / 2 + maxY * scale
+        let ox = (size.width - spanX * scale) / 2 - CGFloat(minX) * scale
+        let oy = (size.height - spanY * scale) / 2 + CGFloat(maxY) * scale
 
         func screen(_ p: CGPoint) -> CGPoint {
             CGPoint(x: ox + p.x * scale, y: oy - p.y * scale)
