@@ -1,7 +1,5 @@
 name: build-xcode16
 on:
-  push:
-    branches: [fix3]
   workflow_dispatch:
 jobs:
   build:
