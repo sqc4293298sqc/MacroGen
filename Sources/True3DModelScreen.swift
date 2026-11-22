@@ -485,6 +485,7 @@ struct True3DModelScreen: View {
                     case "Y": moveY += delta
                     default: moveZ += delta
                     }
+                    applyMoveHandleVisualOffset(axis: axis, delta: delta)
                     let value = axis == "X" ? moveX : (axis == "Y" ? moveY : moveZ)
                     message = "拖拽 \(axis) 轴：\(String(format: "%.1f", value)) mm"
                 },
@@ -653,6 +654,23 @@ struct True3DModelScreen: View {
         } message: {
             Text("双击箭头可输入精确距离")
         }
+        )
+    }
+
+    private func applyMoveHandleVisualOffset(axis: String, delta: Double) {
+        guard moveMode == 0, !moveCopy,
+              let modelRoot = scene.rootNode.childNode(withName: "modelRoot", recursively: false) else { return }
+        let local: SCNVector3
+        switch axis {
+        case "X": local = SCNVector3(Float(delta), 0, 0)
+        case "Y": local = SCNVector3(0, Float(delta), 0)
+        default: local = SCNVector3(0, 0, Float(delta))
+        }
+        let parentDelta = modelRoot.convertVector(local, to: modelRoot.parent)
+        modelRoot.position = SCNVector3(
+            modelRoot.position.x + parentDelta.x,
+            modelRoot.position.y + parentDelta.y,
+            modelRoot.position.z + parentDelta.z
         )
     }
 
@@ -1116,6 +1134,10 @@ struct True3DModelScreen: View {
                     numRow("X 方向", Binding(get: { moveX }, set: { moveX = $0; scheduleMovePreview() }))
                     numRow("Y 方向", Binding(get: { moveY }, set: { moveY = $0; scheduleMovePreview() }))
                     numRow("Z 方向", Binding(get: { moveZ }, set: { moveZ = $0; scheduleMovePreview() }))
+                    Text("拖拽模型上的彩色箭头移动；双击箭头输入精确距离。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 } else {
                     HStack {
                         Text("旋转轴").font(.system(size: 12))
@@ -4062,6 +4084,26 @@ struct True3DModelScreen: View {
             headNode.eulerAngles = euler
             headNode.renderingOrder = 46
             axisGroup.addChildNode(headNode)
+            let label = SCNText(string: axis, extrusionDepth: 0)
+            label.font = UIFont.systemFont(ofSize: 6, weight: .heavy)
+            label.materials = [material(UIColor.white)]
+            let labelNode = SCNNode(geometry: label)
+            let bounds = label.boundingBox
+            labelNode.pivot = SCNMatrix4MakeTranslation(
+                (bounds.min.x + bounds.max.x) / 2,
+                (bounds.min.y + bounds.max.y) / 2,
+                0
+            )
+            let labelOffset: SCNVector3
+            switch axis {
+            case "X": labelOffset = SCNVector3(length + Float(headHeight) + 5, 0, 0)
+            case "Y": labelOffset = SCNVector3(0, length + Float(headHeight) + 5, 0)
+            default: labelOffset = SCNVector3(0, 0, length + Float(headHeight) + 5)
+            }
+            labelNode.position = labelOffset
+            labelNode.constraints = [SCNBillboardConstraint()]
+            labelNode.renderingOrder = 47
+            axisGroup.addChildNode(labelNode)
             group.addChildNode(axisGroup)
         }
         arrow(axis: "X", color: xColor,
@@ -4163,6 +4205,7 @@ struct True3DModelScreen: View {
         isPreviewingMove = false
         movePreviewError = nil
         showMoveDrawer = false
+        refreshMoveHandles()
         if moveMode == 0 {
             modelOperations.append(True3DHistoryOperation(kind: .translate(
                 dx: dx, dy: dy, dz: dz, copy: copy
