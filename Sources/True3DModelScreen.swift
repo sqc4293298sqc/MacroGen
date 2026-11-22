@@ -94,6 +94,8 @@ struct True3DModelScreen: View {
     @State private var movePreviewGeneration = 0
     @State private var isPreviewingMove = false
     @State private var movePreviewError: String?
+    @State private var quickEditAxis: String?
+    @State private var quickEditValue: Double = 0
     @State private var showMoveFaceDrawer = false
     @State private var pendingFaceMove = false
     @State private var faceMoveDistance: Double = 2
@@ -470,9 +472,31 @@ struct True3DModelScreen: View {
 
     private var digit3DModelingStage: AnyView {
         AnyView(ZStack {
-            True3DSceneView(scene: scene, showWire: showWire, onPickEdge: { view, point, size in
-                pickEdge(in: view, at: point, viewSize: size)
-            })
+            True3DSceneView(
+                scene: scene,
+                showWire: showWire,
+                onPickEdge: { view, point, size in
+                    pickEdge(in: view, at: point, viewSize: size)
+                },
+                onMoveHandleDrag: { axis, delta in
+                    guard showMoveDrawer, moveMode == 0 else { return }
+                    switch axis {
+                    case "X": moveX += delta
+                    case "Y": moveY += delta
+                    default: moveZ += delta
+                    }
+                    let value = axis == "X" ? moveX : (axis == "Y" ? moveY : moveZ)
+                    message = "拖拽 \(axis) 轴：\(String(format: "%.1f", value)) mm"
+                },
+                onMoveHandleDragEnd: { _ in
+                    scheduleMovePreview()
+                },
+                onMoveHandleDoubleTap: { axis in
+                    guard showMoveDrawer, moveMode == 0 else { return }
+                    quickEditAxis = axis
+                    quickEditValue = axis == "X" ? moveX : (axis == "Y" ? moveY : moveZ)
+                }
+            )
             .ignoresSafeArea()
 
             VStack(spacing: 8) {
@@ -618,6 +642,28 @@ struct True3DModelScreen: View {
                 clearFilletPreview(restoreScene: true)
             }
         })
+        .alert("输入 \(quickEditAxis ?? "") 轴距离", isPresented: Binding(
+            get: { quickEditAxis != nil },
+            set: { if !$0 { quickEditAxis = nil } }
+        )) {
+            TextField("mm", value: $quickEditValue, format: .number)
+                .keyboardType(.decimalPad)
+            Button("取消", role: .cancel) { quickEditAxis = nil }
+            Button("应用") { applyQuickAxisValue() }
+        } message: {
+            Text("双击箭头可输入精确距离")
+        }
+    }
+
+    private func applyQuickAxisValue() {
+        guard let axis = quickEditAxis else { return }
+        switch axis {
+        case "X": moveX = quickEditValue
+        case "Y": moveY = quickEditValue
+        default: moveZ = quickEditValue
+        }
+        quickEditAxis = nil
+        scheduleMovePreview()
     }
 
     private var workbenchTitle: String {
@@ -1059,7 +1105,7 @@ struct True3DModelScreen: View {
                 }
                 Picker("变换", selection: Binding(
                     get: { moveMode },
-                    set: { moveMode = $0; scheduleMovePreview() }
+                    set: { moveMode = $0; refreshMoveHandles(); scheduleMovePreview() }
                 )) {
                     Text("移动").tag(0)
                     Text("旋转").tag(1)
@@ -3928,7 +3974,8 @@ struct True3DModelScreen: View {
         movePreviewError = nil
         isPreviewingMove = false
         showMoveDrawer = true
-        message = "移动体：输入 XYZ 方向距离"
+        refreshMoveHandles()
+        message = "移动体：拖拽箭头，或输入 XYZ 方向距离"
         notice = nil
         error = nil
     }
@@ -3945,6 +3992,7 @@ struct True3DModelScreen: View {
         isPreviewingMove = false
         movePreviewError = nil
         showMoveDrawer = false
+        refreshMoveHandles()
         error = nil
     }
 
@@ -3955,6 +4003,79 @@ struct True3DModelScreen: View {
         isPreviewingMove = false
         movePreviewError = nil
         showMoveDrawer = false
+        refreshMoveHandles()
+    }
+
+    private func removeMoveHandles() {
+        scene.rootNode.childNode(withName: "moveHandles", recursively: true)?.removeFromParentNode()
+    }
+
+    private func refreshMoveHandles() {
+        removeMoveHandles()
+        guard showMoveDrawer, moveMode == 0, let result,
+              let modelRoot = scene.rootNode.childNode(withName: "modelRoot", recursively: false) else { return }
+        let box = result.mesh.boundingBox
+        let center = SCNVector3(
+            (box.min.x + box.max.x) / 2,
+            (box.min.y + box.max.y) / 2,
+            (box.min.z + box.max.z) / 2
+        )
+        let size = Double(max(box.max.x - box.min.x, max(box.max.y - box.min.y, box.max.z - box.min.z)))
+        let length = Float(min(max(size * 0.55, 18), 58))
+        let shaftRadius = CGFloat(max(length * 0.032, 0.55))
+        let headRadius = CGFloat(max(length * 0.105, 1.8))
+        let headHeight = CGFloat(max(length * 0.22, 4))
+        func material(_ color: UIColor) -> SCNMaterial {
+            let m = SCNMaterial()
+            m.lightingModel = .constant
+            m.diffuse.contents = color
+            m.readsFromDepthBuffer = false
+            m.writesToDepthBuffer = false
+            return m
+        }
+        let group = SCNNode()
+        group.name = "moveHandles"
+        group.position = center
+        let xColor = UIColor(red: 0.92, green: 0.18, blue: 0.16, alpha: 1)
+        let yColor = UIColor(red: 0.10, green: 0.64, blue: 0.26, alpha: 1)
+        let zColor = UIColor(red: 0.08, green: 0.38, blue: 0.94, alpha: 1)
+        let origin = SCNSphere(radius: shaftRadius * 1.8)
+        origin.materials = [material(UIColor.white.withAlphaComponent(0.92))]
+        let originNode = SCNNode(geometry: origin)
+        originNode.renderingOrder = 44
+        group.addChildNode(originNode)
+        func arrow(axis: String, color: UIColor, position: SCNVector3, euler: SCNVector3, headPosition: SCNVector3) {
+            let axisGroup = SCNNode()
+            axisGroup.name = "moveHandle\(axis)"
+            let shaft = SCNCylinder(radius: shaftRadius, height: CGFloat(length))
+            shaft.materials = [material(color)]
+            let shaftNode = SCNNode(geometry: shaft)
+            shaftNode.position = position
+            shaftNode.eulerAngles = euler
+            shaftNode.renderingOrder = 45
+            axisGroup.addChildNode(shaftNode)
+            let head = SCNCone(topRadius: 0, bottomRadius: headRadius, height: headHeight)
+            head.materials = [material(color)]
+            let headNode = SCNNode(geometry: head)
+            headNode.position = headPosition
+            headNode.eulerAngles = euler
+            headNode.renderingOrder = 46
+            axisGroup.addChildNode(headNode)
+            group.addChildNode(axisGroup)
+        }
+        arrow(axis: "X", color: xColor,
+              position: SCNVector3(length / 2, 0, 0),
+              euler: SCNVector3(0, 0, -Float.pi / 2),
+              headPosition: SCNVector3(length + Float(headHeight * 0.42), 0, 0))
+        arrow(axis: "Y", color: yColor,
+              position: SCNVector3(0, length / 2, 0),
+              euler: SCNVector3(0, 0, 0),
+              headPosition: SCNVector3(0, length + Float(headHeight * 0.42), 0))
+        arrow(axis: "Z", color: zColor,
+              position: SCNVector3(0, 0, length / 2),
+              euler: SCNVector3(Float.pi / 2, 0, 0),
+              headPosition: SCNVector3(0, 0, length + Float(headHeight * 0.42)))
+        modelRoot.addChildNode(group)
     }
 
     private func scheduleMovePreview() {
@@ -4014,6 +4135,7 @@ struct True3DModelScreen: View {
             result = preview
             scene = makeScene(result: preview)
             applyOrbit()
+            refreshMoveHandles()
             movePreviewError = nil
             message = moveMode == 0 ? "移动预览" : "旋转预览"
         } catch is CancellationError {
@@ -5993,17 +6115,26 @@ struct True3DSceneView: UIViewRepresentable {
     let showWire: Bool
     let allowsCameraControl: Bool
     var onPickEdge: ((SCNView, CGPoint, CGSize) -> Void)?
+    var onMoveHandleDrag: ((String, Double) -> Void)?
+    var onMoveHandleDragEnd: ((String) -> Void)?
+    var onMoveHandleDoubleTap: ((String) -> Void)?
 
     init(
         scene: SCNScene,
         showWire: Bool,
         allowsCameraControl: Bool = true,
-        onPickEdge: ((SCNView, CGPoint, CGSize) -> Void)? = nil
+        onPickEdge: ((SCNView, CGPoint, CGSize) -> Void)? = nil,
+        onMoveHandleDrag: ((String, Double) -> Void)? = nil,
+        onMoveHandleDragEnd: ((String) -> Void)? = nil,
+        onMoveHandleDoubleTap: ((String) -> Void)? = nil
     ) {
         self.scene = scene
         self.showWire = showWire
         self.allowsCameraControl = allowsCameraControl
         self.onPickEdge = onPickEdge
+        self.onMoveHandleDrag = onMoveHandleDrag
+        self.onMoveHandleDragEnd = onMoveHandleDragEnd
+        self.onMoveHandleDoubleTap = onMoveHandleDoubleTap
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
@@ -6014,9 +6145,103 @@ struct True3DSceneView: UIViewRepresentable {
         private var panStartYaw: Double = 0
         private var panStartPitch: Double = 0
         private var pinchStartDistance: Float = 0
+        var onMoveHandleDrag: ((String, Double) -> Void)?
+        var onMoveHandleDragEnd: ((String) -> Void)?
+        var onMoveHandleDoubleTap: ((String) -> Void)?
+        private var moveHandleAxis: String?
+        private var moveHandleNode: SCNNode?
+        private var moveLastOffset: Double = 0
+        private var moveAxisScreenLength: Double = 1
+        private var moveAxisWorldLength: Double = 30
+        private var cameraPanBlockedByHandle = false
+
+        private func moveHandleInfo(at point: CGPoint, in view: SCNView) -> (String, SCNNode)? {
+            for hit in view.hitTest(point, options: nil) {
+                var node: SCNNode? = hit.node
+                while let current = node {
+                    if let name = current.name, name.hasPrefix("moveHandle"),
+                       name.count > "moveHandle".count {
+                        return (String(name.dropFirst("moveHandle".count)), current)
+                    }
+                    node = current.parent
+                }
+            }
+            return nil
+        }
+
+        @objc func handleMoveHandlePan(_ gesture: UIPanGestureRecognizer) {
+            guard let view = gesture.view as? SCNView else { return }
+            if gesture.state == .began {
+                guard let info = moveHandleInfo(at: gesture.location(in: view), in: view) else {
+                    moveHandleAxis = nil
+                    return
+                }
+                moveHandleAxis = info.0
+                moveHandleNode = info.1
+                moveLastOffset = 0
+                let localDirection: SCNVector3
+                switch info.0 {
+                case "X": localDirection = SCNVector3(1, 0, 0)
+                case "Y": localDirection = SCNVector3(0, 1, 0)
+                default: localDirection = SCNVector3(0, 0, 1)
+                }
+                let startWorld = info.1.convertPosition(SCNVector3(0, 0, 0), to: nil)
+                let tipWorld = info.1.convertPosition(SCNVector3(
+                    localDirection.x * Float(moveAxisWorldLength),
+                    localDirection.y * Float(moveAxisWorldLength),
+                    localDirection.z * Float(moveAxisWorldLength)
+                ), to: nil)
+                let startScreen = view.projectPoint(startWorld)
+                let tipScreen = view.projectPoint(tipWorld)
+                let dx = Double(tipScreen.x - startScreen.x)
+                let dy = Double(tipScreen.y - startScreen.y)
+                moveAxisScreenLength = max((dx * dx + dy * dy).squareRoot(), 1)
+                return
+            }
+            guard let axis = moveHandleAxis else { return }
+            if gesture.state == .changed {
+                let translation = gesture.translation(in: view)
+                guard let handleNode = moveHandleNode else { return }
+                let localDirection: SCNVector3
+                switch axis {
+                case "X": localDirection = SCNVector3(1, 0, 0)
+                case "Y": localDirection = SCNVector3(0, 1, 0)
+                default: localDirection = SCNVector3(0, 0, 1)
+                }
+                let startScreen = view.projectPoint(handleNode.convertPosition(SCNVector3(0, 0, 0), to: nil))
+                let tipScreen = view.projectPoint(handleNode.convertPosition(SCNVector3(
+                    localDirection.x * Float(moveAxisWorldLength),
+                    localDirection.y * Float(moveAxisWorldLength),
+                    localDirection.z * Float(moveAxisWorldLength)
+                ), to: nil))
+                let sx = Double(tipScreen.x - startScreen.x)
+                let sy = Double(tipScreen.y - startScreen.y)
+                let screenLength = max((sx * sx + sy * sy).squareRoot(), 1)
+                let unitX = sx / screenLength
+                let unitY = sy / screenLength
+                let projectedPixels = Double(translation.x) * unitX + Double(translation.y) * unitY
+                let offset = projectedPixels * (moveAxisWorldLength / screenLength)
+                let delta = offset - moveLastOffset
+                moveLastOffset = offset
+                onMoveHandleDrag?(axis, delta)
+            }
+            if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
+                onMoveHandleDragEnd?(axis)
+                moveHandleAxis = nil
+                moveHandleNode = nil
+                moveLastOffset = 0
+            }
+        }
+
+        @objc func handleMoveHandleDoubleTap(_ gesture: UITapGestureRecognizer) {
+            guard let view = gesture.view as? SCNView,
+                  let info = moveHandleInfo(at: gesture.location(in: view), in: view) else { return }
+            onMoveHandleDoubleTap?(info.0)
+        }
 
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
             guard let view = gesture.view as? SCNView else { return }
+            if moveHandleInfo(at: gesture.location(in: view), in: view) != nil { return }
             onPickEdge?(view, gesture.location(in: view), view.bounds.size)
         }
 
@@ -6026,6 +6251,11 @@ struct True3DSceneView: UIViewRepresentable {
                   let camera = scene.rootNode.childNode(withName: "workbenchCamera", recursively: true),
                   let target = scene.rootNode.childNode(withName: "cameraTarget", recursively: true) else { return }
             if gesture.state == .began {
+                if moveHandleInfo(at: gesture.location(in: view), in: view) != nil {
+                    cameraPanBlockedByHandle = true
+                    return
+                }
+                cameraPanBlockedByHandle = false
                 panStartPosition = camera.position
                 panStartTarget = target.position
                 let dx = camera.position.x - target.position.x
@@ -6034,6 +6264,12 @@ struct True3DSceneView: UIViewRepresentable {
                 panStartDistance = max((dx * dx + dy * dy + dz * dz).squareRoot(), 0.001)
                 panStartYaw = Double(atan2(dx, dz))
                 panStartPitch = Double(asin(max(-1, min(1, dy / panStartDistance))))
+            }
+            if cameraPanBlockedByHandle {
+                if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
+                    cameraPanBlockedByHandle = false
+                }
+                return
             }
             guard gesture.state == .changed || gesture.state == .ended,
                   panStartPosition != nil else { return }
@@ -6124,6 +6360,16 @@ struct True3DSceneView: UIViewRepresentable {
         tap.cancelsTouchesInView = false
         tap.delegate = context.coordinator
         view.addGestureRecognizer(tap)
+
+        let movePan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleMoveHandlePan(_:)))
+        movePan.maximumNumberOfTouches = 1
+        movePan.delegate = context.coordinator
+        view.addGestureRecognizer(movePan)
+
+        let doubleTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleMoveHandleDoubleTap(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        doubleTap.delegate = context.coordinator
+        view.addGestureRecognizer(doubleTap)
         if allowsCameraControl {
             let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePan(_:)))
             pan.maximumNumberOfTouches = 1
@@ -6135,6 +6381,9 @@ struct True3DSceneView: UIViewRepresentable {
             view.addGestureRecognizer(pinch)
         }
         context.coordinator.onPickEdge = onPickEdge
+        context.coordinator.onMoveHandleDrag = onMoveHandleDrag
+        context.coordinator.onMoveHandleDragEnd = onMoveHandleDragEnd
+        context.coordinator.onMoveHandleDoubleTap = onMoveHandleDoubleTap
         return view
     }
 
@@ -6145,6 +6394,9 @@ struct True3DSceneView: UIViewRepresentable {
             uiView.pointOfView = camera
         }
         context.coordinator.onPickEdge = onPickEdge
+        context.coordinator.onMoveHandleDrag = onMoveHandleDrag
+        context.coordinator.onMoveHandleDragEnd = onMoveHandleDragEnd
+        context.coordinator.onMoveHandleDoubleTap = onMoveHandleDoubleTap
         uiView.scene?.rootNode.enumerateChildNodes { node, _ in
             if node.name == "wireOverlay" {
                 node.isHidden = !showWire
