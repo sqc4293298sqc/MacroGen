@@ -124,6 +124,7 @@ struct True3DHistoryOperation: Identifiable, Codable, Equatable, Sendable {
         case variableFillet(edge: True3DEdgeRef, radius1: Double, radius2: Double)
         case moveFace(points: [True3DPoint3D], normal: True3DPoint3D, distance: Double)
         case rotate(axis: String, angle: Double, copy: Bool)
+        case merge
     }
 
     var id: UUID
@@ -146,6 +147,7 @@ struct True3DHistoryOperation: Identifiable, Codable, Equatable, Sendable {
         case .variableFillet: return "变半径圆角"
         case .moveFace: return "移动面"
         case .rotate(_, _, let copy): return copy ? "旋转拷贝" : "旋转体"
+        case .merge: return "合并"
         }
     }
 
@@ -167,6 +169,8 @@ struct True3DHistoryOperation: Identifiable, Codable, Equatable, Sendable {
             return distance >= 0 ? "沿法向 +\(fmt(distance))" : "沿法向 \(fmt(distance))"
         case .rotate(let axis, let angle, _):
             return "绕\(axis)轴 \(fmt(angle))°"
+        case .merge:
+            return "合并独立实体"
         }
     }
 
@@ -410,6 +414,7 @@ struct True3DModelDocument: Identifiable, @unchecked Sendable {
         case .variableFillet: return .fillet
         case .moveFace: return .feature
         case .rotate: return .feature
+        case .merge: return .feature
         }
     }
 
@@ -488,6 +493,20 @@ struct True3DModelDocument: Identifiable, @unchecked Sendable {
                 return combined
             }
             return placed
+
+        case .merge:
+            let solids = shape.solids
+            guard solids.count > 1 else {
+                throw True3DModelError.invalidParameter("当前只有一个实体，无需合并")
+            }
+            guard let fused = Shape.fuseAll(solids), fused.isValid else {
+                throw True3DModelError.featureFailed("合并失败：实体可能没有接触或存在无效面")
+            }
+            let cleaned = fused.unified() ?? fused
+            guard cleaned.isValid else {
+                throw True3DModelError.featureFailed("合并后实体无效，已放弃合并")
+            }
+            return cleaned
 
         case .moveFace(let points, let normal, let distance):
             guard points.count >= 3 else {

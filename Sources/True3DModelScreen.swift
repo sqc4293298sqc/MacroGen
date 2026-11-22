@@ -893,6 +893,7 @@ struct True3DModelScreen: View {
                 railItem("square.stack.3d.up", "建模树", highlighted: showTreePanel) {
                     withAnimation(.easeOut(duration: 0.2)) { showTreePanel.toggle() }
                 }
+                railItem("square.on.square", "合并") { mergeBodies() }
                 railItem("eye", "显示", highlighted: showWire) { showWire.toggle() }
                 railItem("ruler", "测量") { showMeasurePanel = true }
                 railItem("waveform.path.ecg", "分析") { showAnalysisPanel = true }
@@ -3957,6 +3958,29 @@ struct True3DModelScreen: View {
         error = nil
         notice = nil
         scheduleDraftPreview()
+    }
+
+    private func mergeBodies() {
+        guard !isBuilding, !importBusy, let result else {
+            error = "实体尚未构建完成，暂时无法合并"
+            return
+        }
+        let solids = result.shape.solids
+        guard solids.count > 1 else {
+            notice = solids.isEmpty ? "当前模型没有可合并的实体" : "当前模型只有 1 个实体，无需合并"
+            return
+        }
+        if showFeatureDrawer { cancelFeatureDrawer() }
+        if showMoveDrawer { cancelMoveDrawer() }
+        if showMoveFaceDrawer { cancelMoveFaceDrawer() }
+        clearEdgeSelection()
+        selectedFace = nil
+        scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
+        selectedFeatureID = nil
+        modelOperations.append(True3DHistoryOperation(kind: .merge))
+        notice = "正在合并 \(solids.count) 个实体…"
+        error = nil
+        rebuild()
     }
 
     private func beginFaceExtrude() {
