@@ -3804,8 +3804,7 @@ struct True3DModelScreen: View {
             limit = min(limit, edge.length / 2 - 0.05)
         }
         for faceIndex in edgeRef.adjacentFaceIndices {
-            guard let face = result.shape.face(at: faceIndex) else { continue }
-            for other in face.edges() where other.index != edgeRef.edgeIndex {
+            for other in result.shape.edgesInFace(at: faceIndex) where other.index != edgeRef.edgeIndex {
                 if other.length > 0.05 {
                     limit = min(limit, other.length / 2 - 0.05)
                 }
