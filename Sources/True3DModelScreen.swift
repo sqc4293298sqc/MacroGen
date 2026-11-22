@@ -219,6 +219,27 @@ struct True3DModelScreen: View {
         UTType(filenameExtension: "dxf") ?? .plainText
     }
 
+    private func handleStageChange(_ newStage: True3DWorkbenchStage) {
+        if importedPart != nil, newStage == .operation || newStage == .machine {
+            error = "STEP 模型暂不支持 CAM 工序；请先导出 STEP/STL，或退出 STEP"
+            stage = .model
+            return
+        }
+        if newStage == .model, !hasModel, importedPart == nil {
+            notice = "建模区为空；请先在草图里画轮廓并应用到建模"
+        }
+        if newStage == .assembly {
+            if importedPart != nil {
+                assemblyError = "STEP 零件暂不支持装配快照；请先“退出 STEP”"
+                return
+            }
+            if assemblyComponents.isEmpty, result != nil {
+                assemblyComponents = [True3DAssemblyComponent(name: "零件 1", colorIndex: 0, part: params)]
+            }
+            rebuildAssemblyScene()
+        }
+    }
+
     private var mainWorkbenchColumn: some View {
         VStack(spacing: 0) {
             workbenchTopTabs
@@ -309,26 +330,7 @@ struct True3DModelScreen: View {
                 .disabled(isBuilding || importBusy || isGeneratingCAM)
             }
         }
-        .onChange(of: stage) { newStage in
-            if importedPart != nil, newStage == .operation || newStage == .machine {
-                self.error = "STEP 模型暂不支持 CAM 工序；请先导出 STEP/STL，或退出 STEP"
-                stage = .model
-                return
-            }
-            if newStage == .model, !hasModel, importedPart == nil {
-                notice = "建模区为空；请先在草图里画轮廓并应用到建模"
-            }
-            if newStage == .assembly {
-                if importedPart != nil {
-                    assemblyError = "STEP 零件暂不支持装配快照；请先“退出 STEP”"
-                    return
-                }
-                if assemblyComponents.isEmpty, result != nil {
-                    assemblyComponents = [True3DAssemblyComponent(name: "零件 1", colorIndex: 0, part: params)]
-                }
-                rebuildAssemblyScene()
-            }
-        }
+        .onChange(of: stage, perform: handleStageChange)
         .task {
             if !didInitialBuild {
                 didInitialBuild = true
