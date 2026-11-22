@@ -139,9 +139,8 @@ do {
     params.features = [offsetFeature]
     let offsetBuilt = try True3DModelDocument(params: params).build()
     guard offsetBuilt.stats.valid,
-          let baseBounds = sketchBuilt.shape.bounds,
           let offsetBounds = offsetBuilt.shape.bounds,
-          abs((offsetBounds.max.z - baseBounds.max.z) - 14) < 0.5,
+          abs(offsetBounds.max.z - (params.height + 14)) < 0.5,
           offsetBuilt.stats.volume > sketchBuilt.stats.volume else {
         fail("sketch-profile-offset: start/end offsets did not apply")
     }
