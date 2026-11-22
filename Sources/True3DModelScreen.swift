@@ -70,7 +70,20 @@ struct True3DAssemblyComponent: Identifiable, Equatable {
 }
 
 struct True3DModelScreen: View {
-    @State private var params = True3DParams()
+    private struct ModelHistorySnapshot {
+        var params: True3DParams
+        var operations: [True3DHistoryOperation]
+        var importedPart: True3DImportedPart?
+        var documentID: UUID
+        var hasModel: Bool
+    }
+
+    @State private var params: True3DParams = {
+        var p = True3DParams()
+        p.features = []
+        p.projectName = "未命名工程"
+        return p
+    }()
     @State private var modelDocumentID = UUID()
     @State private var importedPart: True3DImportedPart?
     @State private var modelOperations: [True3DHistoryOperation] = []
@@ -146,11 +159,14 @@ struct True3DModelScreen: View {
     @State private var assemblyBuildTask: Task<Void, Never>?
     @State private var assemblyGeneration = 0
     @State private var didInitialBuild = false
+    @State private var hasModel = false
+    @State private var modelUndoStack: [ModelHistorySnapshot] = []
+    @State private var modelRedoStack: [ModelHistorySnapshot] = []
     @State private var selectedFeatureID: UUID?
     @State private var pendingFeatureIDs: [UUID] = []
     @State private var showMeasurePanel = false
     @State private var showAnalysisPanel = false
-    @State private var stage: True3DWorkbenchStage = .model
+    @State private var stage: True3DWorkbenchStage = .sketch
     @State private var sketchProfile: [True3DPoint] = []
     @State private var sketchClosed = false
     @State private var sketchTool: True3DSketchTool = .polyline
@@ -290,6 +306,9 @@ struct True3DModelScreen: View {
                 stage = .model
                 return
             }
+            if newStage == .model, !hasModel, importedPart == nil {
+                notice = "建模区为空；请先在草图里画轮廓并应用到建模"
+            }
             if newStage == .assembly {
                 if importedPart != nil {
                     assemblyError = "STEP 零件暂不支持装配快照；请先“退出 STEP”"
@@ -304,7 +323,13 @@ struct True3DModelScreen: View {
         .task {
             if !didInitialBuild {
                 didInitialBuild = true
-                rebuild()
+                if hasModel || importedPart != nil {
+                    rebuild()
+                } else {
+                    result = nil
+                    scene = SCNScene()
+                    message = nil
+                }
             }
         }
         .sheet(isPresented: $showImporter) {
@@ -372,7 +397,28 @@ struct True3DModelScreen: View {
                 }
                 .buttonStyle(.plain)
             }
-            Divider().frame(height: 22)
+            if stage == .model {
+                Divider().frame(height: 22)
+                Button { undoModelChange() } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(width: 30, height: 30)
+                        .foregroundStyle(modelUndoStack.isEmpty ? SwiftUI.Color.secondary.opacity(0.45) : SwiftUI.Color(red: 0.10, green: 0.42, blue: 0.90))
+                }
+                .buttonStyle(.plain)
+                .disabled(modelUndoStack.isEmpty || isBuilding)
+                .accessibilityLabel("撤销上一步建模")
+                Button { redoModelChange() } label: {
+                    Image(systemName: "arrow.uturn.forward")
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(width: 30, height: 30)
+                        .foregroundStyle(modelRedoStack.isEmpty ? SwiftUI.Color.secondary.opacity(0.45) : SwiftUI.Color(red: 0.10, green: 0.42, blue: 0.90))
+                }
+                .buttonStyle(.plain)
+                .disabled(modelRedoStack.isEmpty || isBuilding)
+                .accessibilityLabel("重做上一步建模")
+                Divider().frame(height: 22)
+            }
             Button {
                 showProgramSheet = true
             } label: {
@@ -3241,12 +3287,14 @@ struct True3DModelScreen: View {
 
     private func toggleOperationSuppression(_ operationID: UUID) {
         guard let index = modelOperations.firstIndex(where: { $0.id == operationID }) else { return }
+        pushModelUndo()
         modelOperations[index].suppressed.toggle()
         selectedFeatureID = nil
         rebuild()
     }
 
     private func deleteOperation(_ operationID: UUID) {
+        pushModelUndo()
         modelOperations.removeAll { $0.id == operationID }
         if selectedFeatureID != nil {
             selectedFeatureID = nil
@@ -3481,6 +3529,7 @@ struct True3DModelScreen: View {
             Spacer()
             Toggle("", isOn: suppressionBinding(for: feature)).labelsHidden().scaleEffect(0.8)
             Button(role: .destructive) {
+                pushModelUndo()
                 params.features.removeAll { $0.id == feature.id }
                 if selectedFeatureID == feature.id { selectedFeatureID = nil }
                 rebuild()
@@ -3499,6 +3548,7 @@ struct True3DModelScreen: View {
             get: { params.features.first(where: { $0.id == feature.id })?.suppressed ?? false },
             set: { value in
                 guard let index = params.features.firstIndex(where: { $0.id == feature.id }) else { return }
+                pushModelUndo()
                 params.features[index].suppressed = value
                 rebuild()
             }
@@ -3966,10 +4016,11 @@ struct True3DModelScreen: View {
             return
         }
         let solids = result.shape.solids
-        guard solids.count > 1 else {
-            notice = solids.isEmpty ? "当前模型没有可合并的实体" : "当前模型只有 1 个实体，无需合并"
+        guard !solids.isEmpty else {
+            notice = "当前模型没有可合并的实体"
             return
         }
+        pushModelUndo()
         if showFeatureDrawer { cancelFeatureDrawer() }
         if showMoveDrawer { cancelMoveDrawer() }
         if showMoveFaceDrawer { cancelMoveFaceDrawer() }
@@ -3978,7 +4029,9 @@ struct True3DModelScreen: View {
         scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
         selectedFeatureID = nil
         modelOperations.append(True3DHistoryOperation(kind: .merge))
-        notice = "正在合并 \(solids.count) 个实体…"
+        notice = solids.count > 1
+            ? "正在合并 \(solids.count) 个实体…"
+            : "正在清理合并接缝…"
         error = nil
         rebuild()
     }
@@ -4272,6 +4325,7 @@ struct True3DModelScreen: View {
         } else {
             guard abs(rotateAngle) > 1e-6 else { return }
         }
+        pushModelUndo()
         let dx = moveX, dy = moveY, dz = moveZ
         let angle = rotateAngle
         let axis = rotateAxisName
@@ -4433,6 +4487,7 @@ struct True3DModelScreen: View {
             error = "移动面缺少面轮廓或法向"
             return
         }
+        pushModelUndo()
         let signed = faceMoveOutward ? faceMoveDistance : -faceMoveDistance
         faceMovePreviewTask?.cancel()
         faceMovePreviewGeneration += 1
@@ -4587,6 +4642,7 @@ struct True3DModelScreen: View {
 
     private func commitFeatureDrawer() {
         guard var draft = draftFeature else { return }
+        pushModelUndo()
         if draft.kind == .edgeFillet || draft.kind == .edgeChamfer {
             var refs = selectedEdges
             if refs.isEmpty, let edge = selectedEdge { refs = [edge] }
@@ -4651,6 +4707,7 @@ struct True3DModelScreen: View {
     }
 
     private func addFeature(_ kind: True3DFeatureKind) {
+        pushModelUndo()
         error = nil
         notice = nil
         if kind == .edgeFillet, params.edgeMode == .fillet {
@@ -4711,6 +4768,7 @@ struct True3DModelScreen: View {
     }
 
     private func addHolePattern() {
+        pushModelUndo()
         let rows = max(1, min(patternRows, 8))
         let cols = max(1, min(patternCols, 8))
         let dia = max(patternHoleDia, 0.5)
@@ -4760,6 +4818,7 @@ struct True3DModelScreen: View {
     }
 
     private func addCircularHolePattern() {
+        pushModelUndo()
         let count = max(3, min(circularCount, 24))
         let dia = max(patternHoleDia, 0.5)
         let maxR = min(params.width, params.depth) / 2 - dia - 1
@@ -4787,6 +4846,7 @@ struct True3DModelScreen: View {
     }
 
     private func duplicateFeature(_ id: UUID) {
+        pushModelUndo()
         guard var feature = params.features.first(where: { $0.id == id }) else { return }
         feature.id = UUID()
         feature.name += " 副本"
@@ -4837,6 +4897,8 @@ struct True3DModelScreen: View {
     }
 
     private func applySketch(_ output: True3DSketchOutput) {
+        pushModelUndo()
+        hasModel = true
         if params.features.count == 3,
            params.features.contains(where: { $0.name == "通孔" }),
            params.features.contains(where: { $0.name == "凸台" }),
@@ -4909,16 +4971,92 @@ struct True3DModelScreen: View {
         modelOperations = []
         modelDocumentID = UUID()
         selectedFeatureID = nil
+        hasModel = false
+        modelUndoStack = []
+        modelRedoStack = []
         sketchProfile = []
         sketchClosed = false
         sketchTool = .polyline
         sketchSavedProfiles = []
-        notice = "已新建空白工程：可直接添加孔/凸台/型腔，或进入草图"
-        stage = .model
+        stage = .sketch
+        result = nil
+        scene = SCNScene()
+        notice = "已新建空白工程：请先在草图里画轮廓"
+    }
+
+    private func captureModelSnapshot() -> ModelHistorySnapshot {
+        ModelHistorySnapshot(
+            params: params,
+            operations: modelOperations,
+            importedPart: importedPart,
+            documentID: modelDocumentID,
+            hasModel: hasModel
+        )
+    }
+
+    private func pushModelUndo() {
+        modelUndoStack.append(captureModelSnapshot())
+        if modelUndoStack.count > 30 { modelUndoStack.removeFirst() }
+        modelRedoStack.removeAll()
+    }
+
+    private func applyModelSnapshot(_ snapshot: ModelHistorySnapshot) {
+        buildTask?.cancel()
+        movePreviewTask?.cancel()
+        faceMovePreviewTask?.cancel()
+        filletPreviewTask?.cancel()
+        draftPreviewTask?.cancel()
+        showFeatureDrawer = false
+        showMoveDrawer = false
+        showMoveFaceDrawer = false
+        draftFeature = nil
+        draftPreviewBaseline = nil
+        filletPreview = nil
+        isPreviewingFillet = false
+        params = snapshot.params
+        modelOperations = snapshot.operations
+        importedPart = snapshot.importedPart
+        modelDocumentID = snapshot.documentID
+        hasModel = snapshot.hasModel
+        selectedEdge = nil
+        selectedEdges.removeAll()
+        selectedFace = nil
+        selectedFeatureID = nil
+        pendingFaceExtrude = false
+        pendingFaceMove = false
         rebuild()
     }
 
+    private func undoModelChange() {
+        guard !isBuilding, let snapshot = modelUndoStack.popLast() else {
+            notice = "没有可撤销的建模操作"
+            return
+        }
+        modelRedoStack.append(captureModelSnapshot())
+        applyModelSnapshot(snapshot)
+        notice = "已撤销上一步建模操作"
+    }
+
+    private func redoModelChange() {
+        guard !isBuilding, let snapshot = modelRedoStack.popLast() else {
+            notice = "没有可重做的建模操作"
+            return
+        }
+        modelUndoStack.append(captureModelSnapshot())
+        applyModelSnapshot(snapshot)
+        notice = "已重做上一步建模操作"
+    }
+
     private func rebuild() {
+        guard hasModel || importedPart != nil else {
+            buildTask?.cancel()
+            buildGeneration += 1
+            result = nil
+            scene = SCNScene()
+            isBuilding = false
+            message = nil
+            return
+        }
         captureCameraOrbit()
         buildGeneration += 1
         let generation = buildGeneration
@@ -5119,6 +5257,7 @@ struct True3DModelScreen: View {
               !isBuilding else {
             return
         }
+        pushModelUndo()
         if refs.count == 1, let edge = refs.first {
             if edgeFeatureIsChamfer {
                 modelOperations.append(
@@ -5998,6 +6137,9 @@ struct True3DModelScreen: View {
             do {
                 params = try True3DProjectStore.load()
                 importedPart = nil
+                hasModel = true
+                modelUndoStack = []
+                modelRedoStack = []
                 modelOperations = []
                 modelDocumentID = UUID()
                 selectedFeatureID = nil
@@ -6012,6 +6154,9 @@ struct True3DModelScreen: View {
 
     private func applyStoredProject(_ stored: True3DStoredProject) {
         stage = .model
+        hasModel = true
+        modelUndoStack = []
+        modelRedoStack = []
         if stored.sourceKind == .importedStep {
             guard let fileName = stored.importedFileName else {
                 self.error = "工程缺少 STEP 文件名，无法载入"
@@ -6035,6 +6180,7 @@ struct True3DModelScreen: View {
                         part.unitInMeters = unitInMeters
                     }
                     self.importedPart = part
+                    self.hasModel = true
                     self.params = stored.params ?? True3DParams()
                     self.modelOperations = stored.operations
                     self.modelDocumentID = stored.id
@@ -6091,6 +6237,9 @@ struct True3DModelScreen: View {
                 let name = url.deletingPathExtension().lastPathComponent
                 let part = try await self.kernelService.importSTEP(from: copied, name: name)
                 self.importedPart = part
+                self.hasModel = true
+                self.modelUndoStack = []
+                self.modelRedoStack = []
                 self.modelOperations = []
                 self.modelDocumentID = UUID()
                 self.selectedFeatureID = nil
@@ -6110,6 +6259,9 @@ struct True3DModelScreen: View {
 
     private func exitImportedPart() {
         importedPart = nil
+        hasModel = true
+        modelUndoStack = []
+        modelRedoStack = []
         modelOperations = []
         params = True3DParams()
         params.features = []

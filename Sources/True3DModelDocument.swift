@@ -496,13 +496,20 @@ struct True3DModelDocument: Identifiable, @unchecked Sendable {
 
         case .merge:
             let solids = shape.solids
-            guard solids.count > 1 else {
-                throw True3DModelError.invalidParameter("当前只有一个实体，无需合并")
+            guard !solids.isEmpty else {
+                throw True3DModelError.invalidParameter("当前模型没有可合并的实体")
             }
-            guard let fused = Shape.fuseAll(solids), fused.isValid else {
-                throw True3DModelError.featureFailed("合并失败：实体可能没有接触或存在无效面")
+            let base: Shape
+            if solids.count > 1 {
+                guard let fused = Shape.fuseAll(solids), fused.isValid else {
+                    throw True3DModelError.featureFailed("合并失败：实体可能没有接触或存在无效面")
+                }
+                base = fused
+            } else {
+                base = shape
             }
-            let cleaned = fused.unified() ?? fused
+            let unified = base.unified() ?? base
+            let cleaned = unified.simplified(tolerance: 1e-4) ?? unified
             guard cleaned.isValid else {
                 throw True3DModelError.featureFailed("合并后实体无效，已放弃合并")
             }
