@@ -641,7 +641,7 @@ struct True3DModelScreen: View {
             if filletPreview != nil || isPreviewingFillet {
                 clearFilletPreview(restoreScene: true)
             }
-        })
+        }
         .alert("输入 \(quickEditAxis ?? "") 轴距离", isPresented: Binding(
             get: { quickEditAxis != nil },
             set: { if !$0 { quickEditAxis = nil } }
@@ -653,6 +653,7 @@ struct True3DModelScreen: View {
         } message: {
             Text("双击箭头可输入精确距离")
         }
+        )
     }
 
     private func applyQuickAxisValue() {
