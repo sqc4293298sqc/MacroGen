@@ -219,21 +219,30 @@ struct True3DModelScreen: View {
         UTType(filenameExtension: "dxf") ?? .plainText
     }
 
+    private var mainWorkbenchColumn: some View {
+        VStack(spacing: 0) {
+            workbenchTopTabs
+            stageContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private var modelDrawerOverlay: some View {
+        if showModelDrawer, stage == .model {
+            Color.black.opacity(0.22)
+                .ignoresSafeArea()
+                .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { showModelDrawer = false } }
+            modelDrawer
+                .frame(width: min(330, UIScreen.main.bounds.width * 0.82))
+                .transition(.move(edge: .trailing))
+        }
+    }
+
     var body: some View {
         ZStack(alignment: .trailing) {
-            VStack(spacing: 0) {
-                workbenchTopTabs
-                stageContent
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            if showModelDrawer, stage == .model {
-                Color.black.opacity(0.22)
-                    .ignoresSafeArea()
-                    .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { showModelDrawer = false } }
-                modelDrawer
-                    .frame(width: min(330, UIScreen.main.bounds.width * 0.82))
-                    .transition(.move(edge: .trailing))
-            }
+            mainWorkbenchColumn
+            modelDrawerOverlay
         }
         .background(Color(.systemBackground))
         .navigationTitle(params.projectName.isEmpty ? "3D绘图建模" : params.projectName)
@@ -4696,6 +4705,7 @@ struct True3DModelScreen: View {
             draft.bossHeight = max(draft.bossHeight, 0.1)
         }
         draft.name = draft.name.isEmpty ? draft.kind.rawValue : draft.name
+        hasModel = true
         selectedFace = nil
         scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
         insertFeatureInSemanticOrder(draft)
@@ -4760,6 +4770,7 @@ struct True3DModelScreen: View {
         case .profileBoss, .profileCut, .faceBoss:
             return
         }
+        hasModel = true
         insertFeatureInSemanticOrder(f)
         selectedFeatureID = f.id
         pendingFeatureIDs = [f.id]
@@ -4809,6 +4820,7 @@ struct True3DModelScreen: View {
             error = "阵列位置与已有孔重叠，没有可添加的孔"
             return
         }
+        hasModel = true
         selectedFeatureID = params.features.last?.id
         pendingFeatureIDs = addedIDs
         rebuild()
@@ -4839,6 +4851,7 @@ struct True3DModelScreen: View {
             params.features.append(f)
             addedIDs.append(f.id)
         }
+        hasModel = true
         selectedFeatureID = params.features.last?.id
         pendingFeatureIDs = addedIDs
         rebuild()
@@ -4851,6 +4864,7 @@ struct True3DModelScreen: View {
         feature.id = UUID()
         feature.name += " 副本"
         feature.x += min(max(feature.width, feature.dia) / 2 + 2, 20)
+        hasModel = true
         insertFeatureInSemanticOrder(feature)
         selectedFeatureID = feature.id
         pendingFeatureIDs = [feature.id]
@@ -4859,11 +4873,13 @@ struct True3DModelScreen: View {
     }
 
     private func mirrorFeature(_ id: UUID) {
+        pushModelUndo()
         guard var feature = params.features.first(where: { $0.id == id }) else { return }
         feature.id = UUID()
         feature.name += " 镜像"
         feature.x = -feature.x
         feature.profile = feature.profile.map { True3DPoint(x: -$0.x, y: $0.y) }
+        hasModel = true
         insertFeatureInSemanticOrder(feature)
         selectedFeatureID = feature.id
         pendingFeatureIDs = [feature.id]
@@ -5054,7 +5070,7 @@ struct True3DModelScreen: View {
             result = nil
             scene = SCNScene()
             isBuilding = false
-            message = nil
+            message = ""
             return
         }
         captureCameraOrbit()
