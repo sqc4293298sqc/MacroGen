@@ -233,6 +233,37 @@ do {
         fail("history-translate-copy: copy did not keep original body")
     }
     print("PASS history-translate-copy: volume=\(String(format: "%.1f", copied.stats.volume))")
+
+    let topFaceProfile = [
+        True3DPoint3D(x: -60, y: -40, z: 10),
+        True3DPoint3D(x: 60, y: -40, z: 10),
+        True3DPoint3D(x: 60, y: 40, z: 10),
+        True3DPoint3D(x: -60, y: 40, z: 10)
+    ]
+    var faceMoveDocument = document
+    faceMoveDocument.append(True3DHistoryOperation(kind: .moveFace(
+        points: topFaceProfile,
+        normal: True3DPoint3D(x: 0, y: 0, z: 1),
+        distance: 5
+    )))
+    let faceMoved = try faceMoveDocument.build()
+    guard faceMoved.stats.valid, faceMoved.nodes.count == 2,
+          abs(faceMoved.stats.volume - 144000) < 50 else {
+        fail("history-move-face: outward move did not extend adjacent faces")
+    }
+    print("PASS history-move-face: volume=\(String(format: "%.1f", faceMoved.stats.volume))")
+
+    var faceCutDocument = document
+    faceCutDocument.append(True3DHistoryOperation(kind: .moveFace(
+        points: topFaceProfile,
+        normal: True3DPoint3D(x: 0, y: 0, z: 1),
+        distance: -3
+    )))
+    let faceCut = try faceCutDocument.build()
+    guard faceCut.stats.valid, abs(faceCut.stats.volume - 67200) < 50 else {
+        fail("history-move-face-inward: inward move did not cut adjacent faces")
+    }
+    print("PASS history-move-face-inward: volume=\(String(format: "%.1f", faceCut.stats.volume))")
 } catch {
     fail("history: \(error.localizedDescription)")
 }

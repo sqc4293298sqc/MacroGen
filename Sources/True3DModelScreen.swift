@@ -91,6 +91,16 @@ struct True3DModelScreen: View {
     @State private var movePreviewGeneration = 0
     @State private var isPreviewingMove = false
     @State private var movePreviewError: String?
+    @State private var showMoveFaceDrawer = false
+    @State private var pendingFaceMove = false
+    @State private var faceMoveDistance: Double = 2
+    @State private var faceMoveOutward = true
+    @State private var faceMoveProfile: [True3DPoint3D] = []
+    @State private var faceMoveNormal: True3DPoint3D?
+    @State private var faceMovePreviewTask: Task<Void, Never>?
+    @State private var faceMovePreviewGeneration = 0
+    @State private var isPreviewingFaceMove = false
+    @State private var faceMovePreviewError: String?
     @State private var filletRadius: Double = 2
     @State private var filletRadius2: Double = 2
     @State private var filletVariable = false
@@ -507,6 +517,20 @@ struct True3DModelScreen: View {
                 .transition(.move(edge: .leading).combined(with: .opacity))
             }
 
+            if showMoveFaceDrawer, !showFeatureDrawer, !showMoveDrawer {
+                VStack {
+                    HStack(alignment: .top) {
+                        AnyView(moveFaceDrawer())
+                        Spacer(minLength: 0)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 10)
+                .padding(.top, 112)
+                .zIndex(20)
+                .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+
             VStack {
                 Spacer()
                 Text(bottomHint)
@@ -751,6 +775,7 @@ struct True3DModelScreen: View {
                 railItem("pencil", "草图", highlighted: false) { stage = .sketch }
                 railItem("eye", "基准面", highlighted: showDatumPlane) { toggleDatumPlane() }
                 railItem("arrow.up.to.line", "拉伸", highlighted: pendingFaceExtrude) { beginFaceExtrude() }
+                railItem("arrow.left.and.right.square", "移动面", highlighted: pendingFaceMove) { beginFaceMove() }
                 railItem("arrow.triangle.2.circlepath", "旋转体") { openFeatureDrawer(.revolveBoss) }
                 railItem("arrow.up.and.down.and.arrow.left.and.right", "移动体", highlighted: showMoveDrawer) {
                     openMoveDrawer()
@@ -1086,6 +1111,115 @@ struct True3DModelScreen: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(SwiftUI.Color.white.opacity(0.5), lineWidth: 0.5))
         )
+    }
+
+    private func moveFaceDrawer() -> AnyView {
+        AnyView(VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.left.and.right.square")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("移动面")
+                        .font(.system(size: 17, weight: .bold))
+                    Text("Move Face · 邻面延伸重建")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { cancelMoveFaceDrawer() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 30, height: 30)
+                        .background(SwiftUI.Color.black.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 14)
+            .padding(.bottom, 8)
+
+            Divider().opacity(0.4)
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("对象").font(.system(size: 12))
+                    Spacer()
+                    if let face = selectedFace {
+                        Text("面 #\(face.faceIndex) · 法向 \(normalLabel(face.normal))")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("未选择面").font(.system(size: 11)).foregroundStyle(.orange)
+                    }
+                }
+                Picker("方向", selection: $faceMoveOutward) {
+                    Text("向外（+法向）").tag(true)
+                    Text("向内（−法向）").tag(false)
+                }
+                .pickerStyle(.segmented)
+                numRow("距离", Binding(
+                    get: { faceMoveDistance },
+                    set: { faceMoveDistance = max($0, 0.1); scheduleFaceMovePreview() }
+                ))
+                Text("移动距离沿所选面的法向；邻面通过布尔延伸重建。带孔/内环的面暂不移动。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+
+            if isPreviewingFaceMove {
+                HStack(spacing: 7) {
+                    ProgressView().scaleEffect(0.7)
+                    Text("正在重建邻面…").font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 6)
+            } else if let faceMovePreviewError {
+                Text("预览失败：\(faceMovePreviewError)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 6)
+            }
+
+            Divider().opacity(0.4)
+            HStack(spacing: 10) {
+                Button { cancelMoveFaceDrawer() } label: {
+                    Text("取消").font(.system(size: 13, weight: .semibold))
+                        .frame(maxWidth: .infinity).frame(height: 42)
+                        .background(SwiftUI.Color.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+
+                Button { commitMoveFace() } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark")
+                        Text("应用移动")
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity).frame(height: 42)
+                    .background(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85), in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+                .disabled(isBuilding || importBusy || selectedFace == nil || faceMoveProfile.count < 3 || faceMoveDistance < 0.1)
+            }
+            .padding(14)
+        }
+        .frame(width: min(340, UIScreen.main.bounds.width * 0.86), alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(SwiftUI.Color.white.opacity(0.5), lineWidth: 0.5))
+        )
+    }
+
+    private func normalLabel(_ n: SIMD3<Double>) -> String {
+        if abs(n.x) > 0.9 { return n.x > 0 ? "+X" : "−X" }
+        if abs(n.y) > 0.9 { return n.y > 0 ? "+Y" : "−Y" }
+        if abs(n.z) > 0.9 { return n.z > 0 ? "+Z" : "−Z" }
+        return "斜向"
     }
 
     private func edgeDrawerFields(_ draft: True3DFeatureSpec) -> AnyView {
@@ -3677,6 +3811,7 @@ struct True3DModelScreen: View {
         }
         if showFeatureDrawer { cancelFeatureDrawer() }
         if showMoveDrawer { cancelMoveDrawer() }
+        if showMoveFaceDrawer { cancelMoveFaceDrawer() }
         beginDraftPreviewSession()
         pickMode = .edge
         pendingFaceExtrude = false
@@ -3694,6 +3829,7 @@ struct True3DModelScreen: View {
         }
         cancelFeatureDrawer()
         if showMoveDrawer { cancelMoveDrawer() }
+        if showMoveFaceDrawer { cancelMoveFaceDrawer() }
         selectedEdge = nil
         selectedEdges.removeAll()
         removeEdgeHighlights()
@@ -3711,6 +3847,7 @@ struct True3DModelScreen: View {
         }
         if showFeatureDrawer { cancelFeatureDrawer() }
         if showMoveDrawer { cancelMoveDrawer() }
+        if showMoveFaceDrawer { cancelMoveFaceDrawer() }
         if selectedEdges.isEmpty, let edge = selectedEdge { selectedEdges = [edge] }
         edgePickRule = selectedEdges.count > 1 ? 1 : 0
         beginDraftPreviewSession()
@@ -3734,6 +3871,7 @@ struct True3DModelScreen: View {
             return
         }
         if showFeatureDrawer { cancelFeatureDrawer() }
+        if showMoveFaceDrawer { cancelMoveFaceDrawer() }
         beginDraftPreviewSession()
         moveX = 0
         moveY = 0
@@ -3846,6 +3984,151 @@ struct True3DModelScreen: View {
         notice = copy
             ? "已移动并保留原体：ΔX \(fmt(dx)) ΔY \(fmt(dy)) ΔZ \(fmt(dz))"
             : "已移动实体：ΔX \(fmt(dx)) ΔY \(fmt(dy)) ΔZ \(fmt(dz))"
+        rebuild()
+    }
+
+    private func beginFaceMove() {
+        guard importedPart == nil else {
+            error = "STEP 模型暂不支持移动面"
+            return
+        }
+        if showMoveFaceDrawer {
+            cancelMoveFaceDrawer()
+            return
+        }
+        if showFeatureDrawer { cancelFeatureDrawer() }
+        if showMoveDrawer { cancelMoveDrawer() }
+        selectedEdge = nil
+        selectedEdges.removeAll()
+        removeEdgeHighlights()
+        selectedFace = nil
+        scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
+        pendingFaceExtrude = false
+        pendingFaceMove = true
+        pickMode = .face
+        showMoveFaceDrawer = false
+        faceMoveOutward = true
+        faceMoveProfile = []
+        faceMoveNormal = nil
+        faceMovePreviewError = nil
+        error = nil
+        notice = "移动面：先选择一个平面（不能带孔/内环）"
+    }
+
+    private func cancelMoveFaceDrawer() {
+        faceMovePreviewTask?.cancel()
+        faceMovePreviewGeneration += 1
+        if let baseline = draftPreviewBaseline {
+            result = baseline.result
+            scene = baseline.scene
+            applyOrbit()
+        }
+        draftPreviewBaseline = nil
+        isPreviewingFaceMove = false
+        faceMovePreviewError = nil
+        showMoveFaceDrawer = false
+        pendingFaceMove = false
+        selectedFace = nil
+        faceMoveProfile = []
+        faceMoveNormal = nil
+        scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
+        error = nil
+    }
+
+    private func closeMoveFaceDrawer() {
+        faceMovePreviewTask?.cancel()
+        faceMovePreviewGeneration += 1
+        draftPreviewBaseline = nil
+        isPreviewingFaceMove = false
+        faceMovePreviewError = nil
+        showMoveFaceDrawer = false
+        pendingFaceMove = false
+    }
+
+    private func scheduleFaceMovePreview() {
+        guard showMoveFaceDrawer, selectedFace != nil,
+              faceMoveProfile.count >= 3, let normal = faceMoveNormal else { return }
+        faceMovePreviewTask?.cancel()
+        faceMovePreviewGeneration += 1
+        let generation = faceMovePreviewGeneration
+        faceMovePreviewError = nil
+        faceMovePreviewTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 600_000_000)
+            } catch { return }
+            guard !Task.isCancelled, generation == faceMovePreviewGeneration,
+                  showMoveFaceDrawer else { return }
+            await buildFaceMovePreview(generation: generation, normal: normal)
+        }
+    }
+
+    private func buildFaceMovePreview(generation: Int, normal: True3DPoint3D) async {
+        guard showMoveFaceDrawer, selectedFace != nil else { return }
+        isPreviewingFaceMove = true
+        defer {
+            if generation == faceMovePreviewGeneration { isPreviewingFaceMove = false }
+        }
+        let signed = faceMoveOutward ? max(faceMoveDistance, 0.1) : -max(faceMoveDistance, 0.1)
+        let n = SIMD3<Double>(normal.x, normal.y, normal.z)
+        let movedOutline = faceMoveProfile.map {
+            True3DPoint3D(
+                x: $0.x + n.x * signed,
+                y: $0.y + n.y * signed,
+                z: $0.z + n.z * signed
+            )
+        }
+        var previewOperations = modelOperations
+        previewOperations.append(True3DHistoryOperation(kind: .moveFace(
+            points: faceMoveProfile,
+            normal: normal,
+            distance: signed
+        )))
+        let document = True3DModelDocument(
+            id: modelDocumentID,
+            params: params,
+            operations: previewOperations
+        )
+        do {
+            let preview = try await kernelService.build(document)
+            guard !Task.isCancelled, generation == faceMovePreviewGeneration,
+                  showMoveFaceDrawer else { return }
+            if draftPreviewBaseline == nil { beginDraftPreviewSession() }
+            result = preview
+            scene = makeScene(result: preview)
+            applyOrbit()
+            addFaceHighlight(outline: movedOutline, normal: n)
+            faceMovePreviewError = nil
+            message = "移动面预览"
+        } catch is CancellationError {
+            return
+        } catch {
+            guard generation == faceMovePreviewGeneration else { return }
+            faceMovePreviewError = error.localizedDescription
+        }
+    }
+
+    private func commitMoveFace() {
+        guard let face = selectedFace, let normal = faceMoveNormal,
+              faceMoveProfile.count >= 3, faceMoveDistance >= 0.1 else {
+            error = "移动面缺少面轮廓或法向"
+            return
+        }
+        let signed = faceMoveOutward ? faceMoveDistance : -faceMoveDistance
+        faceMovePreviewTask?.cancel()
+        faceMovePreviewGeneration += 1
+        draftPreviewBaseline = nil
+        isPreviewingFaceMove = false
+        faceMovePreviewError = nil
+        showMoveFaceDrawer = false
+        pendingFaceMove = false
+        selectedFace = nil
+        scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
+        modelOperations.append(True3DHistoryOperation(kind: .moveFace(
+            points: faceMoveProfile,
+            normal: normal,
+            distance: signed
+        )))
+        notice = "已移动面 #\(face.faceIndex)：\(signed >= 0 ? "+" : "")\(fmt(signed)) mm，邻面已重建"
         rebuild()
     }
 
@@ -4715,6 +4998,14 @@ struct True3DModelScreen: View {
         if normal.x * rayDirection.x + normal.y * rayDirection.y + normal.z * rayDirection.z > 0 {
             normal = -normal
         }
+        if pendingFaceExtrude || pendingFaceMove {
+            let faceArea = face.area()
+            let outlineArea = polygonArea3D(outline, normal: normal)
+            if abs(faceArea - outlineArea) > max(0.5, faceArea * 0.03) {
+                error = "这个面带孔或内环，拉伸/移动会填平孔；请换一个完整平面"
+                return
+            }
+        }
 
         selectedFace = True3DFaceSelection(
             faceIndex: hit.faceIndex,
@@ -4729,6 +5020,19 @@ struct True3DModelScreen: View {
         removeEdgeHighlights()
         addFaceHighlight(outline: outline, normal: normal)
 
+        if pendingFaceMove {
+            beginDraftPreviewSession()
+            faceMoveProfile = outline
+            faceMoveNormal = True3DPoint3D(x: normal.x, y: normal.y, z: normal.z)
+            faceMoveDistance = 2
+            showMoveFaceDrawer = true
+            pendingFaceMove = false
+            pickMode = .face
+            error = nil
+            notice = "已选择面 #\(hit.faceIndex)，可设置移动距离"
+            scheduleFaceMovePreview()
+            return
+        }
         if pendingFaceExtrude {
             var draft = True3DFeatureSpec(kind: .faceBoss)
             draft.name = "面拉伸"
@@ -4789,6 +5093,22 @@ struct True3DModelScreen: View {
             simplified.append(cur)
         }
         return simplified.count >= 3 ? simplified : cleaned
+    }
+
+    private func polygonArea3D(_ points: [True3DPoint3D], normal: SIMD3<Double>) -> Double {
+        guard points.count >= 3 else { return 0 }
+        var sum = SIMD3<Double>(0, 0, 0)
+        for i in 0..<points.count {
+            let a = points[i]
+            let b = points[(i + 1) % points.count]
+            let cross = SIMD3<Double>(
+                a.y * b.z - a.z * b.y,
+                a.z * b.x - a.x * b.z,
+                a.x * b.y - a.y * b.x
+            )
+            sum += cross
+        }
+        return abs(sum.x * normal.x + sum.y * normal.y + sum.z * normal.z) / 2
     }
 
     private func addFaceHighlight(outline: [True3DPoint3D], normal: SIMD3<Double>) {

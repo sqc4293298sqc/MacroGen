@@ -122,6 +122,7 @@ struct True3DHistoryOperation: Identifiable, Codable, Equatable, Sendable {
         case multiFillet(edges: [True3DEdgeRef], radius: Double)
         case multiChamfer(edges: [True3DEdgeRef], distance: Double)
         case variableFillet(edge: True3DEdgeRef, radius1: Double, radius2: Double)
+        case moveFace(points: [True3DPoint3D], normal: True3DPoint3D, distance: Double)
     }
 
     var id: UUID
@@ -142,6 +143,7 @@ struct True3DHistoryOperation: Identifiable, Codable, Equatable, Sendable {
         case .multiFillet(let edges, _): return "多边圆角 \(edges.count) 条"
         case .multiChamfer(let edges, _): return "多边倒角 \(edges.count) 条"
         case .variableFillet: return "变半径圆角"
+        case .moveFace: return "移动面"
         }
     }
 
@@ -159,6 +161,8 @@ struct True3DHistoryOperation: Identifiable, Codable, Equatable, Sendable {
             return "\(edges.count) 条 · C\(fmt(distance))"
         case .variableFillet(_, let r1, let r2):
             return "R\(fmt(r1))→R\(fmt(r2))"
+        case .moveFace(_, _, let distance):
+            return distance >= 0 ? "沿法向 +\(fmt(distance))" : "沿法向 \(fmt(distance))"
         }
     }
 
@@ -400,6 +404,7 @@ struct True3DModelDocument: Identifiable, @unchecked Sendable {
         case .multiFillet: return .fillet
         case .multiChamfer: return .chamfer
         case .variableFillet: return .fillet
+        case .moveFace: return .feature
         }
     }
 
@@ -445,6 +450,51 @@ struct True3DModelDocument: Identifiable, @unchecked Sendable {
                 )
             }
             return result
+
+        case .moveFace(let points, let normal, let distance):
+            guard points.count >= 3 else {
+                throw True3DModelError.invalidParameter("移动面缺少面轮廓")
+            }
+            guard abs(distance) > 1e-6 else {
+                throw True3DModelError.invalidParameter("移动面距离不能为 0")
+            }
+            let nx = normal.x, ny = normal.y, nz = normal.z
+            let nl = (nx * nx + ny * ny + nz * nz).squareRoot()
+            guard nl > 1e-9 else {
+                throw True3DModelError.invalidParameter("所选面没有有效法向")
+            }
+            let unit = SIMD3<Double>(nx / nl, ny / nl, nz / nl)
+            let eps = min(0.05, max(0.01, abs(distance) * 0.05))
+            let dir: SIMD3<Double>
+            let startPoints: [SIMD3<Double>]
+            let length: Double
+            if distance > 0 {
+                dir = unit
+                length = distance + eps
+                startPoints = points.map {
+                    SIMD3<Double>($0.x - unit.x * eps, $0.y - unit.y * eps, $0.z - unit.z * eps)
+                }
+            } else {
+                dir = SIMD3<Double>(-unit.x, -unit.y, -unit.z)
+                length = abs(distance) + eps
+                startPoints = points.map {
+                    SIMD3<Double>($0.x + unit.x * eps, $0.y + unit.y * eps, $0.z + unit.z * eps)
+                }
+            }
+            guard let wire = Wire.polygon3D(startPoints, closed: true),
+                  let tool = Shape.extrude(profile: wire, direction: dir, length: length) else {
+                throw True3DModelError.featureFailed("移动面：无法从面轮廓生成拉伸体")
+            }
+            if distance > 0 {
+                guard let fused = current + tool else {
+                    throw True3DModelError.featureFailed("移动面：邻面延伸合并失败")
+                }
+                return fused
+            }
+            guard let cut = current - tool else {
+                throw True3DModelError.featureFailed("移动面：向内移动切除失败")
+            }
+            return cut
 
         case .variableFillet(let edgeRef, let radius1, let radius2):
             guard radius1 > 0, radius2 > 0 else {
