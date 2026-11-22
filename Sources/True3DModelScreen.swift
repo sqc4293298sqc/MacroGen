@@ -479,7 +479,12 @@ struct True3DModelScreen: View {
                     pickEdge(in: view, at: point, viewSize: size)
                 },
                 onMoveHandleDrag: { axis, delta in
-                    guard showMoveDrawer, moveMode == 0 else { return }
+                    guard showMoveDrawer else { return }
+                    if moveMode == 1 {
+                        rotateAngle = min(360, max(0, rotateAngle + delta))
+                        message = "拖拽旋转：\(String(format: "%.1f", rotateAngle))°"
+                        return
+                    }
                     switch axis {
                     case "X": moveX += delta
                     case "Y": moveY += delta
@@ -493,9 +498,14 @@ struct True3DModelScreen: View {
                     scheduleMovePreview()
                 },
                 onMoveHandleDoubleTap: { axis in
-                    guard showMoveDrawer, moveMode == 0 else { return }
-                    quickEditAxis = axis
-                    quickEditValue = axis == "X" ? moveX : (axis == "Y" ? moveY : moveZ)
+                    guard showMoveDrawer else { return }
+                    if moveMode == 1 {
+                        quickEditAxis = "角度"
+                        quickEditValue = rotateAngle
+                    } else {
+                        quickEditAxis = axis
+                        quickEditValue = axis == "X" ? moveX : (axis == "Y" ? moveY : moveZ)
+                    }
                 }
             )
             .ignoresSafeArea()
@@ -643,7 +653,7 @@ struct True3DModelScreen: View {
                 clearFilletPreview(restoreScene: true)
             }
         }
-        .alert("输入 \(quickEditAxis ?? "") 轴距离", isPresented: Binding(
+        .alert(quickEditAxis == "角度" ? "输入旋转角度" : "输入 \(quickEditAxis ?? "") 轴距离", isPresented: Binding(
             get: { quickEditAxis != nil },
             set: { if !$0 { quickEditAxis = nil } }
         )) {
@@ -676,6 +686,12 @@ struct True3DModelScreen: View {
 
     private func applyQuickAxisValue() {
         guard let axis = quickEditAxis else { return }
+        if axis == "角度" {
+            rotateAngle = min(360, max(0, quickEditValue))
+            quickEditAxis = nil
+            scheduleMovePreview()
+            return
+        }
         switch axis {
         case "X": moveX = quickEditValue
         case "Y": moveY = quickEditValue
@@ -1157,7 +1173,7 @@ struct True3DModelScreen: View {
                         get: { rotateAngle },
                         set: { rotateAngle = $0; scheduleMovePreview() }
                     ))
-                    Text("旋转围绕当前实体的包围盒中心，角度单位为度。")
+                    Text("旋转围绕当前实体的包围盒中心，角度单位为度。拖拽彩色圆环旋转，双击圆环输入角度。")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -4035,7 +4051,7 @@ struct True3DModelScreen: View {
 
     private func refreshMoveHandles() {
         removeMoveHandles()
-        guard showMoveDrawer, moveMode == 0, let result,
+        guard showMoveDrawer, let result,
               let modelRoot = scene.rootNode.childNode(withName: "modelRoot", recursively: false) else { return }
         let box = result.mesh.boundingBox
         let center = SCNVector3(
@@ -4045,6 +4061,36 @@ struct True3DModelScreen: View {
         )
         let size = Double(max(box.max.x - box.min.x, max(box.max.y - box.min.y, box.max.z - box.min.z)))
         let length = Float(min(max(size * 0.55, 18), 58))
+        if moveMode == 1 {
+            let radius = CGFloat(max(length * 0.85, 20))
+            let ringColor: UIColor
+            switch rotateAxis {
+            case 0: ringColor = UIColor(red: 0.92, green: 0.18, blue: 0.16, alpha: 1)
+            case 1: ringColor = UIColor(red: 0.10, green: 0.64, blue: 0.26, alpha: 1)
+            default: ringColor = UIColor(red: 0.08, green: 0.38, blue: 0.94, alpha: 1)
+            }
+            let ringMaterial = SCNMaterial()
+            ringMaterial.lightingModel = .constant
+            ringMaterial.diffuse.contents = ringColor
+            ringMaterial.readsFromDepthBuffer = false
+            ringMaterial.writesToDepthBuffer = false
+            let torus = SCNTorus(ringRadius: radius, pipeRadius: max(radius * 0.035, 1.2))
+            torus.materials = [ringMaterial]
+            let ringNode = SCNNode(geometry: torus)
+            ringNode.name = "moveHandleRotate\(rotateAxisName)"
+            switch rotateAxis {
+            case 0: ringNode.eulerAngles = SCNVector3(0, Float.pi / 2, 0)
+            case 1: ringNode.eulerAngles = SCNVector3(Float.pi / 2, 0, 0)
+            default: ringNode.eulerAngles = SCNVector3(0, 0, 0)
+            }
+            ringNode.renderingOrder = 45
+            let group = SCNNode()
+            group.name = "moveHandles"
+            group.position = center
+            group.addChildNode(ringNode)
+            modelRoot.addChildNode(group)
+            return
+        }
         let shaftRadius = CGFloat(max(length * 0.032, 0.55))
         let headRadius = CGFloat(max(length * 0.105, 1.8))
         let headHeight = CGFloat(max(length * 0.22, 4))
@@ -6193,6 +6239,7 @@ struct True3DSceneView: UIViewRepresentable {
         var onMoveHandleDragEnd: ((String) -> Void)?
         var onMoveHandleDoubleTap: ((String) -> Void)?
         private var moveHandleAxis: String?
+        private var moveHandleIsRotate = false
         private var moveHandleNode: SCNNode?
         private var moveLastOffset: Double = 0
         private var moveAxisScreenLength: Double = 1
@@ -6220,9 +6267,11 @@ struct True3DSceneView: UIViewRepresentable {
                     moveHandleAxis = nil
                     return
                 }
-                moveHandleAxis = info.0
+                moveHandleAxis = info.0.hasPrefix("Rotate") ? String(info.0.dropFirst(6)) : info.0
+                moveHandleIsRotate = info.0.hasPrefix("Rotate")
                 moveHandleNode = info.1
                 moveLastOffset = 0
+                if moveHandleIsRotate { return }
                 let localDirection: SCNVector3
                 switch info.0 {
                 case "X": localDirection = SCNVector3(1, 0, 0)
@@ -6243,6 +6292,14 @@ struct True3DSceneView: UIViewRepresentable {
                 return
             }
             guard let axis = moveHandleAxis else { return }
+            if gesture.state == .changed, moveHandleIsRotate {
+                let translation = gesture.translation(in: view)
+                let pixels = Double(translation.x - translation.y)
+                let delta = (pixels - moveLastOffset) * 0.5
+                moveLastOffset = pixels
+                onMoveHandleDrag?(axis, delta)
+                return
+            }
             if gesture.state == .changed {
                 let translation = gesture.translation(in: view)
                 guard let handleNode = moveHandleNode else { return }
@@ -6272,6 +6329,7 @@ struct True3DSceneView: UIViewRepresentable {
             if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
                 onMoveHandleDragEnd?(axis)
                 moveHandleAxis = nil
+                moveHandleIsRotate = false
                 moveHandleNode = nil
                 moveLastOffset = 0
             }
@@ -6280,7 +6338,8 @@ struct True3DSceneView: UIViewRepresentable {
         @objc func handleMoveHandleDoubleTap(_ gesture: UITapGestureRecognizer) {
             guard let view = gesture.view as? SCNView,
                   let info = moveHandleInfo(at: gesture.location(in: view), in: view) else { return }
-            onMoveHandleDoubleTap?(info.0)
+            let axis = info.0.hasPrefix("Rotate") ? "角度" : info.0
+            onMoveHandleDoubleTap?(axis)
         }
 
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
