@@ -78,6 +78,7 @@ struct True3DModelScreen: View {
     @State private var selectedEdges: [True3DEdgeRef] = []
     @State private var selectedFace: True3DFaceSelection?
     @State private var pickMode: True3DPickMode = .edge
+    @State private var edgePickRule = 0
     @State private var pendingFaceExtrude = false
     @State private var draftFeature: True3DFeatureSpec?
     @State private var showFeatureDrawer = false
@@ -1113,6 +1114,16 @@ struct True3DModelScreen: View {
             Text(draft.kind == .edgeChamfer ? "方法：对称距离" : "连续性：G1 · 等半径")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
             Text("边选择").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+            HStack {
+                Text("选择规则").font(.system(size: 11)).foregroundStyle(.secondary)
+                Spacer()
+                Picker("", selection: $edgePickRule) {
+                    Text("单条边").tag(0)
+                    Text("多条边").tag(1)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 150)
+            }
             if let edge = selectedEdge {
                 HStack {
                     Image(systemName: "line.diagonal")
@@ -3701,6 +3712,7 @@ struct True3DModelScreen: View {
         if showFeatureDrawer { cancelFeatureDrawer() }
         if showMoveDrawer { cancelMoveDrawer() }
         if selectedEdges.isEmpty, let edge = selectedEdge { selectedEdges = [edge] }
+        edgePickRule = selectedEdges.count > 1 ? 1 : 0
         beginDraftPreviewSession()
         edgeFeatureIsChamfer = chamfer
         filletVariable = false
@@ -4650,6 +4662,8 @@ struct True3DModelScreen: View {
         let reference = True3DEdgeRef.make(edge: edge, in: result.shape)
         if let index = selectedEdges.firstIndex(of: reference) {
             selectedEdges.remove(at: index)
+        } else if edgePickRule == 0 {
+            selectedEdges = [reference]
         } else {
             selectedEdges.append(reference)
         }
