@@ -64,6 +64,12 @@ struct True3DPoint: Codable, Equatable, Hashable {
     var y: Double
 }
 
+struct True3DPoint3D: Codable, Equatable, Hashable {
+    var x: Double
+    var y: Double
+    var z: Double
+}
+
 enum True3DHoleKind: String, CaseIterable, Identifiable, Codable {
     case through = "通孔"
     case blind = "盲孔"
@@ -91,6 +97,7 @@ enum True3DFeatureKind: String, CaseIterable, Identifiable, Codable {
     case slot = "腰形槽"
     case profileBoss = "草图凸台"
     case profileCut = "草图切除"
+    case faceBoss = "面拉伸"
     var id: String { rawValue }
 }
 
@@ -116,6 +123,10 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
     var cornerRadius: Double = 0
     /// 草图拉伸特征的闭合轮廓，坐标是基础块坐标系（mm）。
     var profile: [True3DPoint] = []
+    /// 面拉伸：所选面的外轮廓（模型坐标，mm），以及外法向。
+    var faceProfile: [True3DPoint3D]? = nil
+    var faceNormal: True3DPoint3D? = nil
+    var faceIndex: Int? = nil
     /// 旋转 / 拔模角度（度）。
     var angle: Double = 360
     /// 锥形凸台的顶部直径。
@@ -189,6 +200,8 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
             name = "草图凸台"; bossHeight = 5
         case .profileCut:
             name = "草图切除"; depth = 5
+        case .faceBoss:
+            name = "面拉伸"; bossHeight = 5
         }
     }
 
@@ -246,6 +259,8 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
             return "\(profile.count) 点轮廓 H\(fmt(bossHeight))"
         case .profileCut:
             return "\(profile.count) 点轮廓 深\(fmt(depth))"
+        case .faceBoss:
+            return "面 #\(faceIndex ?? 0) · \(faceProfile?.count ?? 0) 点轮廓 H\(fmt(bossHeight))"
         }
     }
 }
@@ -579,6 +594,29 @@ enum True3DKernel {
                 throw True3DModelError.featureFailed("\(f.name) 布尔切除失败")
             }
             return cut
+        case .faceBoss:
+            guard let profile3D = f.faceProfile, profile3D.count >= 3, let n = f.faceNormal else {
+                throw True3DModelError.featureFailed("\(f.name) 失败：缺少面轮廓或法向")
+            }
+            let direction = SIMD3<Double>(n.x, n.y, n.z)
+            let overlap = 0.12
+            let shifted = profile3D.map {
+                SIMD3<Double>(
+                    $0.x - direction.x * overlap,
+                    $0.y - direction.y * overlap,
+                    $0.z - direction.z * overlap
+                )
+            }
+            guard let wire = Wire.polygon3D(shifted, closed: true),
+                  let prism = Shape.extrude(
+                    profile: wire,
+                    direction: direction,
+                    length: max(f.bossHeight, 0.1) + overlap
+                  ),
+                  let fused = current + prism else {
+                throw True3DModelError.featureFailed("\(f.name) 失败：所选面轮廓无法拉伸")
+            }
+            return fused
         case .profileBoss:
             guard let tool = profileTool(f, baseHeight: h, isBoss: true), let fused = current + tool else {
                 throw True3DModelError.featureFailed("\(f.name) 草图拉伸合并失败，轮廓可能不自交或不在实体上")
@@ -1009,6 +1047,16 @@ enum True3DKernel {
                 guard abs(f.x) + f.width / 2 <= p.width / 2 - 0.02,
                       abs(f.y) + f.depthY / 2 <= p.depth / 2 - 0.02 else {
                     throw True3DModelError.invalidParameter("\(f.name) 超出基础块范围")
+                }
+            case .faceBoss:
+                guard let pts = f.faceProfile, pts.count >= 3,
+                      let n = f.faceNormal,
+                      pts.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.z.isFinite }),
+                      n.x.isFinite, n.y.isFinite, n.z.isFinite else {
+                    throw True3DModelError.invalidParameter("\(f.name) 需要有效的面轮廓和法向")
+                }
+                guard f.bossHeight > 0.05 else {
+                    throw True3DModelError.invalidParameter("\(f.name) 拉伸高度必须大于 0.05 mm")
                 }
             case .profileBoss, .profileCut:
                 guard f.profile.count >= 3,

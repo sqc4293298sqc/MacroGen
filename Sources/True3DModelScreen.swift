@@ -560,7 +560,7 @@ struct True3DModelScreen: View {
             return "已选边 #\(edge.edgeIndex) · 点左侧圆角/倒角设置参数"
         }
         if pendingFaceExtrude {
-            return "先轻点一个朝上的面，再设置拉伸参数"
+            return "先轻点一个平面，再设置拉伸参数"
         }
         return pickMode == .edge ? "轻点边线选择，点左侧命令打开参数框" : "轻点面选择，点左侧命令打开参数框"
     }
@@ -1877,47 +1877,55 @@ struct True3DModelScreen: View {
         fill.light?.intensity = 350
         fill.light?.color = UIColor(red: 0.72, green: 0.80, blue: 0.90, alpha: 1)
         newScene.rootNode.addChildNode(fill)
-        addAxisGizmo(to: root, size: maxSizeFinal)
+        addAxisGizmo(to: root, size: maxSizeFinal, center: SCNVector3(0, Float(maxHeight / 2), 0))
         return newScene
     }
 
-    private func addAxisGizmo(to parent: SCNNode, size: Double) {
-        let length = Float(min(max(size * 0.36, 12), 42))
+    private func addAxisGizmo(to parent: SCNNode, size: Double, center: SCNVector3) {
+        let length = Float(min(max(size * 0.38, 18), 48))
+        let shaftRadius: CGFloat = 0.9
+        let headRadius: CGFloat = 2.4
+        let headHeight: CGFloat = 6.5
         let group = SCNNode()
         group.name = "axisGizmo"
-        group.position = SCNVector3(-Float(size * 0.60), -Float(size * 0.60), 0)
+        group.position = center
 
-        func shaft(_ color: UIColor, _ position: SCNVector3, _ euler: SCNVector3) {
-            let box = SCNBox(width: CGFloat(length), height: 0.5, length: 0.5, chamferRadius: 0)
+        func overlayMaterial(_ color: UIColor) -> SCNMaterial {
             let material = SCNMaterial()
             material.lightingModel = .constant
             material.diffuse.contents = color
-            box.materials = [material]
-            let node = SCNNode(geometry: box)
+            material.readsFromDepthBuffer = false
+            material.writesToDepthBuffer = false
+            return material
+        }
+
+        func shaft(_ color: UIColor, _ position: SCNVector3, _ euler: SCNVector3) {
+            let cylinder = SCNCylinder(radius: shaftRadius, height: CGFloat(length))
+            cylinder.materials = [overlayMaterial(color)]
+            let node = SCNNode(geometry: cylinder)
             node.position = position
             node.eulerAngles = euler
+            node.renderingOrder = 40
             group.addChildNode(node)
         }
 
         func head(_ color: UIColor, _ position: SCNVector3, _ euler: SCNVector3) {
-            let cone = SCNCone(topRadius: 0, bottomRadius: 1.8, height: 5)
-            let material = SCNMaterial()
-            material.lightingModel = .constant
-            material.diffuse.contents = color
-            cone.materials = [material]
+            let cone = SCNCone(topRadius: 0, bottomRadius: headRadius, height: headHeight)
+            cone.materials = [overlayMaterial(color)]
             let node = SCNNode(geometry: cone)
             node.position = position
             node.eulerAngles = euler
+            node.renderingOrder = 41
             group.addChildNode(node)
         }
 
         func label(_ text: String, _ color: UIColor, _ position: SCNVector3) {
-            let side: CGFloat = 64
+            let side: CGFloat = 80
             let image = UIGraphicsImageRenderer(size: CGSize(width: side, height: side)).image { context in
                 UIColor.clear.setFill()
                 context.fill(CGRect(x: 0, y: 0, width: side, height: side))
                 let attributes: [NSAttributedString.Key: Any] = [
-                    .font: UIFont.systemFont(ofSize: 52, weight: .heavy),
+                    .font: UIFont.systemFont(ofSize: 58, weight: .heavy),
                     .foregroundColor: color
                 ]
                 let string = text as NSString
@@ -1927,36 +1935,46 @@ struct True3DModelScreen: View {
                     withAttributes: attributes
                 )
             }
-            let plane = SCNPlane(width: 7, height: 7)
+            let plane = SCNPlane(width: 9.5, height: 9.5)
             let material = SCNMaterial()
             material.lightingModel = .constant
             material.diffuse.contents = image
             material.isDoubleSided = true
             material.transparencyMode = .aOne
+            material.readsFromDepthBuffer = false
+            material.writesToDepthBuffer = false
             plane.materials = [material]
             let node = SCNNode(geometry: plane)
             node.position = position
+            node.renderingOrder = 42
             let billboard = SCNBillboardConstraint()
             billboard.freeAxes = .all
             node.constraints = [billboard]
             group.addChildNode(node)
         }
 
-        let xColor = UIColor.systemRed
-        let yColor = UIColor.systemGreen
-        let zColor = UIColor.systemBlue
+        let xColor = UIColor(red: 0.92, green: 0.18, blue: 0.16, alpha: 1)
+        let yColor = UIColor(red: 0.10, green: 0.64, blue: 0.26, alpha: 1)
+        let zColor = UIColor(red: 0.08, green: 0.38, blue: 0.94, alpha: 1)
 
-        shaft(xColor, SCNVector3(length / 2, 0, 0), SCNVector3(0, 0, 0))
-        head(xColor, SCNVector3(length, 0, 0), SCNVector3(0, 0, -Float.pi / 2))
-        label("X", xColor, SCNVector3(length + 5, -1, 0))
+        // 圆柱/圆锥的轴默认沿 +Y；用欧拉角旋到 X/Y/Z。
+        shaft(xColor, SCNVector3(length / 2, 0, 0), SCNVector3(0, 0, -Float.pi / 2))
+        head(xColor, SCNVector3(length + headHeight * 0.42, 0, 0), SCNVector3(0, 0, -Float.pi / 2))
+        label("X", xColor, SCNVector3(length + 10, -1, 0))
 
-        shaft(yColor, SCNVector3(0, length / 2, 0), SCNVector3(0, 0, Float.pi / 2))
-        head(yColor, SCNVector3(0, length, 0), SCNVector3(0, 0, 0))
-        label("Y", yColor, SCNVector3(-1, length + 5, 0))
+        shaft(yColor, SCNVector3(0, length / 2, 0), SCNVector3(0, 0, 0))
+        head(yColor, SCNVector3(0, length + headHeight * 0.42, 0), SCNVector3(0, 0, 0))
+        label("Y", yColor, SCNVector3(-1, length + 10, 0))
 
         shaft(zColor, SCNVector3(0, 0, length / 2), SCNVector3(Float.pi / 2, 0, 0))
-        head(zColor, SCNVector3(0, 0, length), SCNVector3(Float.pi / 2, 0, 0))
-        label("Z", zColor, SCNVector3(-1, -1, length + 5))
+        head(zColor, SCNVector3(0, 0, length + headHeight * 0.42), SCNVector3(Float.pi / 2, 0, 0))
+        label("Z", zColor, SCNVector3(-1, -1, length + 10))
+
+        let origin = SCNSphere(radius: 2.1)
+        origin.materials = [overlayMaterial(UIColor(red: 0.20, green: 0.23, blue: 0.28, alpha: 1))]
+        let originNode = SCNNode(geometry: origin)
+        originNode.renderingOrder = 39
+        group.addChildNode(originNode)
 
         parent.addChildNode(group)
     }
@@ -3176,6 +3194,13 @@ struct True3DModelScreen: View {
                 rows.append(AnyView(numRow("中心 X", f.x)))
                 rows.append(AnyView(numRow("中心 Y", f.y)))
             }
+        case .faceBoss:
+            rows.append(AnyView(Text("已选面 #\(f.wrappedValue.faceIndex ?? 0) · 外轮廓 \(f.wrappedValue.faceProfile?.count ?? 0) 点")
+                .font(.system(size: 11)).foregroundStyle(.secondary)))
+            rows.append(AnyView(Text("面中心 X \(fmt(f.wrappedValue.x))  Y \(fmt(f.wrappedValue.y))  Z \(fmt(f.wrappedValue.topZ ?? 0))")
+                .font(.system(size: 10)).foregroundStyle(.secondary)))
+            rows.append(AnyView(numRow("拉伸高度", f.bossHeight)))
+            rows.append(AnyView(Text("方向：沿所选面的外法向").font(.system(size: 10)).foregroundStyle(.secondary)))
         case .profileBoss:
             rows.append(AnyView(Text("草图轮廓：\(f.wrappedValue.profile.count) 个点").font(.system(size: 11)).foregroundStyle(.secondary)))
             rows.append(AnyView(numRow("拉伸高度", f.bossHeight)))
@@ -3270,6 +3295,7 @@ struct True3DModelScreen: View {
         case .slot: return "capsule"
         case .profileBoss: return "square.3.layers.3d"
         case .profileCut: return "square.3.layers.3d.down.right"
+        case .faceBoss: return "arrow.up.to.line"
         }
     }
 
@@ -3321,6 +3347,8 @@ struct True3DModelScreen: View {
             f.name = "草图凸台"; f.bossHeight = 5
         case .profileCut:
             f.name = "草图切除"; f.depth = 5
+        case .faceBoss:
+            f.name = "面拉伸"; f.bossHeight = 5
         }
         return f
     }
@@ -3348,7 +3376,7 @@ struct True3DModelScreen: View {
         pendingFaceExtrude = true
         selectedFace = nil
         scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
-        notice = "拉伸：先选择一个朝上的平面"
+        notice = "拉伸：先选择一个平面（顶面或侧面）"
     }
 
     private func openEdgeDrawer(chamfer: Bool) {
@@ -3386,6 +3414,7 @@ struct True3DModelScreen: View {
         case .rectBoss where draft.name == "拉伸凸台": return "拉伸参数"
         case .edgeFillet: return "圆角参数"
         case .edgeChamfer: return "倒角参数"
+        case .faceBoss: return "面拉伸参数"
         default: return draft.name.isEmpty ? draft.kind.rawValue : draft.name
         }
     }
@@ -3465,7 +3494,7 @@ struct True3DModelScreen: View {
             f.name = "新方腔"; f.x = params.width * 0.25; f.y = -params.depth * 0.2; f.width = 24; f.depthY = 18
         case .slot:
             f.name = "新腰形槽"; f.x = 0; f.y = -params.depth * 0.25; f.width = 40; f.depthY = 12
-        case .profileBoss, .profileCut:
+        case .profileBoss, .profileCut, .faceBoss:
             return
         }
         params.features.append(f)
@@ -3870,7 +3899,7 @@ struct True3DModelScreen: View {
         }
 
         if pickMode == .face {
-            selectFace(hit)
+            selectFace(hit, rayDirection: direction)
             return
         }
 
@@ -3929,68 +3958,168 @@ struct True3DModelScreen: View {
         highlightSelectedEdge(modelRoot: modelRoot, edge: edge)
     }
 
-    private func selectFace(_ hit: OCCTSwift.RayHit) {
+    private func selectFace(_ hit: OCCTSwift.RayHit, rayDirection: SIMD3<Double>) {
         guard let result else { return }
-        let face = result.shape.face(at: hit.faceIndex)
-        let bounds = face?.bounds
+        guard let face = result.shape.face(at: hit.faceIndex) else {
+            error = "没有取到所选面，请重新轻点"
+            return
+        }
+        guard face.isPlanar else {
+            error = "面拉伸只支持平面；曲面请用草图/旋转体"
+            return
+        }
+        let outline = faceOutline(face)
+        guard outline.count >= 3 else {
+            error = "没有取到面的闭合轮廓，请重新轻点"
+            return
+        }
+        let bounds = face.bounds
         let sizeX = bounds.map { $0.max.x - $0.min.x } ?? 20
         let sizeY = bounds.map { $0.max.y - $0.min.y } ?? 20
+        var normal = face.normal ?? hit.normal
+        let normalLength = (normal.x * normal.x + normal.y * normal.y + normal.z * normal.z).squareRoot()
+        if normalLength < 1e-9 {
+            error = "这个面没有有效法向，请换一个面"
+            return
+        }
+        normal /= normalLength
+        // 射线从相机射向实体，外法向应与射线方向相反；翻错时纠正。
+        if normal.x * rayDirection.x + normal.y * rayDirection.y + normal.z * rayDirection.z > 0 {
+            normal = -normal
+        }
+
         selectedFace = True3DFaceSelection(
             faceIndex: hit.faceIndex,
             point: hit.point,
-            normal: hit.normal,
+            normal: normal,
             sizeX: max(sizeX, 1),
             sizeY: max(sizeY, 1)
         )
-
-        scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
-        if let modelRoot = scene.rootNode.childNode(withName: "modelRoot", recursively: false) {
-            let marker = SCNNode()
-            marker.name = "selectedFace"
-            marker.position = SCNVector3(Float(hit.point.x), Float(hit.point.y), Float(hit.point.z) + 0.15)
-            if hit.normal.z > 0.5 {
-                let plane = SCNPlane(width: CGFloat(min(sizeX * 0.94, 80)), height: CGFloat(min(sizeY * 0.94, 80)))
-                let material = SCNMaterial()
-                material.lightingModel = .constant
-                material.diffuse.contents = UIColor(red: 0.12, green: 0.46, blue: 0.95, alpha: 1)
-                material.transparency = 0.22
-                material.isDoubleSided = true
-                material.writesToDepthBuffer = false
-                plane.materials = [material]
-                marker.geometry = plane
-                marker.renderingOrder = 20
-            } else {
-                let sphere = SCNSphere(radius: 1.8)
-                let material = SCNMaterial()
-                material.lightingModel = .constant
-                material.diffuse.contents = UIColor(red: 0.12, green: 0.46, blue: 0.95, alpha: 1)
-                sphere.materials = [material]
-                marker.geometry = sphere
-            }
-            modelRoot.addChildNode(marker)
-        }
+        selectedEdge = nil
+        selectedFeatureID = nil
+        scene.rootNode.childNode(withName: "selectedEdge", recursively: true)?.removeFromParentNode()
+        addFaceHighlight(outline: outline, normal: normal)
 
         if pendingFaceExtrude {
-            guard hit.normal.z > 0.5 else {
-                error = "拉伸只支持朝上的平面；请重新选择顶面"
-                return
-            }
-            var draft = True3DFeatureSpec(kind: .rectBoss)
-            draft.name = "拉伸凸台"
+            var draft = True3DFeatureSpec(kind: .faceBoss)
+            draft.name = "面拉伸"
             draft.x = hit.point.x
             draft.y = hit.point.y
             draft.topZ = hit.point.z
-            draft.width = min(max(sizeX * 0.6, 8), 80)
-            draft.depthY = min(max(sizeY * 0.6, 8), 80)
             draft.bossHeight = 5
+            draft.faceProfile = outline
+            draft.faceNormal = True3DPoint3D(x: normal.x, y: normal.y, z: normal.z)
+            draft.faceIndex = hit.faceIndex
             draftFeature = draft
             showFeatureDrawer = true
             pendingFaceExtrude = false
             pickMode = .face
-            notice = "已选择面 #\(hit.faceIndex)，可设置拉伸尺寸与 XYZ"
+            error = nil
+            notice = "已选择面 #\(hit.faceIndex)，可设置拉伸高度"
         } else {
+            error = nil
             notice = "已选择面 #\(hit.faceIndex) · Z \(fmt(hit.point.z))"
         }
+    }
+
+    private func faceOutline(_ face: OCCTSwift.Face) -> [True3DPoint3D] {
+        guard let wire = face.outerWire, let curve = WireCurve(wire) else { return [] }
+        var points = curve.points(count: 96).map {
+            True3DPoint3D(x: $0.x, y: $0.y, z: $0.z)
+        }
+        guard points.count >= 3 else { return [] }
+        if let first = points.first, let last = points.last,
+           hypot(hypot(first.x - last.x, first.y - last.y), first.z - last.z) < 1e-4 {
+            points.removeLast()
+        }
+        var cleaned: [True3DPoint3D] = []
+        for p in points {
+            if let last = cleaned.last,
+               hypot(hypot(p.x - last.x, p.y - last.y), p.z - last.z) < 1e-5 {
+                continue
+            }
+            cleaned.append(p)
+        }
+        // 去掉同一直线上的中间采样点，矩形面只保留四个角。
+        guard cleaned.count >= 4 else { return cleaned }
+        var simplified: [True3DPoint3D] = []
+        for i in 0..<cleaned.count {
+            let prev = cleaned[(i + cleaned.count - 1) % cleaned.count]
+            let cur = cleaned[i]
+            let next = cleaned[(i + 1) % cleaned.count]
+            let ax = cur.x - prev.x, ay = cur.y - prev.y, az = cur.z - prev.z
+            let bx = next.x - cur.x, by = next.y - cur.y, bz = next.z - cur.z
+            let crossX = ay * bz - az * by
+            let crossY = az * bx - ax * bz
+            let crossZ = ax * by - ay * bx
+            let crossLen = (crossX * crossX + crossY * crossY + crossZ * crossZ).squareRoot()
+            let aLen = (ax * ax + ay * ay + az * az).squareRoot()
+            let bLen = (bx * bx + by * by + bz * bz).squareRoot()
+            let dot = ax * bx + ay * by + az * bz
+            if crossLen < 1e-4 * max(aLen * bLen, 1e-9) && dot >= 0 { continue }
+            simplified.append(cur)
+        }
+        return simplified.count >= 3 ? simplified : cleaned
+    }
+
+    private func addFaceHighlight(outline: [True3DPoint3D], normal: SIMD3<Double>) {
+        scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
+        guard let modelRoot = scene.rootNode.childNode(withName: "modelRoot", recursively: false),
+              outline.count >= 3 else { return }
+
+        let centroid = SIMD3<Double>(
+            outline.reduce(0) { $0 + $1.x } / Double(outline.count),
+            outline.reduce(0) { $0 + $1.y } / Double(outline.count),
+            outline.reduce(0) { $0 + $1.z } / Double(outline.count)
+        )
+        var vertices = outline.map {
+            SCNVector3(Float($0.x), Float($0.y), Float($0.z))
+        }
+        vertices.append(SCNVector3(Float(centroid.x), Float(centroid.y), Float(centroid.z)))
+        var indices: [Int32] = []
+        for i in 0..<outline.count {
+            indices.append(Int32(outline.count))
+            indices.append(Int32(i))
+            indices.append(Int32((i + 1) % outline.count))
+        }
+        let source = SCNGeometrySource(vertices: vertices)
+        let element = SCNGeometryElement(indices: indices, primitiveType: .triangles)
+        let geometry = SCNGeometry(sources: [source], elements: [element])
+        let material = SCNMaterial()
+        material.lightingModel = .constant
+        material.diffuse.contents = UIColor(red: 0.20, green: 0.52, blue: 1.0, alpha: 1)
+        material.transparency = 0.34
+        material.isDoubleSided = true
+        material.writesToDepthBuffer = false
+        geometry.materials = [material]
+
+        let marker = SCNNode(geometry: geometry)
+        marker.name = "selectedFace"
+        marker.position = SCNVector3(
+            Float(normal.x * 0.08),
+            Float(normal.y * 0.08),
+            Float(normal.z * 0.08)
+        )
+        marker.renderingOrder = 20
+        modelRoot.addChildNode(marker)
+
+        var lineIndices: [Int32] = []
+        for i in 0..<outline.count {
+            lineIndices.append(Int32(i))
+            lineIndices.append(Int32((i + 1) % outline.count))
+        }
+        let lineElement = SCNGeometryElement(indices: lineIndices, primitiveType: .line)
+        lineElement.lineWidth = 3
+        let lineGeometry = SCNGeometry(sources: [source], elements: [lineElement])
+        let lineMaterial = SCNMaterial()
+        lineMaterial.lightingModel = .constant
+        lineMaterial.diffuse.contents = UIColor(red: 0.08, green: 0.34, blue: 0.90, alpha: 1)
+        lineMaterial.isDoubleSided = true
+        lineGeometry.materials = [lineMaterial]
+        let outlineNode = SCNNode(geometry: lineGeometry)
+        outlineNode.name = "selectedFaceOutline"
+        outlineNode.renderingOrder = 21
+        marker.addChildNode(outlineNode)
     }
 
     private func highlightSelectedEdge(modelRoot: SCNNode, edge: OCCTSwift.Edge) {
@@ -4276,7 +4405,7 @@ struct True3DModelScreen: View {
         fill.light?.intensity = 350
         fill.light?.color = UIColor(red: 0.72, green: 0.80, blue: 0.90, alpha: 1)
         newScene.rootNode.addChildNode(fill)
-        addAxisGizmo(to: modelRoot, size: maxSize)
+        addAxisGizmo(to: modelRoot, size: maxSize, center: meshCenter)
         return newScene
     }
 
@@ -4668,6 +4797,7 @@ struct True3DSceneView: UIViewRepresentable {
         private var panStartDistance: Float = 0
         private var panStartYaw: Double = 0
         private var panStartPitch: Double = 0
+        private var pinchStartDistance: Float = 0
 
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
             guard let view = gesture.view as? SCNView else { return }
@@ -4715,6 +4845,39 @@ struct True3DSceneView: UIViewRepresentable {
             }
         }
 
+        @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+            guard let view = gesture.view as? SCNView,
+                  let scene = view.scene,
+                  let camera = scene.rootNode.childNode(withName: "workbenchCamera", recursively: true),
+                  let target = scene.rootNode.childNode(withName: "cameraTarget", recursively: true) else { return }
+            if gesture.state == .began {
+                let dx = camera.position.x - target.position.x
+                let dy = camera.position.y - target.position.y
+                let dz = camera.position.z - target.position.z
+                pinchStartDistance = max((dx * dx + dy * dy + dz * dz).squareRoot(), 0.001)
+            }
+            guard gesture.state == .changed || gesture.state == .ended,
+                  pinchStartDistance > 0.001 else { return }
+
+            let dx = camera.position.x - target.position.x
+            let dy = camera.position.y - target.position.y
+            let dz = camera.position.z - target.position.z
+            let length = max((dx * dx + dy * dy + dz * dz).squareRoot(), 0.001)
+            let scale = max(Float(gesture.scale), 0.01)
+            let newDistance = min(max(pinchStartDistance / scale, 8), 1200)
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = 0
+            camera.position = SCNVector3(
+                target.position.x + dx / length * newDistance,
+                target.position.y + dy / length * newDistance,
+                target.position.z + dz / length * newDistance
+            )
+            SCNTransaction.commit()
+            if gesture.state == .ended {
+                pinchStartDistance = 0
+            }
+        }
+
         func gestureRecognizer(
             _ gestureRecognizer: UIGestureRecognizer,
             shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
@@ -4750,6 +4913,10 @@ struct True3DSceneView: UIViewRepresentable {
             pan.maximumNumberOfTouches = 1
             pan.delegate = context.coordinator
             view.addGestureRecognizer(pan)
+
+            let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePinch(_:)))
+            pinch.delegate = context.coordinator
+            view.addGestureRecognizer(pinch)
         }
         context.coordinator.onPickEdge = onPickEdge
         return view
