@@ -436,6 +436,7 @@ struct True3DPathPreview: View {
     @State private var pitch: Double = 0.52
     @State private var zoom: CGFloat = 1.0
     @State private var zoomStart: CGFloat? = nil
+    @State private var lastDrag: CGSize = .zero
 
     private let cutColor = Color(red: 1.0, green: 0.45, blue: 0.10)
     private let rapidColor = Color(red: 0.48, green: 0.56, blue: 0.66)
@@ -609,9 +610,13 @@ struct True3DPathPreview: View {
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { v in
-                    yaw -= Double(v.translation.width) * 0.01
-                    pitch = min(1.18, max(-0.35, pitch + Double(v.translation.height) * 0.008))
+                    let dx = v.translation.width - lastDrag.width
+                    let dy = v.translation.height - lastDrag.height
+                    lastDrag = v.translation
+                    yaw -= Double(dx) * 0.01
+                    pitch = min(1.18, max(-0.35, pitch + Double(dy) * 0.008))
                 }
+                .onEnded { _ in lastDrag = .zero }
         )
         .simultaneousGesture(
             MagnificationGesture()
