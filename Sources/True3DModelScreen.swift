@@ -954,6 +954,7 @@ struct True3DModelScreen: View {
         .frame(width: min(340, UIScreen.main.bounds.width * 0.86), alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(SwiftUI.Color.white.opacity(0.5), lineWidth: 0.5))
+    )
     }
 
     private func edgeDrawerFields(_ draft: True3DFeatureSpec) -> AnyView {
