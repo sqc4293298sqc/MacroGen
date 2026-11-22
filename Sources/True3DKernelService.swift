@@ -97,6 +97,41 @@ actor True3DKernelService {
         )
     }
 
+    func previewVariableFillet(
+        on shape: Shape,
+        edge: Edge,
+        radius1: Double,
+        radius2: Double
+    ) async throws -> True3DPreview {
+        try Task.checkCancellation()
+        guard radius1 > 0, radius2 > 0 else {
+            throw True3DModelError.invalidParameter("变半径圆角两端半径必须大于 0")
+        }
+        guard let builder = FilletBuilder(shape: shape) else {
+            throw True3DModelError.previewFailed("无法创建圆角构建器")
+        }
+        guard builder.addEdge(edge, radius1: radius1, radius2: radius2),
+              builder.contour(for: edge) > 0 else {
+            throw True3DModelError.previewFailed(
+                "这条边不能加变半径 R\(fmt(radius1))→R\(fmt(radius2))"
+            )
+        }
+        guard builder.faultyContourCount == 0, builder.faultyVertexCount == 0,
+              let result = builder.build(), result.isValid else {
+            throw True3DModelError.previewFailed("变半径圆角失败：半径可能超过实体允许范围")
+        }
+        try Task.checkCancellation()
+        guard let mesh = result.mesh(linearDeflection: 0.18, angularDeflection: 0.35) else {
+            throw True3DModelError.previewFailed("变半径圆角预览三角化失败")
+        }
+        try Task.checkCancellation()
+        return True3DPreview(
+            shape: result,
+            mesh: mesh,
+            stats: True3DStats.measure(shape: result, mesh: mesh)
+        )
+    }
+
     /// 倒角预览。与圆角同一套单边链路，距离对称。
     func previewChamfer(
         on shape: Shape,

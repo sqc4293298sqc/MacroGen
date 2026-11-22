@@ -123,6 +123,8 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
     /// 草图拉伸的起点/终点偏移，相对草图所在平面；正值朝 +Z。
     var profileStartOffset: Double? = nil
     var profileEndOffset: Double? = nil
+    /// 变半径圆角的末端半径；nil 表示等半径。
+    var filletRadius2: Double? = nil
     var cornerRadius: Double = 0
     /// 草图拉伸特征的闭合轮廓，坐标是基础块坐标系（mm）。
     var profile: [True3DPoint] = []

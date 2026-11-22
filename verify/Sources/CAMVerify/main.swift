@@ -190,6 +190,18 @@ do {
     }
     print("PASS history: suppressed operation node retained")
 
+    var variableDocument = document
+    variableDocument.append(True3DHistoryOperation(kind: .variableFillet(
+        edge: ref, radius1: 1.2, radius2: 2.4
+    )))
+    let variable = try variableDocument.build()
+    guard variable.stats.valid, variable.nodes.count == 2,
+          variable.nodes[1].kind == .fillet,
+          variable.nodes[1].name == "变半径圆角" else {
+        fail("history-variable-fillet: variable radius did not build")
+    }
+    print("PASS history-variable-fillet: faces=\(variable.stats.faces)")
+
     var moveDocument = document
     moveDocument.append(True3DHistoryOperation(kind: .translate(dx: 20, dy: 0, dz: 0, copy: false)))
     let moved = try moveDocument.build()

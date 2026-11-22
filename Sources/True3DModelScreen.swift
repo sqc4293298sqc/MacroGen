@@ -91,8 +91,11 @@ struct True3DModelScreen: View {
     @State private var isPreviewingMove = false
     @State private var movePreviewError: String?
     @State private var filletRadius: Double = 2
+    @State private var filletRadius2: Double = 2
+    @State private var filletVariable = false
     @State private var filletPreview: True3DPreview?
     @State private var filletPreviewRadius: Double?
+    @State private var filletPreviewRadius2: Double?
     @State private var edgeFeatureIsChamfer = false
     @State private var viewOrientation: True3DViewOrientation = .iso
     @State private var orbitYaw: Double = 45
@@ -1150,6 +1153,25 @@ struct True3DModelScreen: View {
             }
             Text(draft.kind == .edgeChamfer ? "倒角方式：等距离" : "连续性：G1，等半径")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
+            if draft.kind == .edgeFillet && selectedEdges.count <= 1 {
+                Toggle("变半径（起点→终点）", isOn: Binding(
+                    get: { filletVariable },
+                    set: { on in
+                        filletVariable = on
+                        draftFeature?.filletRadius2 = on ? max(filletRadius2, 0.2) : nil
+                        scheduleFilletPreview()
+                    }
+                ))
+                .font(.system(size: 12))
+                if filletVariable {
+                    numRow("末端 R2", Binding(
+                        get: { filletRadius2 },
+                        set: { filletRadius2 = max($0, 0.2); draftFeature?.filletRadius2 = filletRadius2; scheduleFilletPreview() }
+                    ))
+                    Text("R1 是起点半径，R2 是终点半径；只对单条边生效。")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+            }
         })
     }
 
@@ -3681,6 +3703,8 @@ struct True3DModelScreen: View {
         if selectedEdges.isEmpty, let edge = selectedEdge { selectedEdges = [edge] }
         beginDraftPreviewSession()
         edgeFeatureIsChamfer = chamfer
+        filletVariable = false
+        filletRadius2 = max(filletRadius, 0.2)
         var f = True3DFeatureSpec(kind: chamfer ? .edgeChamfer : .edgeFillet)
         f.name = chamfer ? "边倒角" : "边圆角"
         f.depth = max(filletRadius, 0.2)
@@ -3967,8 +3991,15 @@ struct True3DModelScreen: View {
             let requested = max(draft.depth, 0.1)
             let maxAllowed = validRefs.map { maximumBlendSize(for: $0) }.min() ?? requested
             let size = min(requested, maxAllowed)
-            let clamped = abs(size - requested) > 0.01
-            if validRefs.count == 1, let edge = validRefs.first {
+            let variable = draft.kind == .edgeFillet && validRefs.count == 1 && draft.filletRadius2 != nil
+            let requested2 = max(draft.filletRadius2 ?? size, 0.1)
+            let size2 = min(requested2, maxAllowed)
+            let clamped = abs(size - requested) > 0.01 || (variable && abs(size2 - requested2) > 0.01)
+            if variable, let edge = validRefs.first {
+                modelOperations.append(True3DHistoryOperation(kind: .variableFillet(
+                    edge: edge, radius1: size, radius2: size2
+                )))
+            } else if validRefs.count == 1, let edge = validRefs.first {
                 if draft.kind == .edgeFillet {
                     modelOperations.append(True3DHistoryOperation(kind: .fillet(edge: edge, radius: size)))
                 } else {
@@ -4393,6 +4424,14 @@ struct True3DModelScreen: View {
             scheduleFilletPreview()
             return
         }
+        let variable = !edgeFeatureIsChamfer && refs.count == 1 && filletVariable
+        if variable, filletRadius2 > maxBlend {
+            filletRadius2 = maxBlend
+            draftFeature?.filletRadius2 = maxBlend
+            error = "变半径 R2 超出这条边的上限，已自动改为 \(fmt(maxBlend)) mm"
+            scheduleFilletPreview()
+            return
+        }
 
         captureCameraOrbit()
         clearFilletPreview(restoreScene: true)
@@ -4413,6 +4452,13 @@ struct True3DModelScreen: View {
                         edges: edges,
                         distance: radius
                     )
+                } else if variable, let edge = edges.first {
+                    preview = try await self.kernelService.previewVariableFillet(
+                        on: shape,
+                        edge: edge,
+                        radius1: radius,
+                        radius2: self.filletRadius2
+                    )
                 } else {
                     preview = try await self.kernelService.previewFillet(
                         on: shape,
@@ -4424,12 +4470,15 @@ struct True3DModelScreen: View {
                 self.captureCameraOrbit()
                 self.filletPreview = preview
                 self.filletPreviewRadius = radius
+                self.filletPreviewRadius2 = variable ? self.filletRadius2 : nil
                 self.scene = self.makePreviewScene(preview)
                 self.applyOrbit()
                 self.isPreviewingFillet = false
                 self.message = (self.edgeFeatureIsChamfer
                     ? "倒角预览 C\(String(format: "%.2f", radius))"
-                    : "圆角预览 R\(String(format: "%.2f", radius))")
+                    : variable
+                        ? "变半径圆角 R\(String(format: "%.2f", radius))→R\(String(format: "%.2f", self.filletRadius2))"
+                        : "圆角预览 R\(String(format: "%.2f", radius))")
                     + " · \(edges.count) 条边"
             } catch is CancellationError {
                 guard generation == self.filletPreviewGeneration else { return }
@@ -4449,6 +4498,7 @@ struct True3DModelScreen: View {
               filletRadius > 0,
               filletPreview != nil,
               (filletPreviewRadius ?? -1) == filletRadius,
+              (!filletVariable || (filletPreviewRadius2 ?? -1) == filletRadius2),
               !isDirty,
               !isPreviewingFillet,
               !isBuilding else {
@@ -4458,6 +4508,12 @@ struct True3DModelScreen: View {
             if edgeFeatureIsChamfer {
                 modelOperations.append(
                     True3DHistoryOperation(kind: .chamfer(edge: edge, distance: filletRadius))
+                )
+            } else if filletVariable && (filletPreviewRadius2 ?? -1) == filletRadius2 {
+                modelOperations.append(
+                    True3DHistoryOperation(kind: .variableFillet(
+                        edge: edge, radius1: filletRadius, radius2: filletRadius2
+                    ))
                 )
             } else {
                 modelOperations.append(
@@ -4489,6 +4545,7 @@ struct True3DModelScreen: View {
         filletPreviewTask = nil
         filletPreview = nil
         filletPreviewRadius = nil
+        filletPreviewRadius2 = nil
         isPreviewingFillet = false
         if restoreScene, hadPreview, let result {
             scene = makeScene(result: result)
