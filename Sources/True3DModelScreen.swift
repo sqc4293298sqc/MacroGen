@@ -78,7 +78,7 @@ struct True3DModelScreen: View {
     @State private var selectedEdges: [True3DEdgeRef] = []
     @State private var selectedFace: True3DFaceSelection?
     @State private var pickMode: True3DPickMode = .edge
-    @State private var edgePickRule = 0
+    @State private var edgePickRule = 1
     @State private var pendingFaceExtrude = false
     @State private var draftFeature: True3DFeatureSpec?
     @State private var showFeatureDrawer = false
@@ -506,6 +506,13 @@ struct True3DModelScreen: View {
                         quickEditAxis = axis
                         quickEditValue = axis == "X" ? moveX : (axis == "Y" ? moveY : moveZ)
                     }
+                },
+                onOrbitChanged: { yaw, pitch in
+                    orbitYaw = yaw
+                    orbitPitch = pitch
+                },
+                onOrbitDistanceChanged: { distance in
+                    orbitDistance = distance
                 }
             )
             .ignoresSafeArea()
@@ -3979,7 +3986,7 @@ struct True3DModelScreen: View {
         if showMoveDrawer { cancelMoveDrawer() }
         if showMoveFaceDrawer { cancelMoveFaceDrawer() }
         if selectedEdges.isEmpty, let edge = selectedEdge { selectedEdges = [edge] }
-        edgePickRule = selectedEdges.count > 1 ? 1 : 0
+        edgePickRule = 1
         beginDraftPreviewSession()
         edgeFeatureIsChamfer = chamfer
         filletVariable = false
@@ -5148,11 +5155,15 @@ struct True3DModelScreen: View {
               !isBuilding,
               !importBusy,
               !isDirty,
-              filletPreview == nil,
-              !isPreviewingFillet,
               let result else { return }
-        guard let scene = view.scene,
-              let modelRoot = scene.rootNode.childNode(withName: "modelRoot", recursively: false) else {
+        if filletPreview != nil || isPreviewingFillet {
+            clearFilletPreview(restoreScene: true)
+            view.scene = scene
+            if let camera = scene.rootNode.childNode(withName: "workbenchCamera", recursively: true) {
+                view.pointOfView = camera
+            }
+        }
+        guard let modelRoot = scene.rootNode.childNode(withName: "modelRoot", recursively: false) else {
             return
         }
 
@@ -5769,7 +5780,7 @@ struct True3DModelScreen: View {
         modelRoot.name = "modelRoot"
         modelRoot.eulerAngles.x = -Float.pi / 2
         newScene.rootNode.addChildNode(modelRoot)
-        let geometry = mesh.sceneKitGeometry()
+        let geometry = flatShadedGeometry(mesh)
         let material = SCNMaterial()
         material.lightingModel = .physicallyBased
         material.diffuse.contents = materialColor
@@ -5835,6 +5846,61 @@ struct True3DModelScreen: View {
         newScene.rootNode.addChildNode(fill)
         addAxisGizmo(to: modelRoot, size: maxSize, center: meshCenter)
         return newScene
+    }
+
+    private func flatShadedGeometry(_ mesh: Mesh) -> SCNGeometry {
+        let vertices = mesh.vertices
+        let indices = mesh.indices
+        let smoothNormals = mesh.normals
+        guard !vertices.isEmpty, !indices.isEmpty else { return mesh.sceneKitGeometry() }
+        var flatVertices: [SCNVector3] = []
+        var flatNormals: [SCNVector3] = []
+        flatVertices.reserveCapacity(indices.count)
+        flatNormals.reserveCapacity(indices.count)
+        var i = 0
+        while i + 2 < indices.count {
+            let ia = Int(indices[i]), ib = Int(indices[i + 1]), ic = Int(indices[i + 2])
+            guard ia < vertices.count, ib < vertices.count, ic < vertices.count else {
+                i += 3
+                continue
+            }
+            let a = vertices[ia], b = vertices[ib], c = vertices[ic]
+            let ab = SIMD3<Float>(b.x - a.x, b.y - a.y, b.z - a.z)
+            let ac = SIMD3<Float>(c.x - a.x, c.y - a.y, c.z - a.z)
+            var normal = SIMD3<Float>(
+                ab.y * ac.z - ab.z * ac.y,
+                ab.z * ac.x - ab.x * ac.z,
+                ab.x * ac.y - ab.y * ac.x
+            )
+            let length = (normal.x * normal.x + normal.y * normal.y + normal.z * normal.z).squareRoot()
+            if length < 1e-6 {
+                normal = ia < smoothNormals.count ? smoothNormals[ia] : SIMD3<Float>(0, 0, 1)
+            } else {
+                normal = normal / length
+            }
+            for index in [ia, ib, ic] {
+                let vertex = vertices[index]
+                let smooth = index < smoothNormals.count ? smoothNormals[index] : normal
+                let dot = normal.x * smooth.x + normal.y * smooth.y + normal.z * smooth.z
+                let chosen = dot > 0.85 ? smooth : normal
+                flatVertices.append(SCNVector3(vertex.x, vertex.y, vertex.z))
+                flatNormals.append(SCNVector3(chosen.x, chosen.y, chosen.z))
+            }
+            i += 3
+        }
+        guard !flatVertices.isEmpty else { return mesh.sceneKitGeometry() }
+        let vertexSource = SCNGeometrySource(vertices: flatVertices)
+        let normalSource = SCNGeometrySource(normals: flatNormals)
+        var outIndices = [UInt32](repeating: 0, count: flatVertices.count)
+        for index in outIndices.indices { outIndices[index] = UInt32(index) }
+        let indexData = outIndices.withUnsafeBufferPointer { Data(buffer: $0) }
+        let element = SCNGeometryElement(
+            data: indexData,
+            primitiveType: .triangles,
+            primitiveCount: flatVertices.count / 3,
+            bytesPerIndex: MemoryLayout<UInt32>.size
+        )
+        return SCNGeometry(sources: [vertexSource, normalSource], elements: [element])
     }
 
     private func exportSTEP() {
@@ -6208,6 +6274,8 @@ struct True3DSceneView: UIViewRepresentable {
     var onMoveHandleDrag: ((String, Double) -> Void)?
     var onMoveHandleDragEnd: ((String) -> Void)?
     var onMoveHandleDoubleTap: ((String) -> Void)?
+    var onOrbitChanged: ((Double, Double) -> Void)?
+    var onOrbitDistanceChanged: ((Double) -> Void)?
 
     init(
         scene: SCNScene,
@@ -6216,7 +6284,9 @@ struct True3DSceneView: UIViewRepresentable {
         onPickEdge: ((SCNView, CGPoint, CGSize) -> Void)? = nil,
         onMoveHandleDrag: ((String, Double) -> Void)? = nil,
         onMoveHandleDragEnd: ((String) -> Void)? = nil,
-        onMoveHandleDoubleTap: ((String) -> Void)? = nil
+        onMoveHandleDoubleTap: ((String) -> Void)? = nil,
+        onOrbitChanged: ((Double, Double) -> Void)? = nil,
+        onOrbitDistanceChanged: ((Double) -> Void)? = nil
     ) {
         self.scene = scene
         self.showWire = showWire
@@ -6225,6 +6295,8 @@ struct True3DSceneView: UIViewRepresentable {
         self.onMoveHandleDrag = onMoveHandleDrag
         self.onMoveHandleDragEnd = onMoveHandleDragEnd
         self.onMoveHandleDoubleTap = onMoveHandleDoubleTap
+        self.onOrbitChanged = onOrbitChanged
+        self.onOrbitDistanceChanged = onOrbitDistanceChanged
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
@@ -6238,6 +6310,8 @@ struct True3DSceneView: UIViewRepresentable {
         var onMoveHandleDrag: ((String, Double) -> Void)?
         var onMoveHandleDragEnd: ((String) -> Void)?
         var onMoveHandleDoubleTap: ((String) -> Void)?
+        var onOrbitChanged: ((Double, Double) -> Void)?
+        var onOrbitDistanceChanged: ((Double) -> Void)?
         private var moveHandleAxis: String?
         private var moveHandleIsRotate = false
         private var moveHandleNode: SCNNode?
@@ -6396,6 +6470,10 @@ struct True3DSceneView: UIViewRepresentable {
             camera.position = newPosition
             SCNTransaction.commit()
             if gesture.state == .ended {
+                var yawDegrees = yaw * 180 / Double.pi
+                while yawDegrees < -180 { yawDegrees += 360 }
+                while yawDegrees > 180 { yawDegrees -= 360 }
+                onOrbitChanged?(yawDegrees, pitch * 180 / Double.pi)
                 panStartPosition = nil
             }
         }
@@ -6428,6 +6506,9 @@ struct True3DSceneView: UIViewRepresentable {
                 target.position.z + dz / length * newDistance
             )
             SCNTransaction.commit()
+            if gesture.state == .ended {
+                onOrbitDistanceChanged?(Double(newDistance))
+            }
             if gesture.state == .ended {
                 pinchStartDistance = 0
             }
@@ -6487,6 +6568,8 @@ struct True3DSceneView: UIViewRepresentable {
         context.coordinator.onMoveHandleDrag = onMoveHandleDrag
         context.coordinator.onMoveHandleDragEnd = onMoveHandleDragEnd
         context.coordinator.onMoveHandleDoubleTap = onMoveHandleDoubleTap
+        context.coordinator.onOrbitChanged = onOrbitChanged
+        context.coordinator.onOrbitDistanceChanged = onOrbitDistanceChanged
         return view
     }
 
@@ -6500,6 +6583,8 @@ struct True3DSceneView: UIViewRepresentable {
         context.coordinator.onMoveHandleDrag = onMoveHandleDrag
         context.coordinator.onMoveHandleDragEnd = onMoveHandleDragEnd
         context.coordinator.onMoveHandleDoubleTap = onMoveHandleDoubleTap
+        context.coordinator.onOrbitChanged = onOrbitChanged
+        context.coordinator.onOrbitDistanceChanged = onOrbitDistanceChanged
         uiView.scene?.rootNode.enumerateChildNodes { node, _ in
             if node.name == "wireOverlay" {
                 node.isHidden = !showWire
