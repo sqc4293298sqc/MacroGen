@@ -3419,6 +3419,17 @@ struct True3DModelScreen: View {
         }
     }
 
+    private func insertFeatureInSemanticOrder(_ feature: True3DFeatureSpec) {
+        if feature.kind == .shell,
+           let firstCut = params.features.firstIndex(where: {
+               [.hole, .circularPocket, .rectPocket, .slot, .profileCut, .revolveCut].contains($0.kind)
+           }) {
+            params.features.insert(feature, at: firstCut)
+        } else {
+            params.features.append(feature)
+        }
+    }
+
     private func commitFeatureDrawer() {
         guard var draft = draftFeature else { return }
         if draft.kind == .edgeFillet || draft.kind == .edgeChamfer {
@@ -3444,7 +3455,7 @@ struct True3DModelScreen: View {
         draft.name = draft.name.isEmpty ? draft.kind.rawValue : draft.name
         selectedFace = nil
         scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
-        params.features.append(draft)
+        insertFeatureInSemanticOrder(draft)
         selectedFeatureID = draft.id
         pendingFeatureIDs = [draft.id]
         closeFeatureDrawer()
@@ -3455,6 +3466,14 @@ struct True3DModelScreen: View {
     private func addFeature(_ kind: True3DFeatureKind) {
         error = nil
         notice = nil
+        if kind == .edgeFillet, params.edgeMode == .fillet {
+            error = "基础边缘已启用全局圆角；请先把“边缘处理”设为无，或直接调全局 R"
+            return
+        }
+        if kind == .edgeChamfer, params.edgeMode == .chamfer {
+            error = "基础边缘已启用全局倒角；请先把“边缘处理”设为无，或直接调全局 C"
+            return
+        }
         var f = True3DFeatureSpec(kind: kind)
         switch kind {
         case .hole:
@@ -3497,7 +3516,7 @@ struct True3DModelScreen: View {
         case .profileBoss, .profileCut, .faceBoss:
             return
         }
-        params.features.append(f)
+        insertFeatureInSemanticOrder(f)
         selectedFeatureID = f.id
         pendingFeatureIDs = [f.id]
         rebuild()
@@ -3508,13 +3527,20 @@ struct True3DModelScreen: View {
         let rows = max(1, min(patternRows, 8))
         let cols = max(1, min(patternCols, 8))
         let dia = max(patternHoleDia, 0.5)
-        let maxPitchX = max((params.width - dia - 2) / Double(max(cols - 1, 1)), 1)
-        let maxPitchY = max((params.depth - dia - 2) / Double(max(rows - 1, 1)), 1)
-        let pitchX = min(max(patternPitchX, dia + 0.5), maxPitchX)
-        let pitchY = min(max(patternPitchY, dia + 0.5), maxPitchY)
+        let maxPitchX = (params.width - dia - 2) / Double(max(cols - 1, 1))
+        let maxPitchY = (params.depth - dia - 2) / Double(max(rows - 1, 1))
+        let minPitch = dia + 0.5
+        guard maxPitchX >= minPitch, maxPitchY >= minPitch else {
+            error = "基础块太小，放不下 \(rows)×\(cols) 孔阵列"
+            return
+        }
+        let pitchX = min(max(patternPitchX, minPitch), maxPitchX)
+        let pitchY = min(max(patternPitchY, minPitch), maxPitchY)
         let startX = -pitchX * Double(cols - 1) / 2
         let startY = -pitchY * Double(rows - 1) / 2
+        let existingHoles = params.features.filter { $0.kind == .hole && !$0.suppressed }
         var addedIDs: [UUID] = []
+        var skipped = 0
         for r in 0..<rows {
             for c in 0..<cols {
                 var f = True3DFeatureSpec(kind: .hole)
@@ -3523,14 +3549,27 @@ struct True3DModelScreen: View {
                 f.y = startY + Double(r) * pitchY
                 f.dia = dia
                 f.holeKind = .through
+                let overlaps = existingHoles.contains {
+                    hypot($0.x - f.x, $0.y - f.y) < ($0.dia + dia) / 2 + 0.05
+                } || addedIDs.contains { id in
+                    guard let other = params.features.first(where: { $0.id == id }) else { return false }
+                    return hypot(other.x - f.x, other.y - f.y) < (other.dia + dia) / 2 + 0.05
+                }
+                if overlaps { skipped += 1; continue }
                 params.features.append(f)
                 addedIDs.append(f.id)
             }
         }
+        guard !addedIDs.isEmpty else {
+            error = "阵列位置与已有孔重叠，没有可添加的孔"
+            return
+        }
         selectedFeatureID = params.features.last?.id
         pendingFeatureIDs = addedIDs
         rebuild()
-        notice = "已添加 \(rows)×\(cols) 孔阵列，间距 \(fmt(pitchX))×\(fmt(pitchY)) mm"
+        notice = skipped > 0
+            ? "已添加 \(addedIDs.count) 个阵列孔（跳过 \(skipped) 个重叠位置）"
+            : "已添加 \(addedIDs.count) 个阵列孔，间距 \(fmt(pitchX))×\(fmt(pitchY)) mm"
     }
 
     private func addCircularHolePattern() {
@@ -3565,7 +3604,7 @@ struct True3DModelScreen: View {
         feature.id = UUID()
         feature.name += " 副本"
         feature.x += min(max(feature.width, feature.dia) / 2 + 2, 20)
-        params.features.append(feature)
+        insertFeatureInSemanticOrder(feature)
         selectedFeatureID = feature.id
         pendingFeatureIDs = [feature.id]
         rebuild()
@@ -3578,7 +3617,7 @@ struct True3DModelScreen: View {
         feature.name += " 镜像"
         feature.x = -feature.x
         feature.profile = feature.profile.map { True3DPoint(x: -$0.x, y: $0.y) }
-        params.features.append(feature)
+        insertFeatureInSemanticOrder(feature)
         selectedFeatureID = feature.id
         pendingFeatureIDs = [feature.id]
         rebuild()
@@ -3758,6 +3797,23 @@ struct True3DModelScreen: View {
         }
     }
 
+    private func maximumBlendSize(for edgeRef: True3DEdgeRef) -> Double {
+        guard let result else { return 0.2 }
+        var limit = min(params.width, params.depth, params.height) / 2 - 0.05
+        if let edge = result.shape.edge(at: edgeRef.edgeIndex) {
+            limit = min(limit, edge.length / 2 - 0.05)
+        }
+        for faceIndex in edgeRef.adjacentFaceIndices {
+            guard let face = result.shape.face(at: faceIndex) else { continue }
+            for other in face.edges() where other.index != edgeRef.edgeIndex {
+                if other.length > 0.05 {
+                    limit = min(limit, other.length / 2 - 0.05)
+                }
+            }
+        }
+        return max(0.2, limit)
+    }
+
     private func previewFillet() {
         guard let edgeRef = selectedEdge,
               let result,
@@ -3772,6 +3828,12 @@ struct True3DModelScreen: View {
         }
         guard let edge = result.shape.edge(at: edgeRef.edgeIndex) else {
             error = "选中的边已经失效，请重新选边"
+            return
+        }
+        let maxBlend = maximumBlendSize(for: edgeRef)
+        if filletRadius > maxBlend {
+            filletRadius = maxBlend
+            error = "\(edgeFeatureIsChamfer ? "倒角距离" : "R")超出这条边的上限，已自动改为 \(fmt(maxBlend)) mm；请再次预览"
             return
         }
 

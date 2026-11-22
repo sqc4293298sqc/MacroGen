@@ -401,10 +401,16 @@ combo = [hole, boss, pocket]
 comboCases.append(("hole+boss+pocket", combo))
 var combo2: [True3DFeatureSpec] = []
 var pocket2 = True3DFeatureSpec(kind: .rectPocket); pocket2.x = 0; pocket2.y = 0; pocket2.width = 30; pocket2.depthY = 20; pocket2.depth = 3
-combo2.append(pocket2)
 var shell = True3DFeatureSpec(kind: .shell); shell.depth = 1.5
-combo2.append(shell)
-comboCases.append(("pocket+shell", combo2))
+var shellFirst = shell
+var pocketAfter = pocket2
+combo2 = [shellFirst, pocketAfter]
+comboCases.append(("shell+pocket", combo2))
+var combo3: [True3DFeatureSpec] = []
+var pocketThin = pocket2; pocketThin.depth = 1
+var shellThin = shell; shellThin.depth = 1.0
+combo3 = [pocketThin, shellThin]
+comboCases.append(("pocket-depth1+shell-thin", combo3))
 for (name, features) in comboCases {
     var p = True3DParams()
     p.edgeMode = .none

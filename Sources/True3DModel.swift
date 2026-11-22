@@ -529,8 +529,10 @@ enum True3DKernel {
                 return bevel
             }
             let faceEdges: [(edge: Edge, face: Face)] = edges.compactMap { edge in
-                guard let faces = edge.adjacentFaces(in: current) else { return nil }
-                return (edge, faces.0)
+                guard let faces = edge.adjacentFaces(in: current),
+                      let faceIndex = faceIndex(matching: faces.0, in: current),
+                      let face = current.face(at: faceIndex) else { return nil }
+                return (edge, face)
             }
             guard !faceEdges.isEmpty else {
                 throw True3DModelError.featureFailed("\(f.name) 失败：找不到相邻参考面")
@@ -708,16 +710,37 @@ enum True3DKernel {
         }
     }
 
+    private static func faceIndex(matching face: Face, in shape: Shape) -> Int? {
+        if face.index >= 0 { return face.index }
+        guard let normal = face.normal, let bounds = face.bounds else { return nil }
+        let area = face.area()
+        return shape.faces().first(where: { candidate in
+            guard let cn = candidate.normal, let cb = candidate.bounds else { return false }
+            let dot = normal.x * cn.x + normal.y * cn.y + normal.z * cn.z
+            let bboxDelta = abs(cb.min.x - bounds.min.x) + abs(cb.min.y - bounds.min.y)
+                + abs(cb.min.z - bounds.min.z) + abs(cb.max.x - bounds.max.x)
+                + abs(cb.max.y - bounds.max.y) + abs(cb.max.z - bounds.max.z)
+            return dot > 0.999 && bboxDelta < 1e-3 && abs(candidate.area() - area) < 1e-3
+        })?.index
+    }
+
     private static func loftTool(_ f: True3DFeatureSpec, baseHeight h: Double) -> Shape? {
         func wire(shape: True3DLoftShape, radius: Double, width: Double, depth: Double, z: Double) -> Wire? {
-            let base: Wire?
             switch shape {
             case .circle:
-                base = Wire.circle(radius: max(radius, 0.1))
+                return Wire.circle(
+                    origin: SIMD3<Double>(f.x, f.y, z),
+                    normal: SIMD3<Double>(0, 0, 1),
+                    radius: max(radius, 0.1)
+                )
             case .rectangle:
-                base = Wire.rectangle(width: max(width, 0.2), height: max(depth, 0.2))
+                let hw = max(width, 0.2) / 2
+                let hd = max(depth, 0.2) / 2
+                return Wire.polygon3D([
+                    SIMD3(f.x - hw, f.y - hd, z), SIMD3(f.x + hw, f.y - hd, z),
+                    SIMD3(f.x + hw, f.y + hd, z), SIMD3(f.x - hw, f.y + hd, z)
+                ])
             }
-            return base?.offset3D(distance: z, direction: SIMD3<Double>(0, 0, 1))
         }
         guard let bottom = wire(
             shape: f.loftBottomShape,
@@ -745,32 +768,42 @@ enum True3DKernel {
         case .helix:
             guard sectionRadius < pathRadius, f.sweepPitch > 0.01, f.sweepTurns > 0.01 else { return nil }
             guard let helix = Wire.helix(
-                origin: SIMD3<Double>(0, 0, h),
+                origin: SIMD3<Double>(f.x, f.y, h),
                 axis: SIMD3<Double>(0, 0, 1),
                 radius: pathRadius,
                 pitch: f.sweepPitch,
                 turns: f.sweepTurns
             ) else { return nil }
             path = helix
-            start = SIMD3<Double>(pathRadius, 0, h)
+            start = SIMD3<Double>(f.x + pathRadius, f.y, h)
             tangent = normalize3(SIMD3<Double>(0, pathRadius, f.sweepPitch / (2 * .pi)))
         case .circle:
             guard sectionRadius < pathRadius else { return nil }
-            guard let circle = Wire.circle(radius: pathRadius),
-                  let lifted = circle.offset3D(distance: h, direction: SIMD3<Double>(0, 0, 1)) else { return nil }
-            path = lifted
-            start = SIMD3<Double>(pathRadius, 0, h)
+            guard let circle = Wire.circle(
+                origin: SIMD3<Double>(f.x, f.y, h),
+                normal: SIMD3<Double>(0, 0, 1),
+                radius: pathRadius
+            ) else { return nil }
+            path = circle
+            start = SIMD3<Double>(f.x + pathRadius, f.y, h)
             tangent = SIMD3<Double>(0, 1, 0)
         case .line:
             let length = max(f.sweepLength, 1)
-            let a = SIMD3<Double>(-length / 2, 0, h)
-            let b = SIMD3<Double>(length / 2, 0, h)
+            let a = SIMD3<Double>(f.x - length / 2, f.y, h)
+            let b = SIMD3<Double>(f.x + length / 2, f.y, h)
             guard let line = Wire.polygon3D([a, b]) else { return nil }
             path = line
             start = a
             tangent = SIMD3<Double>(1, 0, 0)
         }
         guard let profile = sectionWire(at: start, tangent: tangent, radius: sectionRadius) else { return nil }
+        if f.sweepPathKind == .line {
+            return Shape.extrude(
+                profile: profile,
+                direction: SIMD3<Double>(1, 0, 0),
+                length: max(f.sweepLength, 1)
+            )
+        }
         // BRepOffsetAPI_MakePipe 对线框截面只生成壳；MakePipeShell + solid 才能得到可布尔运算的实体。
         return Shape.pipeShell(
             spine: path,
@@ -899,7 +932,7 @@ enum True3DKernel {
 
     private static func profileTool(_ f: True3DFeatureSpec, baseHeight h: Double, isBoss: Bool) -> Shape? {
         guard f.profile.count >= 3 else { return nil }
-        let pts = f.profile.map { SIMD2<Double>($0.x, $0.y) }
+        let pts = f.profile.map { SIMD2<Double>($0.x + f.x, $0.y + f.y) }
         guard let wire = Wire.polygon(pts, closed: true) else { return nil }
         let top = f.topZ ?? h
         let length: Double
@@ -1069,6 +1102,15 @@ enum True3DKernel {
                 guard f.dia > 0.1, f.topDia > 0.1, f.width > 0.1, f.depthY > 0.1, f.topWidth > 0.1, f.topDepthY > 0.1 else {
                     throw True3DModelError.invalidParameter("\(f.name) 截面尺寸必须大于 0.1 mm")
                 }
+                let bottom = f.loftBottomShape == .circle
+                    ? circleRing(f.x, f.y, f.dia / 2)
+                    : rectRing(f.x, f.y, f.width, f.depthY)
+                let top = f.loftTopShape == .circle
+                    ? circleRing(f.x, f.y, f.topDia / 2)
+                    : rectRing(f.x, f.y, f.topWidth, f.topDepthY)
+                guard footprintInside(p, bottom + top) else {
+                    throw True3DModelError.invalidParameter("\(f.name) 放样截面超出基础块范围")
+                }
             case .sweepBoss:
                 guard f.dia > 0.1 else {
                     throw True3DModelError.invalidParameter("\(f.name) 截面直径必须大于 0.1")
@@ -1079,13 +1121,22 @@ enum True3DKernel {
                           f.sweepPitch > 0.1, f.sweepTurns > 0.05, f.sweepTurns <= 30 else {
                         throw True3DModelError.invalidParameter("\(f.name) 截面必须小于路径半径，螺距/圈数需大于 0")
                     }
+                    guard footprintInside(p, circleRing(f.x, f.y, f.sweepPathRadius + f.dia / 2)) else {
+                        throw True3DModelError.invalidParameter("\(f.name) 扫掠路径超出基础块范围")
+                    }
                 case .circle:
                     guard f.sweepPathRadius > f.dia / 2 + 0.05 else {
                         throw True3DModelError.invalidParameter("\(f.name) 截面必须小于圆周路径半径")
                     }
+                    guard footprintInside(p, circleRing(f.x, f.y, f.sweepPathRadius + f.dia / 2)) else {
+                        throw True3DModelError.invalidParameter("\(f.name) 扫掠路径超出基础块范围")
+                    }
                 case .line:
                     guard f.sweepLength > f.dia + 0.1 else {
                         throw True3DModelError.invalidParameter("\(f.name) 直线路径长度必须大于截面直径")
+                    }
+                    guard footprintInside(p, rectRing(f.x, f.y, f.sweepLength + f.dia, f.dia)) else {
+                        throw True3DModelError.invalidParameter("\(f.name) 扫掠路径超出基础块范围")
                     }
                 }
             case .draft:
@@ -1181,7 +1232,7 @@ enum True3DKernel {
                 }
                 let outline = f.profile.enumerated().map { i, pt -> SIMD2<Double> in
                     let next = f.profile[(i + 1) % f.profile.count]
-                    return SIMD2((pt.x + next.x) / 2, (pt.y + next.y) / 2)
+                    return SIMD2((pt.x + next.x) / 2 + f.x, (pt.y + next.y) / 2 + f.y)
                 }
                 guard footprintInside(p, outline) else {
                     throw True3DModelError.invalidParameter("\(f.name) 草图轮廓超出基础块范围")
