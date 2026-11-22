@@ -127,6 +127,8 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
     var faceProfile: [True3DPoint3D]? = nil
     var faceNormal: True3DPoint3D? = nil
     var faceIndex: Int? = nil
+    /// 面拉伸是凸台（false）还是切除（true）。
+    var faceCut: Bool? = nil
     /// 旋转 / 拔模角度（度）。
     var angle: Double = 360
     /// 锥形凸台的顶部直径。
@@ -260,7 +262,8 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
         case .profileCut:
             return "\(profile.count) 点轮廓 深\(fmt(depth))"
         case .faceBoss:
-            return "面 #\(faceIndex ?? 0) · \(faceProfile?.count ?? 0) 点轮廓 H\(fmt(bossHeight))"
+            let op = (faceCut == true) ? "面切除" : "面拉伸"
+            return "\(op) 面 #\(faceIndex ?? 0) · \(faceProfile?.count ?? 0) 点轮廓 H\(fmt(bossHeight))"
         }
     }
 }
@@ -610,7 +613,8 @@ enum True3DKernel {
             guard let profile3D = f.faceProfile, profile3D.count >= 3, let n = f.faceNormal else {
                 throw True3DModelError.featureFailed("\(f.name) 失败：缺少面轮廓或法向")
             }
-            let direction = SIMD3<Double>(n.x, n.y, n.z)
+            let outward = SIMD3<Double>(n.x, n.y, n.z)
+            let direction = (f.faceCut == true) ? -outward : outward
             let overlap = 0.12
             let shifted = profile3D.map {
                 SIMD3<Double>(
@@ -624,8 +628,16 @@ enum True3DKernel {
                     profile: wire,
                     direction: direction,
                     length: max(f.bossHeight, 0.1) + overlap
-                  ),
-                  let fused = current + prism else {
+                  ) else {
+                throw True3DModelError.featureFailed("\(f.name) 失败：所选面轮廓无法拉伸")
+            }
+            if f.faceCut == true {
+                guard let cut = current - prism else {
+                    throw True3DModelError.featureFailed("\(f.name) 面切除失败，轮廓可能不在实体上")
+                }
+                return cut
+            }
+            guard let fused = current + prism else {
                 throw True3DModelError.featureFailed("\(f.name) 失败：所选面轮廓无法拉伸")
             }
             return fused

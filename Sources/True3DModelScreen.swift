@@ -106,6 +106,11 @@ struct True3DModelScreen: View {
     @State private var stepURL: URL?
     @State private var stlURL: URL?
     @State private var isBuilding = false
+    @State private var draftPreviewTask: Task<Void, Never>?
+    @State private var draftPreviewGeneration = 0
+    @State private var draftPreviewBaseline: (result: True3DResult?, scene: SCNScene)?
+    @State private var isPreviewingDraft = false
+    @State private var draftPreviewError: String?
     @State private var buildTask: Task<Void, Never>?
     @State private var buildGeneration = 0
     @State private var kernelService = True3DKernelService()
@@ -462,11 +467,16 @@ struct True3DModelScreen: View {
 
             if showFeatureDrawer, let draft = draftFeature {
                 VStack {
+                    HStack(alignment: .top) {
+                        AnyView(featureDrawer(draft))
+                        Spacer(minLength: 0)
+                    }
                     Spacer(minLength: 0)
-                    AnyView(featureDrawer(draft))
-                        .transition(.move(edge: .bottom))
                 }
+                .padding(.leading, 10)
+                .padding(.top, 112)
                 .zIndex(20)
+                .transition(.move(edge: .leading).combined(with: .opacity))
             }
 
             VStack {
@@ -866,7 +876,7 @@ struct True3DModelScreen: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button { closeFeatureDrawer() } label: {
+                Button { cancelFeatureDrawer() } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 13, weight: .semibold))
                         .frame(width: 30, height: 30)
@@ -895,10 +905,28 @@ struct True3DModelScreen: View {
             }
             .frame(maxHeight: 360)
 
+            if isPreviewingDraft {
+                HStack(spacing: 7) {
+                    ProgressView().scaleEffect(0.7)
+                    Text("正在参数预览…")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 6)
+            } else if let draftPreviewError {
+                Text("预览失败：\(draftPreviewError)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 6)
+            }
+
             Divider().opacity(0.4)
             HStack(spacing: 10) {
                 Button {
-                    closeFeatureDrawer()
+                    cancelFeatureDrawer()
                 } label: {
                     Text("取消").font(.system(size: 13, weight: .semibold))
                         .frame(maxWidth: .infinity).frame(height: 42)
@@ -923,14 +951,36 @@ struct True3DModelScreen: View {
             }
             .padding(14)
         }
+        .frame(width: min(340, UIScreen.main.bounds.width * 0.86), alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(SwiftUI.Color.white.opacity(0.5), lineWidth: 0.5))
-        .padding(.horizontal, 10)
-        .padding(.bottom, 8))
     }
 
     private func edgeDrawerFields(_ draft: True3DFeatureSpec) -> AnyView {
         AnyView(VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("类型").font(.system(size: 12))
+                Spacer()
+                Picker("", selection: Binding(
+                    get: { draftFeature?.kind ?? .edgeFillet },
+                    set: { newKind in
+                        guard var f = draftFeature, newKind == .edgeFillet || newKind == .edgeChamfer else { return }
+                        f.kind = newKind
+                        f.name = newKind == .edgeFillet ? "边圆角" : "边倒角"
+                        draftFeature = f
+                        edgeFeatureIsChamfer = newKind == .edgeChamfer
+                        filletRadius = max(f.depth, 0.1)
+                        scheduleFilletPreview()
+                    }
+                )) {
+                    Text("圆角").tag(True3DFeatureKind.edgeFillet)
+                    Text("倒角").tag(True3DFeatureKind.edgeChamfer)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 150)
+            }
+            Text(draft.kind == .edgeChamfer ? "方法：对称距离" : "连续性：G1 · 等半径")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
             Text("边选择").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
             if let edge = selectedEdge {
                 HStack {
@@ -3271,8 +3321,24 @@ struct True3DModelScreen: View {
                 .font(.system(size: 11)).foregroundStyle(.secondary)))
             rows.append(AnyView(Text("面中心 X \(fmt(f.wrappedValue.x))  Y \(fmt(f.wrappedValue.y))  Z \(fmt(f.wrappedValue.topZ ?? 0))")
                 .font(.system(size: 10)).foregroundStyle(.secondary)))
-            rows.append(AnyView(numRow("拉伸高度", f.bossHeight)))
-            rows.append(AnyView(Text("方向：沿所选面的外法向").font(.system(size: 10)).foregroundStyle(.secondary)))
+            rows.append(AnyView(HStack {
+                Text("操作").font(.system(size: 12))
+                Spacer()
+                Picker("", selection: Binding(
+                    get: { f.wrappedValue.faceCut ?? false },
+                    set: { f.wrappedValue.faceCut = $0 }
+                )) {
+                    Text("凸台").tag(false)
+                    Text("切除").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 150)
+            }))
+            rows.append(AnyView(numRow((f.wrappedValue.faceCut == true) ? "切除深度" : "拉伸高度", f.bossHeight)))
+            rows.append(AnyView(Text((f.wrappedValue.faceCut == true)
+                ? "方向：沿所选面法向反向切除"
+                : "方向：沿所选面的外法向")
+                .font(.system(size: 10)).foregroundStyle(.secondary)))
         case .profileBoss:
             rows.append(AnyView(Text("草图轮廓：\(f.wrappedValue.profile.count) 个点").font(.system(size: 11)).foregroundStyle(.secondary)))
             rows.append(AnyView(numRow("拉伸高度", f.bossHeight)))
@@ -3430,12 +3496,15 @@ struct True3DModelScreen: View {
             error = "STEP 模型只能做边圆角/倒角；请先退出 STEP 再用参数化特征"
             return
         }
+        if showFeatureDrawer { cancelFeatureDrawer() }
+        beginDraftPreviewSession()
         pickMode = .edge
         pendingFaceExtrude = false
         draftFeature = makeDraftFeature(kind)
         showFeatureDrawer = true
         error = nil
         notice = nil
+        scheduleDraftPreview()
     }
 
     private func beginFaceExtrude() {
@@ -3443,7 +3512,7 @@ struct True3DModelScreen: View {
             error = "STEP 模型暂不支持面拉伸"
             return
         }
-        closeFeatureDrawer()
+        cancelFeatureDrawer()
         pickMode = .face
         pendingFaceExtrude = true
         selectedFace = nil
@@ -3456,6 +3525,9 @@ struct True3DModelScreen: View {
             error = "STEP 模型请使用边的圆角/倒角"
             return
         }
+        if showFeatureDrawer { cancelFeatureDrawer() }
+        beginDraftPreviewSession()
+        edgeFeatureIsChamfer = chamfer
         var f = True3DFeatureSpec(kind: chamfer ? .edgeChamfer : .edgeFillet)
         f.name = chamfer ? "边倒角" : "边圆角"
         f.depth = max(filletRadius, 0.2)
@@ -3468,15 +3540,113 @@ struct True3DModelScreen: View {
     }
 
     private func closeFeatureDrawer() {
+        draftPreviewTask?.cancel()
+        draftPreviewGeneration += 1
+        clearFilletPreview(restoreScene: false)
+        draftPreviewBaseline = nil
+        isPreviewingDraft = false
+        draftPreviewError = nil
         showFeatureDrawer = false
         draftFeature = nil
         pendingFaceExtrude = false
     }
 
+    private func cancelFeatureDrawer() {
+        draftPreviewTask?.cancel()
+        draftPreviewGeneration += 1
+        clearFilletPreview(restoreScene: false)
+        if let baseline = draftPreviewBaseline {
+            result = baseline.result
+            scene = baseline.scene
+            applyOrbit()
+        }
+        draftPreviewBaseline = nil
+        isPreviewingDraft = false
+        draftPreviewError = nil
+        showFeatureDrawer = false
+        draftFeature = nil
+        pendingFaceExtrude = false
+        error = nil
+    }
+
+    private func beginDraftPreviewSession() {
+        guard draftPreviewBaseline == nil else { return }
+        captureCameraOrbit()
+        draftPreviewBaseline = (result: result, scene: scene)
+    }
+
+    private func scheduleDraftPreview() {
+        guard showFeatureDrawer, let draft = draftFeature else { return }
+        if draft.kind == .edgeFillet || draft.kind == .edgeChamfer {
+            scheduleFilletPreview()
+            return
+        }
+        draftPreviewTask?.cancel()
+        draftPreviewGeneration += 1
+        let generation = draftPreviewGeneration
+        draftPreviewError = nil
+        draftPreviewTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 600_000_000)
+            } catch { return }
+            guard !Task.isCancelled, generation == draftPreviewGeneration, showFeatureDrawer else { return }
+            await buildDraftPreview(generation: generation)
+        }
+    }
+
+    private func buildDraftPreview(generation: Int) async {
+        guard showFeatureDrawer, var draft = draftFeature,
+              draft.kind != .edgeFillet, draft.kind != .edgeChamfer else { return }
+        isPreviewingDraft = true
+        defer {
+            if generation == draftPreviewGeneration { isPreviewingDraft = false }
+        }
+        draft.name = draft.name.isEmpty ? draft.kind.rawValue : draft.name
+        var previewParams = params
+        if draft.kind == .shell,
+           let firstCut = previewParams.features.firstIndex(where: {
+               [.hole, .circularPocket, .rectPocket, .slot, .profileCut, .revolveCut].contains($0.kind)
+           }) {
+            previewParams.features.insert(draft, at: firstCut)
+        } else {
+            previewParams.features.append(draft)
+        }
+        let document = True3DModelDocument(
+            id: modelDocumentID,
+            params: previewParams,
+            operations: modelOperations
+        )
+        do {
+            let preview = try await kernelService.build(document)
+            guard !Task.isCancelled, generation == draftPreviewGeneration,
+                  showFeatureDrawer else { return }
+            if draftPreviewBaseline == nil { beginDraftPreviewSession() }
+            result = preview
+            message = "参数预览"
+            scene = makeScene(result: preview)
+            applyOrbit()
+            draftPreviewError = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            guard generation == draftPreviewGeneration else { return }
+            draftPreviewError = error.localizedDescription
+        }
+    }
+
     private var featureDraftBinding: Binding<True3DFeatureSpec> {
         Binding(
             get: { draftFeature ?? True3DFeatureSpec() },
-            set: { draftFeature = $0 }
+            set: { newValue in
+                draftFeature = newValue
+                if newValue.kind == .edgeFillet || newValue.kind == .edgeChamfer {
+                    edgeFeatureIsChamfer = newValue.kind == .edgeChamfer
+                    filletRadius = max(newValue.depth, 0.1)
+                    scheduleFilletPreview()
+                } else {
+                    scheduleDraftPreview()
+                }
+            }
         )
     }
 
@@ -3509,15 +3679,21 @@ struct True3DModelScreen: View {
                 error = "请先在三维模型上选择一条边"
                 return
             }
+            let requested = max(draft.depth, 0.1)
+            let allowed = maximumBlendSize(for: edge)
+            let size = min(requested, allowed)
             if draft.kind == .edgeFillet {
-                modelOperations.append(True3DHistoryOperation(kind: .fillet(edge: edge, radius: max(draft.depth, 0.1))))
+                modelOperations.append(True3DHistoryOperation(kind: .fillet(edge: edge, radius: size)))
             } else {
-                modelOperations.append(True3DHistoryOperation(kind: .chamfer(edge: edge, distance: max(draft.depth, 0.1))))
+                modelOperations.append(True3DHistoryOperation(kind: .chamfer(edge: edge, distance: size)))
             }
             selectedEdge = nil
             scene.rootNode.childNode(withName: "selectedEdge", recursively: true)?.removeFromParentNode()
             closeFeatureDrawer()
-            notice = draft.kind == .edgeFillet ? "已添加边圆角" : "已添加边倒角"
+            let label = draft.kind == .edgeFillet ? "圆角" : "倒角"
+            notice = abs(size - requested) > 0.01
+                ? "已添加边\(label)，尺寸自动夹到 \(fmt(size)) mm"
+                : "已添加边\(label)"
             rebuild()
             return
         }
@@ -3885,6 +4061,18 @@ struct True3DModelScreen: View {
         return max(0.2, limit)
     }
 
+    private func scheduleFilletPreview() {
+        guard showFeatureDrawer, selectedEdge != nil,
+              let draft = draftFeature,
+              draft.kind == .edgeFillet || draft.kind == .edgeChamfer else { return }
+        draftPreviewTask?.cancel()
+        draftPreviewTask = Task { @MainActor in
+            do { try await Task.sleep(nanoseconds: 600_000_000) } catch { return }
+            guard !Task.isCancelled, showFeatureDrawer else { return }
+            previewFillet()
+        }
+    }
+
     private func previewFillet() {
         guard let edgeRef = selectedEdge,
               let result,
@@ -3904,7 +4092,9 @@ struct True3DModelScreen: View {
         let maxBlend = maximumBlendSize(for: edgeRef)
         if filletRadius > maxBlend {
             filletRadius = maxBlend
-            error = "\(edgeFeatureIsChamfer ? "倒角距离" : "R")超出这条边的上限，已自动改为 \(fmt(maxBlend)) mm；请再次预览"
+            draftFeature?.depth = maxBlend
+            error = "\(edgeFeatureIsChamfer ? "倒角距离" : "R")超出这条边的上限，已自动改为 \(fmt(maxBlend)) mm"
+            scheduleFilletPreview()
             return
         }
 
@@ -4099,6 +4289,10 @@ struct True3DModelScreen: View {
         notice = nil
         message = "已选中边 #\(reference.edgeIndex)，点圆角/倒角设置参数"
         highlightSelectedEdge(modelRoot: modelRoot, edge: edge)
+        if showFeatureDrawer, draftFeature?.kind == .edgeFillet || draftFeature?.kind == .edgeChamfer {
+            filletRadius = max(draftFeature?.depth ?? filletRadius, 0.1)
+            scheduleFilletPreview()
+        }
     }
 
     private func selectFace(_ hit: OCCTSwift.RayHit, rayDirection: SIMD3<Double>) {
