@@ -492,7 +492,7 @@ struct True3DModelScreen: View {
             if showMoveDrawer, !showFeatureDrawer {
                 VStack {
                     HStack(alignment: .top) {
-                        AnyView(moveDrawer(width: width))
+                        AnyView(moveDrawer())
                         Spacer(minLength: 0)
                     }
                     Spacer(minLength: 0)
@@ -984,7 +984,7 @@ struct True3DModelScreen: View {
     )
     }
 
-    private func moveDrawer(width: CGFloat) -> AnyView {
+    private func moveDrawer() -> AnyView {
         AnyView(VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
@@ -1078,7 +1078,7 @@ struct True3DModelScreen: View {
             }
             .padding(14)
         }
-        .frame(width: min(340, width * 0.86), alignment: .leading)
+        .frame(width: min(340, UIScreen.main.bounds.width * 0.86), alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(SwiftUI.Color.white.opacity(0.5), lineWidth: 0.5))
         )
