@@ -271,7 +271,7 @@ private func makeDefaultTrue3DFeatures() -> [True3DFeatureSpec] {
     var boss = True3DFeatureSpec(kind: .boss, x: 35, y: 20)
     boss.name = "凸台"; boss.dia = 24; boss.bossHeight = 6
     var pocket = True3DFeatureSpec(kind: .rectPocket, x: -42, y: -28)
-    pocket.name = "方腔"; pocket.width = 24; pocket.depthY = 18; pocket.depth = 5
+    pocket.name = "方腔"; pocket.width = 24; pocket.depthY = 18; pocket.depth = 5; pocket.y = -26
     return [hole, boss, pocket]
 }
 
@@ -521,7 +521,8 @@ enum True3DKernel {
             guard !edges.isEmpty else {
                 throw True3DModelError.featureFailed("\(f.name) 没有匹配的边")
             }
-            if f.edgeSelection == .all, f.chamferMode == .symmetric {
+            if f.chamferMode == .symmetric,
+               f.edgeSelection == .all || edges.count == current.edges().count {
                 guard let bevel = current.chamfered(distance: max(f.depth, 0.05)) else {
                     throw True3DModelError.featureFailed("\(f.name) 失败：C 可能超过相邻边允许范围")
                 }
@@ -565,7 +566,16 @@ enum True3DKernel {
                 return bevel
             }
         case .shell:
-            guard let shelled = current.shelled(thickness: -abs(f.depth), openFaces: current.upwardFaces()) else {
+            // 只移除基础顶面（Z≈h 的朝上平面），不要把型腔底面/凸台顶面一起开口。
+            let topFaces = current.faces().filter { face in
+                guard face.isPlanar, let n = face.normal, n.z > 0.9,
+                      let b = face.bounds else { return false }
+                return b.max.z <= h + 0.2 && b.max.z >= h - 0.2
+            }
+            guard !topFaces.isEmpty else {
+                throw True3DModelError.featureFailed("\(f.name) 抽壳失败：找不到可开口的基础顶面")
+            }
+            guard let shelled = current.shelled(thickness: -abs(f.depth), openFaces: topFaces) else {
                 throw True3DModelError.featureFailed("\(f.name) 抽壳失败：壁厚可能过大，或顶面被特征打断")
             }
             return shelled
@@ -761,7 +771,16 @@ enum True3DKernel {
             tangent = SIMD3<Double>(1, 0, 0)
         }
         guard let profile = sectionWire(at: start, tangent: tangent, radius: sectionRadius) else { return nil }
-        return Shape.sweep(profile: profile, along: path)
+        // BRepOffsetAPI_MakePipe 对线框截面只生成壳；MakePipeShell + solid 才能得到可布尔运算的实体。
+        return Shape.pipeShell(
+            spine: path,
+            profile: profile,
+            mode: .fixed(binormal: SIMD3<Double>(0, 0, 1)),
+            transition: .transformed,
+            withContact: false,
+            withCorrection: true,
+            solid: true
+        )
     }
 
     private static func sectionWire(at center: SIMD3<Double>, tangent: SIMD3<Double>, radius: Double) -> Wire? {
@@ -786,21 +805,35 @@ enum True3DKernel {
     private static func revolveTool(_ f: True3DFeatureSpec, baseHeight h: Double) -> Shape? {
         let pts = f.profile
         guard pts.count >= 3 else { return nil }
-        let axisOrigin = SIMD3<Double>(f.x, f.y, f.topZ ?? h)
         let axisDirection: SIMD3<Double>
         switch f.revolveAxis {
         case .x: axisDirection = SIMD3<Double>(1, 0, 0)
         case .y: axisDirection = SIMD3<Double>(0, 1, 0)
         case .z: axisDirection = SIMD3<Double>(0, 0, 1)
         }
+        // 水平轴（X/Y）放在基础底面 Z=0，旋转体才会嵌进毛坯；
+        // 竖直轴（Z）放在顶面，旋转体向下嵌入。
+        let axisZ = f.topZ ?? (f.revolveAxis == .z ? h : 0)
+        let axisOrigin = SIMD3<Double>(f.x, f.y, axisZ)
+        // profile.x = 径向半径，profile.y = 沿轴坐标；不随轴/基准面倒置。
+        let radial = pts.map(\.x)
+        let axial = pts.map(\.y)
         let wirePts: [SIMD3<Double>]
-        switch f.revolvePlane {
-        case .xz:
-            wirePts = pts.map { SIMD3<Double>(axisOrigin.x + $0.x, axisOrigin.y, axisOrigin.z + $0.y) }
-        case .xy:
-            wirePts = pts.map { SIMD3<Double>(axisOrigin.x + $0.x, axisOrigin.y + $0.y, axisOrigin.z) }
-        case .yz:
-            wirePts = pts.map { SIMD3<Double>(axisOrigin.x, axisOrigin.y + $0.x, axisOrigin.z + $0.y) }
+        switch (f.revolveAxis, f.revolvePlane) {
+        case (.x, .xy):
+            wirePts = zip(axial, radial).map { SIMD3<Double>(axisOrigin.x + $0.0, axisOrigin.y + $0.1, axisOrigin.z) }
+        case (.x, .xz):
+            wirePts = zip(axial, radial).map { SIMD3<Double>(axisOrigin.x + $0.0, axisOrigin.y, axisOrigin.z + $0.1) }
+        case (.y, .xy):
+            wirePts = zip(axial, radial).map { SIMD3<Double>(axisOrigin.x + $0.1, axisOrigin.y + $0.0, axisOrigin.z) }
+        case (.y, .yz):
+            wirePts = zip(axial, radial).map { SIMD3<Double>(axisOrigin.x, axisOrigin.y + $0.0, axisOrigin.z + $0.1) }
+        case (.z, .xz):
+            wirePts = zip(axial, radial).map { SIMD3<Double>(axisOrigin.x + $0.1, axisOrigin.y, axisOrigin.z + $0.0) }
+        case (.z, .yz):
+            wirePts = zip(axial, radial).map { SIMD3<Double>(axisOrigin.x, axisOrigin.y + $0.1, axisOrigin.z + $0.0) }
+        default:
+            return nil
         }
         guard let wire = Wire.polygon3D(wirePts),
               let face = Shape.face(from: wire, planar: true) else { return nil }
@@ -892,6 +925,78 @@ enum True3DKernel {
         }
     }
 
+    private static func footprintInside(_ p: True3DParams, _ points: [SIMD2<Double>]) -> Bool {
+        let margin = 0.02
+        switch p.baseShape {
+        case .box:
+            let inset = (p.edgeMode != .none ? p.edgeSize : 0) + margin
+            let hx = p.width / 2 - inset
+            let hy = p.depth / 2 - inset
+            return points.allSatisfy { abs($0.x) <= hx && abs($0.y) <= hy }
+        case .circle:
+            let inset = (p.edgeMode != .none ? p.edgeSize : 0) + margin
+            let r = min(p.width, p.depth) / 2 - inset
+            return r > 0.1 && points.allSatisfy { hypot($0.x, $0.y) <= r }
+        case .profile:
+            guard p.profile.count >= 3 else { return false }
+            return points.allSatisfy { pointInPolygon($0, polygon: p.profile, margin: margin) }
+        }
+    }
+
+    private static func pointInPolygon(_ point: SIMD2<Double>, polygon: [True3DPoint], margin: Double) -> Bool {
+        var inside = false
+        let n = polygon.count
+        for i in 0..<n {
+            let a = SIMD2<Double>(polygon[i].x, polygon[i].y)
+            let b = SIMD2<Double>(polygon[(i + 1) % n].x, polygon[(i + 1) % n].y)
+            if distanceToSegment(point, a, b) <= margin { return true }
+            if (a.y > point.y) != (b.y > point.y) {
+                let t = (point.y - a.y) / (b.y - a.y)
+                let x = a.x + t * (b.x - a.x)
+                if point.x < x { inside.toggle() }
+            }
+        }
+        return inside
+    }
+
+    private static func distanceToSegment(_ p: SIMD2<Double>, _ a: SIMD2<Double>, _ b: SIMD2<Double>) -> Double {
+        let ab = b - a
+        let len2 = ab.x * ab.x + ab.y * ab.y
+        guard len2 > 1e-12 else { return hypot(p.x - a.x, p.y - a.y) }
+        let t = max(0, min(1, ((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / len2))
+        let q = a + t * ab
+        return hypot(p.x - q.x, p.y - q.y)
+    }
+
+    private static func circleRing(_ cx: Double, _ cy: Double, _ radius: Double, count: Int = 20) -> [SIMD2<Double>] {
+        (0..<count).map { i in
+            let a = Double(i) / Double(count) * 2 * .pi
+            return SIMD2<Double>(cx + radius * cos(a), cy + radius * sin(a))
+        }
+    }
+
+    private static func rectRing(_ cx: Double, _ cy: Double, _ w: Double, _ d: Double) -> [SIMD2<Double>] {
+        let hx = w / 2, hy = d / 2
+        return [
+            SIMD2(cx - hx, cy - hy), SIMD2(cx, cy - hy), SIMD2(cx + hx, cy - hy),
+            SIMD2(cx + hx, cy), SIMD2(cx + hx, cy + hy), SIMD2(cx, cy + hy),
+            SIMD2(cx - hx, cy + hy), SIMD2(cx - hx, cy)
+        ]
+    }
+
+    private static func capsuleRing(_ cx: Double, _ cy: Double, _ w: Double, _ d: Double) -> [SIMD2<Double>] {
+        let r = d / 2
+        let straight = max(w - d, 0)
+        let x1 = cx - straight / 2
+        let x2 = cx + straight / 2
+        var pts: [SIMD2<Double>] = []
+        pts.append(contentsOf: circleRing(x1, cy, r, count: 16).filter { $0.x <= x1 + 1e-9 })
+        pts.append(contentsOf: circleRing(x2, cy, r, count: 16).filter { $0.x >= x2 - 1e-9 })
+        pts.append(SIMD2(x1, cy - r)); pts.append(SIMD2(x2, cy - r))
+        pts.append(SIMD2(x1, cy + r)); pts.append(SIMD2(x2, cy + r))
+        return pts
+    }
+
     private static func validate(_ p: True3DParams) throws {
         let finite = [p.width, p.depth, p.height, p.edgeSize]
         guard finite.allSatisfy({ $0.isFinite }), p.width > 0.5, p.depth > 0.5, p.height > 0.5 else {
@@ -909,7 +1014,6 @@ enum True3DKernel {
                 throw True3DModelError.invalidParameter("R/C 必须大于 0.05，且小于最小边的一半（当前上限 \(fmt(maxEdge)) mm）")
             }
         }
-        let edgeInset = (p.edgeMode != .none ? p.edgeSize : 0)
         for f in p.features {
             let vals = [f.x, f.y, f.dia, f.width, f.depthY, f.depth, f.bossHeight, f.holeDepth, f.cornerRadius, f.topDia]
             guard vals.allSatisfy({ $0.isFinite }) else {
@@ -922,7 +1026,7 @@ enum True3DKernel {
             case .hole:
                 let r = f.dia / 2
                 guard f.dia > 0.1 else { throw True3DModelError.invalidParameter("\(f.name) 直径必须大于 0.1 mm") }
-                guard abs(f.x) + r <= p.width / 2 - 0.05, abs(f.y) + r <= p.depth / 2 - 0.05 else {
+                guard footprintInside(p, circleRing(f.x, f.y, r)) else {
                     throw True3DModelError.invalidParameter("\(f.name) 超出基础块范围")
                 }
                 if f.holeKind == .blind || f.holeKind == .thread {
@@ -939,8 +1043,7 @@ enum True3DKernel {
             case .boss:
                 let r = f.dia / 2
                 guard f.dia > 0.1, f.bossHeight > 0.1 else { throw True3DModelError.invalidParameter("\(f.name) 直径和高度必须大于 0.1 mm") }
-                guard abs(f.x) + r <= p.width / 2 - edgeInset - 0.02,
-                      abs(f.y) + r <= p.depth / 2 - edgeInset - 0.02 else {
+                guard footprintInside(p, circleRing(f.x, f.y, r)) else {
                     throw True3DModelError.invalidParameter("\(f.name) 必须完整落在基础块顶面，不能悬出边缘")
                 }
             case .rectBoss:
@@ -950,8 +1053,7 @@ enum True3DKernel {
                 guard f.cornerRadius >= 0, f.cornerRadius < min(f.width, f.depthY) / 2 else {
                     throw True3DModelError.invalidParameter("\(f.name) 圆角半径过大")
                 }
-                guard abs(f.x) + f.width / 2 <= p.width / 2 - edgeInset - 0.02,
-                      abs(f.y) + f.depthY / 2 <= p.depth / 2 - edgeInset - 0.02 else {
+                guard footprintInside(p, rectRing(f.x, f.y, f.width, f.depthY)) else {
                     throw True3DModelError.invalidParameter("\(f.name) 必须完整落在基础块顶面，不能悬出边缘")
                 }
             case .coneBoss:
@@ -959,8 +1061,7 @@ enum True3DKernel {
                     throw True3DModelError.invalidParameter("\(f.name) 直径和高度必须大于 0.1 mm")
                 }
                 let r = max(f.dia, f.topDia > 0 ? f.topDia : f.dia) / 2
-                guard abs(f.x) + r <= p.width / 2 - edgeInset - 0.02,
-                      abs(f.y) + r <= p.depth / 2 - edgeInset - 0.02 else {
+                guard footprintInside(p, circleRing(f.x, f.y, r)) else {
                     throw True3DModelError.invalidParameter("\(f.name) 必须完整落在基础块顶面")
                 }
             case .loftBoss:
@@ -1013,6 +1114,17 @@ enum True3DKernel {
                 guard f.profile.count >= 3, f.profile.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else {
                     throw True3DModelError.invalidParameter("\(f.name) 旋转轮廓需要至少 3 个有效点")
                 }
+                let planeOK: Bool
+                switch (f.revolveAxis, f.revolvePlane) {
+                case (.x, .xy), (.x, .xz), (.y, .xy), (.y, .yz), (.z, .xz), (.z, .yz): planeOK = true
+                default: planeOK = false
+                }
+                guard planeOK else {
+                    throw True3DModelError.invalidParameter("\(f.name) 旋转轴与基准面不匹配")
+                }
+                guard f.profile.allSatisfy({ $0.x > 0.05 }) else {
+                    throw True3DModelError.invalidParameter("\(f.name) 轮廓必须完全位于旋转轴一侧（径向 > 0）")
+                }
                 guard f.angle > 0.1, f.angle <= 360 else {
                     throw True3DModelError.invalidParameter("\(f.name) 旋转角度必须在 0.1°～360°")
                 }
@@ -1025,16 +1137,14 @@ enum True3DKernel {
                 guard f.dia > 0.1, f.depth > 0.05, f.depth <= p.height else {
                     throw True3DModelError.invalidParameter("\(f.name) 直径和深度不合理")
                 }
-                guard abs(f.x) + f.dia / 2 <= p.width / 2 - 0.02,
-                      abs(f.y) + f.dia / 2 <= p.depth / 2 - 0.02 else {
+                guard footprintInside(p, circleRing(f.x, f.y, f.dia / 2)) else {
                     throw True3DModelError.invalidParameter("\(f.name) 超出基础块范围")
                 }
             case .rectPocket:
                 guard f.width > 0.1, f.depthY > 0.1, f.depth > 0.05, f.depth <= p.height else {
                     throw True3DModelError.invalidParameter("\(f.name) 长宽和深度不合理")
                 }
-                guard abs(f.x) + f.width / 2 <= p.width / 2 - 0.02,
-                      abs(f.y) + f.depthY / 2 <= p.depth / 2 - 0.02 else {
+                guard footprintInside(p, rectRing(f.x, f.y, f.width, f.depthY)) else {
                     throw True3DModelError.invalidParameter("\(f.name) 超出基础块范围")
                 }
                 guard f.cornerRadius >= 0, f.cornerRadius < min(f.width, f.depthY) / 2 else {
@@ -1044,8 +1154,7 @@ enum True3DKernel {
                 guard f.width >= f.depthY, f.depthY > 0.1, f.depth > 0.05, f.depth <= p.height else {
                     throw True3DModelError.invalidParameter("\(f.name) 尺寸不合理，长度必须不小于槽宽")
                 }
-                guard abs(f.x) + f.width / 2 <= p.width / 2 - 0.02,
-                      abs(f.y) + f.depthY / 2 <= p.depth / 2 - 0.02 else {
+                guard footprintInside(p, capsuleRing(f.x, f.y, f.width, f.depthY)) else {
                     throw True3DModelError.invalidParameter("\(f.name) 超出基础块范围")
                 }
             case .faceBoss:
@@ -1070,8 +1179,11 @@ enum True3DKernel {
                 guard maxX - minX > 0.1, maxY - minY > 0.1 else {
                     throw True3DModelError.invalidParameter("\(f.name) 草图轮廓太小")
                 }
-                guard minX >= -p.width / 2 + 0.02, maxX <= p.width / 2 - 0.02,
-                      minY >= -p.depth / 2 + 0.02, maxY <= p.depth / 2 - 0.02 else {
+                let outline = f.profile.enumerated().map { i, pt -> SIMD2<Double> in
+                    let next = f.profile[(i + 1) % f.profile.count]
+                    return SIMD2((pt.x + next.x) / 2, (pt.y + next.y) / 2)
+                }
+                guard footprintInside(p, outline) else {
                     throw True3DModelError.invalidParameter("\(f.name) 草图轮廓超出基础块范围")
                 }
                 if f.kind == .profileBoss {

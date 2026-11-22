@@ -113,7 +113,9 @@ struct True3DModelScreen: View {
     @State private var assemblyGeneration = 0
     @State private var didInitialBuild = false
     @State private var selectedFeatureID: UUID?
-    @State private var pendingFeatureID: UUID?
+    @State private var pendingFeatureIDs: [UUID] = []
+    @State private var showMeasurePanel = false
+    @State private var showAnalysisPanel = false
     @State private var stage: True3DWorkbenchStage = .model
     @State private var sketchProfile: [True3DPoint] = []
     @State private var sketchClosed = false
@@ -284,6 +286,12 @@ struct True3DModelScreen: View {
             CameraPicker { image in
                 scanImage(image)
             }
+        }
+        .sheet(isPresented: $showMeasurePanel) {
+            inspectSheet(title: "测量", rows: measurementRows)
+        }
+        .sheet(isPresented: $showAnalysisPanel) {
+            inspectSheet(title: "分析", rows: analysisRows)
         }
         .sheet(isPresented: $showProgramSheet) {
             True3DProgramSheet(
@@ -710,15 +718,10 @@ struct True3DModelScreen: View {
                     notice = "正在同步草图与实体…"
                     rebuild()
                 }
-                railItem("water.waves", "曲面") {
-                    showWire = false
-                    notice = "曲面着色显示：已关闭线框"
-                }
                 railItem("line.diagonal", "圆角", highlighted: selectedEdge != nil) {
                     openEdgeDrawer(chamfer: false)
                 }
                 railItem("square.dashed", "抽壳") { openFeatureDrawer(.shell) }
-                railItem("scribble", "3D曲线") { stage = .sketch }
                 railItem("plus.square", "更多") {
                     withAnimation(.easeOut(duration: 0.2)) { showToolbox = true }
                 }
@@ -737,13 +740,10 @@ struct True3DModelScreen: View {
                 railItem("square.stack.3d.up", "建模树", highlighted: showTreePanel) {
                     withAnimation(.easeOut(duration: 0.2)) { showTreePanel.toggle() }
                 }
-                railItem("point.3.connected.trianglepath.dotted", "模型树") {
-                    withAnimation(.easeOut(duration: 0.2)) { showTreePanel.toggle() }
-                }
                 railItem("eye", "显示", highlighted: showWire) { showWire.toggle() }
-                railItem("ruler", "测量") { announceMeasurement() }
-                railItem("waveform.path.ecg", "分析") { announceAnalysis() }
-                railItem("sun.max", "渲染", highlighted: renderDark) { toggleRenderMode() }
+                railItem("ruler", "测量") { showMeasurePanel = true }
+                railItem("waveform.path.ecg", "分析") { showAnalysisPanel = true }
+                railItem("sun.max", "深色", highlighted: renderDark) { toggleRenderMode() }
                 railItem("arrow.counterclockwise", "视图复位") {
                     setViewOrientation(.iso)
                 }
@@ -3446,7 +3446,7 @@ struct True3DModelScreen: View {
         scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
         params.features.append(draft)
         selectedFeatureID = draft.id
-        pendingFeatureID = draft.id
+        pendingFeatureIDs = [draft.id]
         closeFeatureDrawer()
         notice = "已添加 \(draft.name)，正在重建"
         rebuild()
@@ -3499,7 +3499,7 @@ struct True3DModelScreen: View {
         }
         params.features.append(f)
         selectedFeatureID = f.id
-        pendingFeatureID = f.id
+        pendingFeatureIDs = [f.id]
         rebuild()
         notice = "已添加 \(f.name)，可在特征面板里改尺寸"
     }
@@ -3514,6 +3514,7 @@ struct True3DModelScreen: View {
         let pitchY = min(max(patternPitchY, dia + 0.5), maxPitchY)
         let startX = -pitchX * Double(cols - 1) / 2
         let startY = -pitchY * Double(rows - 1) / 2
+        var addedIDs: [UUID] = []
         for r in 0..<rows {
             for c in 0..<cols {
                 var f = True3DFeatureSpec(kind: .hole)
@@ -3523,9 +3524,11 @@ struct True3DModelScreen: View {
                 f.dia = dia
                 f.holeKind = .through
                 params.features.append(f)
+                addedIDs.append(f.id)
             }
         }
         selectedFeatureID = params.features.last?.id
+        pendingFeatureIDs = addedIDs
         rebuild()
         notice = "已添加 \(rows)×\(cols) 孔阵列，间距 \(fmt(pitchX))×\(fmt(pitchY)) mm"
     }
@@ -3539,6 +3542,7 @@ struct True3DModelScreen: View {
             return
         }
         let radius = min(max(circularRadius, 2), maxR)
+        var addedIDs: [UUID] = []
         for i in 0..<count {
             let angle = Double(i) / Double(count) * 2 * .pi
             var f = True3DFeatureSpec(kind: .hole)
@@ -3548,8 +3552,10 @@ struct True3DModelScreen: View {
             f.dia = dia
             f.holeKind = .through
             params.features.append(f)
+            addedIDs.append(f.id)
         }
         selectedFeatureID = params.features.last?.id
+        pendingFeatureIDs = addedIDs
         rebuild()
         notice = "已添加 \(count) 孔圆周阵列，R\(fmt(radius))"
     }
@@ -3561,6 +3567,7 @@ struct True3DModelScreen: View {
         feature.x += min(max(feature.width, feature.dia) / 2 + 2, 20)
         params.features.append(feature)
         selectedFeatureID = feature.id
+        pendingFeatureIDs = [feature.id]
         rebuild()
         notice = "已复制 \(feature.name)"
     }
@@ -3573,6 +3580,7 @@ struct True3DModelScreen: View {
         feature.profile = feature.profile.map { True3DPoint(x: -$0.x, y: $0.y) }
         params.features.append(feature)
         selectedFeatureID = feature.id
+        pendingFeatureIDs = [feature.id]
         rebuild()
         notice = "已沿 X=0 镜像 \(feature.name)"
     }
@@ -3660,6 +3668,7 @@ struct True3DModelScreen: View {
             }
             params.features.append(contentsOf: additions)
             selectedFeatureID = additions.last?.id
+            pendingFeatureIDs = additions.map(\.id)
             message = "已添加 \(additions.count) 个草图轮廓特征，正在重建实体"
         }
         rebuild()
@@ -3719,8 +3728,10 @@ struct True3DModelScreen: View {
                 guard !Task.isCancelled, generation == self.buildGeneration else { return }
                 self.result = newResult
                 self.message = "构建完成"
-                self.pendingFeatureID = nil
+                self.pendingFeatureIDs = []
                 self.selectedEdge = nil
+                self.selectedFace = nil
+                self.pendingFaceExtrude = false
                 self.scene = self.makeScene(result: newResult)
                 self.applyOrbit()
                 if self.showDatumPlane { self.addDatumPlane(report: false) }
@@ -3731,14 +3742,13 @@ struct True3DModelScreen: View {
                 self.message = "构建已取消"
             } catch {
                 guard generation == self.buildGeneration else { return }
-                let failedFeature = self.pendingFeatureID
-                if let failedFeature,
-                   let index = self.params.features.firstIndex(where: { $0.id == failedFeature }) {
-                    self.params.features.remove(at: index)
+                let failedIDs = self.pendingFeatureIDs
+                if !failedIDs.isEmpty {
+                    self.params.features.removeAll { failedIDs.contains($0.id) }
                     self.selectedFeatureID = nil
-                    self.pendingFeatureID = nil
+                    self.pendingFeatureIDs = []
                     self.message = "特征未生效，已撤回"
-                    self.error = "\(error.localizedDescription)（已撤销该特征）"
+                    self.error = "\(error.localizedDescription)（已撤销本次新增特征）"
                 } else {
                     self.message = "构建失败"
                     self.error = error.localizedDescription
@@ -4190,6 +4200,78 @@ struct True3DModelScreen: View {
         if report { notice = "基准面已显示：XY 平面" }
     }
 
+    private var measurementRows: [(String, String)] {
+        guard let result else { return [("状态", "先生成实体")] }
+        var rows: [(String, String)] = []
+        if let edge = selectedEdge {
+            rows.append(("类型", "边 #\(edge.edgeIndex)"))
+            rows.append(("长度", "\(fmt(edge.length)) mm"))
+            rows.append(("相邻面", "\(edge.adjacentFaceIndices.count) 个"))
+        } else if let face = selectedFace, let shapeFace = result.shape.face(at: face.faceIndex) {
+            rows.append(("类型", "面 #\(face.faceIndex)"))
+            rows.append(("法向", String(format: "%.2f, %.2f, %.2f", face.normal.x, face.normal.y, face.normal.z)))
+            rows.append(("面积", "\(fmt(shapeFace.area())) mm²"))
+            rows.append(("包围尺寸", "\(fmt(face.sizeX)) × \(fmt(face.sizeY)) mm"))
+        } else {
+            rows.append(("选择", "未选择边/面；下方为整体包围尺寸"))
+        }
+        rows.append(("整体 X", "\(fmt(result.stats.sizeX)) mm"))
+        rows.append(("整体 Y", "\(fmt(result.stats.sizeY)) mm"))
+        rows.append(("整体 Z", "\(fmt(result.stats.sizeZ)) mm"))
+        let diagonal = sqrt(pow(result.stats.sizeX, 2) + pow(result.stats.sizeY, 2) + pow(result.stats.sizeZ, 2))
+        rows.append(("对角线", "\(fmt(diagonal)) mm"))
+        return rows
+    }
+
+    private var analysisRows: [(String, String)] {
+        guard let result else { return [("状态", "先生成实体")] }
+        let stats = result.stats
+        return [
+            ("体积", "\(fmt(stats.volume)) mm³"),
+            ("面 / 边", "\(stats.faces) / \(stats.edges)"),
+            ("三角面", "\(stats.triangles)"),
+            ("包围尺寸", "\(fmt(stats.sizeX)) × \(fmt(stats.sizeY)) × \(fmt(stats.sizeZ)) mm"),
+            ("B-Rep 校验", stats.valid ? "有效实体" : "无效实体"),
+            ("特征", "\(params.features.count) 个（启用 \(params.activeFeatures.count)）"),
+            ("历史操作", "\(modelOperations.count) 个")
+        ]
+    }
+
+    private func inspectSheet(title: String, rows: [(String, String)]) -> some View {
+        NavigationView {
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                        HStack(alignment: .top, spacing: 12) {
+                            Text(row.0)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 76, alignment: .leading)
+                            Text(row.1)
+                                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                    }
+                }
+                .padding(16)
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") {
+                        showMeasurePanel = false
+                        showAnalysisPanel = false
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
     private func announceMeasurement() {
         guard let result else { notice = "先生成实体，再测量"; return }
         let stats = result.stats
@@ -4226,6 +4308,7 @@ struct True3DModelScreen: View {
     }
 
     private func setViewOrientation(_ orientation: True3DViewOrientation) {
+        captureCameraOrbit()
         viewOrientation = orientation
         switch orientation {
         case .iso:
@@ -4335,7 +4418,9 @@ struct True3DModelScreen: View {
         isPreview: Bool
     ) -> SCNScene {
         let newScene = SCNScene()
-        newScene.background.contents = UIColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1)
+        newScene.background.contents = renderDark
+            ? UIColor(red: 0.12, green: 0.14, blue: 0.18, alpha: 1)
+            : UIColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1)
         let modelRoot = SCNNode()
         modelRoot.name = "modelRoot"
         modelRoot.eulerAngles.x = -Float.pi / 2
