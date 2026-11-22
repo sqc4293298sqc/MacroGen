@@ -339,7 +339,7 @@ struct True3DModelScreen: View {
                 } else {
                     result = nil
                     scene = SCNScene()
-                    message = nil
+                    message = ""
                 }
             }
         }
