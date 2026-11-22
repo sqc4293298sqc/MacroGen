@@ -1959,15 +1959,15 @@ struct True3DModelScreen: View {
 
         // 圆柱/圆锥的轴默认沿 +Y；用欧拉角旋到 X/Y/Z。
         shaft(xColor, SCNVector3(length / 2, 0, 0), SCNVector3(0, 0, -Float.pi / 2))
-        head(xColor, SCNVector3(length + headHeight * 0.42, 0, 0), SCNVector3(0, 0, -Float.pi / 2))
+        head(xColor, SCNVector3(length + Float(headHeight * 0.42), 0, 0), SCNVector3(0, 0, -Float.pi / 2))
         label("X", xColor, SCNVector3(length + 10, -1, 0))
 
         shaft(yColor, SCNVector3(0, length / 2, 0), SCNVector3(0, 0, 0))
-        head(yColor, SCNVector3(0, length + headHeight * 0.42, 0), SCNVector3(0, 0, 0))
+        head(yColor, SCNVector3(0, length + Float(headHeight * 0.42), 0), SCNVector3(0, 0, 0))
         label("Y", yColor, SCNVector3(-1, length + 10, 0))
 
         shaft(zColor, SCNVector3(0, 0, length / 2), SCNVector3(Float.pi / 2, 0, 0))
-        head(zColor, SCNVector3(0, 0, length + headHeight * 0.42), SCNVector3(Float.pi / 2, 0, 0))
+        head(zColor, SCNVector3(0, 0, length + Float(headHeight * 0.42)), SCNVector3(Float.pi / 2, 0, 0))
         label("Z", zColor, SCNVector3(-1, -1, length + 10))
 
         let origin = SCNSphere(radius: 2.1)
@@ -4109,7 +4109,6 @@ struct True3DModelScreen: View {
             lineIndices.append(Int32((i + 1) % outline.count))
         }
         let lineElement = SCNGeometryElement(indices: lineIndices, primitiveType: .line)
-        lineElement.lineWidth = 3
         let lineGeometry = SCNGeometry(sources: [source], elements: [lineElement])
         let lineMaterial = SCNMaterial()
         lineMaterial.lightingModel = .constant
