@@ -370,6 +370,13 @@ addFeatureCase("face-boss-side", .faceBoss) { f in
     f.faceProfile = [True3DPoint3D(x: 60, y: -30, z: 0), True3DPoint3D(x: 60, y: 30, z: 0), True3DPoint3D(x: 60, y: 30, z: 10), True3DPoint3D(x: 60, y: -30, z: 10)]
     f.faceNormal = True3DPoint3D(x: 1, y: 0, z: 0)
 }
+addFeatureCase("face-cut-top", .faceBoss) { f in
+    f.name = "面切除"
+    f.faceProfile = [True3DPoint3D(x: -25, y: -18, z: 10), True3DPoint3D(x: 25, y: -18, z: 10), True3DPoint3D(x: 25, y: 18, z: 10), True3DPoint3D(x: -25, y: 18, z: 10)]
+    f.faceNormal = True3DPoint3D(x: 0, y: 0, z: 1)
+    f.bossHeight = 5
+    f.faceCut = true
+}
 
 var featureFailures = 0
 for (name, f) in featureCases {
