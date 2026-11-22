@@ -153,30 +153,6 @@ struct True3DHistoryOperation: Identifiable, Codable, Equatable, Sendable {
             return "C\(fmt(distance))"
         case .translate(let dx, let dy, let dz, _):
             return "ΔX\(fmt(dx)) ΔY\(fmt(dy)) ΔZ\(fmt(dz))"
-        case .variableFillet(let edgeRef, let radius1, let radius2):
-            guard radius1 > 0, radius2 > 0 else {
-                throw True3DModelError.invalidParameter("变半径圆角两端半径必须大于 0")
-            }
-            guard let edge = resolve(edgeRef, in: shape) else {
-                throw True3DModelError.edgeFailed("找不到要圆角的边，可能已被上一步修改")
-            }
-            guard let builder = FilletBuilder(shape: shape) else {
-                throw True3DModelError.edgeFailed("无法创建圆角构建器")
-            }
-            guard builder.addEdge(edge, radius1: radius1, radius2: radius2),
-                  builder.contour(for: edge) > 0 else {
-                throw True3DModelError.edgeFailed(
-                    "这条边不能加变半径 R\(fmt(radius1))→R\(fmt(radius2))"
-                )
-            }
-            guard builder.faultyContourCount == 0, builder.faultyVertexCount == 0,
-                  let result = builder.build(), result.isValid else {
-                throw True3DModelError.edgeFailed(
-                    "变半径圆角失败：半径可能超过实体允许范围"
-                )
-            }
-            return result
-
         case .multiFillet(let edges, let radius):
             return "\(edges.count) 条 · R\(fmt(radius))"
         case .multiChamfer(let edges, let distance):
@@ -466,6 +442,30 @@ struct True3DModelDocument: Identifiable, @unchecked Sendable {
             guard let result = builder.build(), result.isValid else {
                 throw True3DModelError.edgeFailed(
                     "C\(fmt(distance)) 倒角失败：距离可能超过实体允许范围"
+                )
+            }
+            return result
+
+        case .variableFillet(let edgeRef, let radius1, let radius2):
+            guard radius1 > 0, radius2 > 0 else {
+                throw True3DModelError.invalidParameter("变半径圆角两端半径必须大于 0")
+            }
+            guard let edge = resolve(edgeRef, in: shape) else {
+                throw True3DModelError.edgeFailed("找不到要圆角的边，可能已被上一步修改")
+            }
+            guard let builder = FilletBuilder(shape: shape) else {
+                throw True3DModelError.edgeFailed("无法创建圆角构建器")
+            }
+            guard builder.addEdge(edge, radius1: radius1, radius2: radius2),
+                  builder.contour(for: edge) > 0 else {
+                throw True3DModelError.edgeFailed(
+                    "这条边不能加变半径 R\(fmt(radius1))→R\(fmt(radius2))"
+                )
+            }
+            guard builder.faultyContourCount == 0, builder.faultyVertexCount == 0,
+                  let result = builder.build(), result.isValid else {
+                throw True3DModelError.edgeFailed(
+                    "变半径圆角失败：半径可能超过实体允许范围"
                 )
             }
             return result
