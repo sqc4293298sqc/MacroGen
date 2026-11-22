@@ -321,7 +321,7 @@ do {
 
 // 全特征矩阵：每个参数化特征单独构建一次，检查 B-Rep 是否有效、体积是否为正。
 var featureCases: [(String, True3DFeatureSpec)] = []
-func addFeatureCase(_ name: String, _ kind: True3DFeatureKind, _ mutate: (inout True3DFeatureSpec) -> Void = { _ in }) {
+@MainActor func addFeatureCase(_ name: String, _ kind: True3DFeatureKind, _ mutate: (inout True3DFeatureSpec) -> Void = { _ in }) {
     var f = True3DFeatureSpec(kind: kind)
     mutate(&f)
     featureCases.append((name, f))
