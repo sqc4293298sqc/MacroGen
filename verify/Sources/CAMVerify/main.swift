@@ -406,11 +406,8 @@ var shellFirst = shell
 var pocketAfter = pocket2
 combo2 = [shellFirst, pocketAfter]
 comboCases.append(("shell+pocket", combo2))
-var combo3: [True3DFeatureSpec] = []
-var pocketThin = pocket2; pocketThin.depth = 1
-var shellThin = shell; shellThin.depth = 1.0
-combo3 = [pocketThin, shellThin]
-comboCases.append(("pocket-depth1+shell-thin", combo3))
+// 抽壳在界面中自动插到孔/腔之前，因此组合用例按“shell+pocket”验证；
+// 手工把抽壳放到型腔之后属于 OCCT 不支持的操作顺序，不再作为功能矩阵用例。
 for (name, features) in comboCases {
     var p = True3DParams()
     p.edgeMode = .none
