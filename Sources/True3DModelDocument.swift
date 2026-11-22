@@ -486,12 +486,12 @@ struct True3DModelDocument: Identifiable, @unchecked Sendable {
                 throw True3DModelError.featureFailed("移动面：无法从面轮廓生成拉伸体")
             }
             if distance > 0 {
-                guard let fused = current + tool else {
+                guard let fused = shape + tool else {
                     throw True3DModelError.featureFailed("移动面：邻面延伸合并失败")
                 }
                 return fused
             }
-            guard let cut = current - tool else {
+            guard let cut = shape - tool else {
                 throw True3DModelError.featureFailed("移动面：向内移动切除失败")
             }
             return cut
