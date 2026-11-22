@@ -303,7 +303,7 @@ struct True3DCAMScreen: View {
     }
 }
 
-// MARK: - 2D 俯视预览 / 刀路模拟
+// MARK: - 3D 刀路预览 / 刀路模拟
 
 struct True3DPathSimulation: View {
     let segments: [TPSeg]
@@ -411,7 +411,7 @@ struct True3DPathSimulation: View {
                     Text("没有可模拟的刀路")
                 }
                 Spacer()
-                Text("俯视 · 橙线为已走刀路")
+                Text("立体 · 橙线为已走刀路")
                     .foregroundStyle(.secondary)
             }
             .font(.system(size: 10))
@@ -432,99 +432,207 @@ struct True3DPathPreview: View {
     let segments: [TPSeg]
     var progress: Double? = nil
 
+    @State private var yaw: Double = -0.66
+    @State private var pitch: Double = 0.52
+    @State private var zoom: CGFloat = 1.0
+    @State private var zoomStart: CGFloat? = nil
+
+    private let cutColor = Color(red: 1.0, green: 0.45, blue: 0.10)
+    private let rapidColor = Color(red: 0.48, green: 0.56, blue: 0.66)
+
     private var totalLength: Double {
         max(segments.reduce(0) { $0 + max($1.len, 0.001) }, 0.001)
     }
 
+    private var bounds: (minX: Double, maxX: Double, minY: Double, maxY: Double, minZ: Double, maxZ: Double)? {
+        guard !segments.isEmpty else { return nil }
+        var minX = Double.greatestFiniteMagnitude
+        var maxX = -Double.greatestFiniteMagnitude
+        var minY = Double.greatestFiniteMagnitude
+        var maxY = -Double.greatestFiniteMagnitude
+        var minZ = Double.greatestFiniteMagnitude
+        var maxZ = -Double.greatestFiniteMagnitude
+        for s in segments {
+            minZ = min(minZ, s.z); maxZ = max(maxZ, s.z)
+            for p in s.pts {
+                minX = min(minX, Double(p.x)); maxX = max(maxX, Double(p.x))
+                minY = min(minY, Double(p.y)); maxY = max(maxY, Double(p.y))
+            }
+        }
+        guard minX < maxX, minY < maxY else { return nil }
+        return (minX, maxX, minY, maxY, minZ, min(maxZ, minZ + 0.001))
+    }
+
     var body: some View {
         Canvas { context, size in
-            guard !segments.isEmpty else { return }
-            var minX = Double.greatestFiniteMagnitude
-            var maxX = -Double.greatestFiniteMagnitude
-            var minY = Double.greatestFiniteMagnitude
-            var maxY = -Double.greatestFiniteMagnitude
-            for s in segments {
-                for p in s.pts {
-                    minX = min(minX, Double(p.x)); maxX = max(maxX, Double(p.x))
-                    minY = min(minY, Double(p.y)); maxY = max(maxY, Double(p.y))
-                }
+            guard let b = bounds else { return }
+            let pad: CGFloat = 30
+            let dx = max(CGFloat(b.maxX - b.minX), 1)
+            let dy = max(CGFloat(b.maxY - b.minY), 1)
+            let dz = max(CGFloat(b.maxZ - b.minZ), 0.5)
+            let zBoost: CGFloat = 1.8
+            let span = max(dx, dy, dz * zBoost * 1.15, 1)
+            let fit = min((size.width - pad * 2) / span,
+                          (size.height - pad * 2) / (span * 0.78))
+            let scale = max(1, fit) * zoom
+            let cx = (b.minX + b.maxX) / 2
+            let cy = (b.minY + b.maxY) / 2
+            let cz = (b.minZ + b.maxZ) / 2
+            let center = CGPoint(x: size.width / 2, y: size.height / 2 + 6)
+            let cyaw = cos(yaw), syaw = sin(yaw)
+            let cp = cos(pitch), sp = sin(pitch)
+
+            func project(_ x: Double, _ y: Double, _ z: Double) -> CGPoint {
+                let px = x - cx, py = y - cy, pz = (z - cz) * Double(zBoost)
+                let x1 = px * cyaw - py * syaw
+                let y1 = px * syaw + py * cyaw
+                let y2 = y1 * cp - pz * sp
+                return CGPoint(x: center.x + CGFloat(x1) * scale,
+                               y: center.y - CGFloat(y2) * scale)
             }
-            guard minX < maxX, minY < maxY else { return }
-            let pad: CGFloat = 16
-            let scale = min(
-                (size.width - pad * 2) / CGFloat(maxX - minX),
-                (size.height - pad * 2) / CGFloat(maxY - minY)
-            )
-            let ox = (size.width - CGFloat(maxX - minX) * scale) / 2
-            let oy = (size.height - CGFloat(maxY - minY) * scale) / 2
 
-            func map(_ p: CGPoint) -> CGPoint {
-                CGPoint(
-                    x: ox + CGFloat(Double(p.x) - minX) * scale,
-                    y: size.height - oy - CGFloat(Double(p.y) - minY) * scale
-                )
+            context.fill(Path(CGRect(origin: .zero, size: size)),
+                         with: .color(Color(red: 0.95, green: 0.97, blue: 0.99)))
+
+            // 地面网格：让 Z 深度和工件平面可见
+            let groundZ = b.minZ
+            let grid = 6
+            for i in 0...grid {
+                let fx = b.minX + (b.maxX - b.minX) * Double(i) / Double(grid)
+                let fy = b.minY + (b.maxY - b.minY) * Double(i) / Double(grid)
+                var px = Path()
+                px.move(to: project(fx, b.minY, groundZ))
+                px.addLine(to: project(fx, b.maxY, groundZ))
+                context.stroke(px, with: .color(Color.black.opacity(0.075)), lineWidth: 0.8)
+                var py = Path()
+                py.move(to: project(b.minX, fy, groundZ))
+                py.addLine(to: project(b.maxX, fy, groundZ))
+                context.stroke(py, with: .color(Color.black.opacity(0.075)), lineWidth: 0.8)
             }
 
-            context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(red: 0.96, green: 0.97, blue: 0.98)))
+            // 工件包络线：X/Y/Z 三个方向都有尺度感
+            let corners: [(Double, Double)] = [(b.minX, b.minY), (b.maxX, b.minY), (b.maxX, b.maxY), (b.minX, b.maxY)]
+            for (i, c) in corners.enumerated() {
+                var v = Path()
+                v.move(to: project(c.0, c.1, b.minZ))
+                v.addLine(to: project(c.0, c.1, b.maxZ))
+                context.stroke(v, with: .color(Color(red: 0.35, green: 0.45, blue: 0.58).opacity(0.16)), lineWidth: 0.8)
+                let n = corners[(i + 1) % corners.count]
+                var edge = Path()
+                edge.move(to: project(c.0, c.1, b.minZ))
+                edge.addLine(to: project(n.0, n.1, b.minZ))
+                context.stroke(edge, with: .color(Color(red: 0.35, green: 0.45, blue: 0.58).opacity(0.11)), lineWidth: 0.8)
+            }
 
-            func strokeSegment(_ seg: TPSeg, fraction: Double, color: Color, lineWidth: CGFloat) {
+            func stroke(_ seg: TPSeg, fraction: Double, color: Color, width: CGFloat, dashed: Bool) {
                 guard let first = seg.pts.first else { return }
                 let clamped = max(0, min(fraction, 1))
                 var path = Path()
-                path.move(to: map(first))
+                path.move(to: project(Double(first.x), Double(first.y), seg.z))
                 if clamped >= 1 {
-                    for p in seg.pts.dropFirst() { path.addLine(to: map(p)) }
+                    for p in seg.pts.dropFirst() {
+                        path.addLine(to: project(Double(p.x), Double(p.y), seg.z))
+                    }
                 } else {
                     let n = max(seg.pts.count - 1, 1)
                     let pos = clamped * Double(n)
                     let complete = Int(pos)
                     if complete > 0 {
-                        for i in 1...complete { path.addLine(to: map(seg.pts[min(i, n)])) }
+                        for i in 1...complete {
+                            let p = seg.pts[min(i, n)]
+                            path.addLine(to: project(Double(p.x), Double(p.y), seg.z))
+                        }
                     }
                     if complete < n {
                         let t = pos - Double(complete)
                         let a = seg.pts[complete]
-                        let b = seg.pts[min(complete + 1, n)]
-                        let p = CGPoint(
-                            x: a.x + (b.x - a.x) * CGFloat(t),
-                            y: a.y + (b.y - a.y) * CGFloat(t)
-                        )
-                        path.addLine(to: map(p))
+                        let bb = seg.pts[min(complete + 1, n)]
+                        path.addLine(to: project(Double(a.x) + (Double(bb.x) - Double(a.x)) * t,
+                                                Double(a.y) + (Double(bb.y) - Double(a.y)) * t,
+                                                seg.z))
                     }
                 }
-                context.stroke(path, with: .color(color), lineWidth: lineWidth)
+                context.stroke(path, with: .color(color),
+                               style: StrokeStyle(lineWidth: width, dash: dashed ? [4, 3] : []))
             }
 
-            // 全路径底图
+            // 全刀路：切削橙色，快移灰色虚线
             for seg in segments {
-                strokeSegment(seg, fraction: 1, color: Color(red: 1.0, green: 0.45, blue: 0.10).opacity(0.16), lineWidth: 1.0)
+                stroke(seg, fraction: 1,
+                       color: seg.cut ? cutColor.opacity(0.18) : rapidColor.opacity(0.20),
+                       width: seg.cut ? 1.1 : 0.8,
+                       dashed: !seg.cut)
             }
 
+            // 已走部分
             let shown = progress ?? 1
             var consumed = max(0, min(shown, 1)) * totalLength
             for seg in segments {
                 let len = max(seg.len, 0.001)
                 if consumed <= 0 {
-                    if progress == nil { strokeSegment(seg, fraction: 1, color: Color(red: 1.0, green: 0.45, blue: 0.10), lineWidth: 1.6) }
+                    if progress == nil {
+                        stroke(seg, fraction: 1,
+                               color: seg.cut ? cutColor : rapidColor.opacity(0.75),
+                               width: seg.cut ? 1.3 : 0.9,
+                               dashed: !seg.cut)
+                    }
                 } else if consumed >= len {
-                    strokeSegment(seg, fraction: 1, color: Color(red: 1.0, green: 0.45, blue: 0.10), lineWidth: 1.6)
+                    stroke(seg, fraction: 1,
+                           color: seg.cut ? cutColor : rapidColor.opacity(0.75),
+                           width: seg.cut ? 1.3 : 0.9,
+                           dashed: !seg.cut)
                     consumed -= len
                 } else {
-                    strokeSegment(seg, fraction: consumed / len, color: Color(red: 1.0, green: 0.45, blue: 0.10), lineWidth: 1.6)
+                    stroke(seg, fraction: consumed / len,
+                           color: seg.cut ? cutColor : rapidColor.opacity(0.75),
+                           width: seg.cut ? 1.3 : 0.9,
+                           dashed: !seg.cut)
                     consumed = 0
                 }
             }
 
-            // 刀具位置
-            if let progress, progress < 1, let state = currentPoint(at: progress) {
-                let p = map(state)
-                let rect = CGRect(x: p.x - 5, y: p.y - 5, width: 10, height: 10)
+            // 当前刀具位置：圆环 + 到地面的虚线，明确它在 3D 深度里
+            if let progress, progress < 1, let pos = currentPosition(at: progress) {
+                let ground = project(Double(pos.x), Double(pos.y), b.minZ)
+                let knife = project(Double(pos.x), Double(pos.y), pos.z)
+                var drop = Path()
+                drop.move(to: knife)
+                drop.addLine(to: ground)
+                context.stroke(drop, with: .color(cutColor.opacity(0.45)),
+                               style: StrokeStyle(lineWidth: 0.9, dash: [3, 3]))
+                let rect = CGRect(x: knife.x - 5, y: knife.y - 5, width: 10, height: 10)
                 context.fill(Path(ellipseIn: rect), with: .color(.white))
                 context.stroke(Path(ellipseIn: rect), with: .color(Color(red: 0.9, green: 0.22, blue: 0.03)), lineWidth: 2)
             }
         }
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { v in
+                    yaw -= Double(v.translation.width) * 0.01
+                    pitch = min(1.18, max(-0.35, pitch + Double(v.translation.height) * 0.008))
+                }
+        )
+        .simultaneousGesture(
+            MagnificationGesture()
+                .onChanged { v in
+                    if zoomStart == nil { zoomStart = zoom }
+                    zoom = min(1.7, max(0.7, (zoomStart ?? 1) * v))
+                }
+                .onEnded { _ in zoomStart = nil }
+        )
+        .overlay(alignment: .topLeading) {
+            Label("3D · 拖动旋转", systemImage: "cube.transparent")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.white.opacity(0.82))
+                .clipShape(Capsule())
+                .padding(8)
+        }
         .overlay(alignment: .bottomTrailing) {
-            Text("俯视 · \(segments.count) 段")
+            Text("立体 · \(segments.count) 段 · X/Y/Z")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 8)
@@ -535,7 +643,7 @@ struct True3DPathPreview: View {
         }
     }
 
-    private func currentPoint(at progress: Double) -> CGPoint? {
+    private func currentPosition(at progress: Double) -> (x: CGFloat, y: CGFloat, z: Double)? {
         let target = max(0, min(progress, 1)) * totalLength
         var traveled = 0.0
         for seg in segments {
@@ -548,11 +656,12 @@ struct True3DPathPreview: View {
                 let t = pos - Double(i)
                 let a = seg.pts[i]
                 let b = seg.pts[min(i + 1, n)]
-                return CGPoint(x: a.x + (b.x - a.x) * CGFloat(t), y: a.y + (b.y - a.y) * CGFloat(t))
+                return (a.x + (b.x - a.x) * CGFloat(t), a.y + (b.y - a.y) * CGFloat(t), seg.z)
             }
             traveled += len
         }
-        return segments.last?.pts.last
+        if let last = segments.last, let p = last.pts.last { return (p.x, p.y, last.z) }
+        return nil
     }
 }
 
