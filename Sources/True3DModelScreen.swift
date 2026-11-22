@@ -1160,7 +1160,7 @@ struct True3DModelScreen: View {
                         Spacer()
                         Picker("", selection: Binding(
                             get: { rotateAxis },
-                            set: { rotateAxis = $0; scheduleMovePreview() }
+                            set: { rotateAxis = $0; refreshMoveHandles(); scheduleMovePreview() }
                         )) {
                             Text("X").tag(0)
                             Text("Y").tag(1)
