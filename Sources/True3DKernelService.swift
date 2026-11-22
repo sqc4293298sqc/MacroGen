@@ -61,18 +61,23 @@ actor True3DKernelService {
     /// 圆角预览。R1 只支持单边；多边/变半径放 R2。
     func previewFillet(
         on shape: Shape,
-        edge: Edge,
+        edges: [Edge],
         radius: Double
     ) async throws -> True3DPreview {
         try Task.checkCancellation()
         guard radius > 0 else {
             throw True3DModelError.invalidParameter("圆角半径必须大于 0")
         }
+        guard !edges.isEmpty else {
+            throw True3DModelError.previewFailed("没有要圆角的边")
+        }
         guard let builder = FilletBuilder(shape: shape) else {
             throw True3DModelError.previewFailed("无法创建圆角构建器")
         }
-        guard builder.addEdge(edge, radius: radius), builder.contour(for: edge) > 0 else {
-            throw True3DModelError.previewFailed("这条边不能加 R\(fmt(radius)) 圆角")
+        for edge in edges {
+            guard builder.addEdge(edge, radius: radius), builder.contour(for: edge) > 0 else {
+                throw True3DModelError.previewFailed("边 #\(edge.index) 不能加 R\(fmt(radius)) 圆角")
+            }
         }
         guard builder.faultyContourCount == 0, builder.faultyVertexCount == 0,
               let result = builder.build(), result.isValid else {
@@ -95,18 +100,23 @@ actor True3DKernelService {
     /// 倒角预览。与圆角同一套单边链路，距离对称。
     func previewChamfer(
         on shape: Shape,
-        edge: Edge,
+        edges: [Edge],
         distance: Double
     ) async throws -> True3DPreview {
         try Task.checkCancellation()
         guard distance > 0 else {
             throw True3DModelError.invalidParameter("倒角距离必须大于 0")
         }
+        guard !edges.isEmpty else {
+            throw True3DModelError.previewFailed("没有要倒角的边")
+        }
         guard let builder = ChamferBuilder(shape: shape) else {
             throw True3DModelError.previewFailed("无法创建倒角构建器")
         }
-        guard builder.addEdge(edge, distance: distance), builder.contour(for: edge) > 0 else {
-            throw True3DModelError.previewFailed("这条边不能加 C\(fmt(distance)) 倒角")
+        for edge in edges {
+            guard builder.addEdge(edge, distance: distance), builder.contour(for: edge) > 0 else {
+                throw True3DModelError.previewFailed("边 #\(edge.index) 不能加 C\(fmt(distance)) 倒角")
+            }
         }
         guard let result = builder.build(), result.isValid else {
             throw True3DModelError.previewFailed(

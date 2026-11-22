@@ -118,6 +118,9 @@ struct True3DHistoryOperation: Identifiable, Codable, Equatable, Sendable {
     enum Kind: Codable, Equatable, Sendable {
         case fillet(edge: True3DEdgeRef, radius: Double)
         case chamfer(edge: True3DEdgeRef, distance: Double)
+        case translate(dx: Double, dy: Double, dz: Double, copy: Bool)
+        case multiFillet(edges: [True3DEdgeRef], radius: Double)
+        case multiChamfer(edges: [True3DEdgeRef], distance: Double)
     }
 
     var id: UUID
@@ -134,6 +137,9 @@ struct True3DHistoryOperation: Identifiable, Codable, Equatable, Sendable {
         switch kind {
         case .fillet: return "圆角"
         case .chamfer: return "倒角"
+        case .translate(_, _, _, let copy): return copy ? "移动拷贝" : "移动体"
+        case .multiFillet(let edges, _): return "多边圆角 \(edges.count) 条"
+        case .multiChamfer(let edges, _): return "多边倒角 \(edges.count) 条"
         }
     }
 
@@ -143,6 +149,12 @@ struct True3DHistoryOperation: Identifiable, Codable, Equatable, Sendable {
             return "R\(fmt(radius))"
         case .chamfer(_, let distance):
             return "C\(fmt(distance))"
+        case .translate(let dx, let dy, let dz, _):
+            return "ΔX\(fmt(dx)) ΔY\(fmt(dy)) ΔZ\(fmt(dz))"
+        case .multiFillet(let edges, let radius):
+            return "\(edges.count) 条 · R\(fmt(radius))"
+        case .multiChamfer(let edges, let distance):
+            return "\(edges.count) 条 · C\(fmt(distance))"
         }
     }
 
@@ -380,6 +392,9 @@ struct True3DModelDocument: Identifiable, @unchecked Sendable {
         switch operation.kind {
         case .fillet: return .fillet
         case .chamfer: return .chamfer
+        case .translate: return .feature
+        case .multiFillet: return .fillet
+        case .multiChamfer: return .chamfer
         }
     }
 
@@ -425,6 +440,72 @@ struct True3DModelDocument: Identifiable, @unchecked Sendable {
                 )
             }
             return result
+
+        case .multiFillet(let edges, let radius):
+            guard radius > 0 else {
+                throw True3DModelError.invalidParameter("圆角半径必须大于 0")
+            }
+            guard !edges.isEmpty else {
+                throw True3DModelError.edgeFailed("没有要圆角的边")
+            }
+            guard let builder = FilletBuilder(shape: shape) else {
+                throw True3DModelError.edgeFailed("无法创建圆角构建器")
+            }
+            for ref in edges {
+                guard let edge = resolve(ref, in: shape) else {
+                    throw True3DModelError.edgeFailed("找不到要圆角的边，可能已被上一步修改")
+                }
+                guard builder.addEdge(edge, radius: radius), builder.contour(for: edge) > 0 else {
+                    throw True3DModelError.edgeFailed("边 #\(edge.index) 不能加 R\(fmt(radius)) 圆角")
+                }
+            }
+            guard builder.faultyContourCount == 0, builder.faultyVertexCount == 0,
+                  let result = builder.build(), result.isValid else {
+                throw True3DModelError.edgeFailed(
+                    "R\(fmt(radius)) 多边圆角失败：半径可能超过实体允许范围"
+                )
+            }
+            return result
+
+        case .multiChamfer(let edges, let distance):
+            guard distance > 0 else {
+                throw True3DModelError.invalidParameter("倒角距离必须大于 0")
+            }
+            guard !edges.isEmpty else {
+                throw True3DModelError.edgeFailed("没有要倒角的边")
+            }
+            guard let builder = ChamferBuilder(shape: shape) else {
+                throw True3DModelError.edgeFailed("无法创建倒角构建器")
+            }
+            for ref in edges {
+                guard let edge = resolve(ref, in: shape) else {
+                    throw True3DModelError.edgeFailed("找不到要倒角的边，可能已被上一步修改")
+                }
+                guard builder.addEdge(edge, distance: distance), builder.contour(for: edge) > 0 else {
+                    throw True3DModelError.edgeFailed("边 #\(edge.index) 不能加 C\(fmt(distance)) 倒角")
+                }
+            }
+            guard let result = builder.build(), result.isValid else {
+                throw True3DModelError.edgeFailed(
+                    "C\(fmt(distance)) 多边倒角失败：距离可能超过实体允许范围"
+                )
+            }
+            return result
+
+        case .translate(let dx, let dy, let dz, let copy):
+            guard abs(dx) + abs(dy) + abs(dz) > 1e-6 else {
+                throw True3DModelError.invalidParameter("移动距离不能全为 0")
+            }
+            guard let moved = shape.translated(by: SIMD3<Double>(dx, dy, dz)) else {
+                throw True3DModelError.featureFailed("移动体失败")
+            }
+            if copy {
+                guard let combined = shape + moved else {
+                    throw True3DModelError.featureFailed("移动拷贝布尔合并失败")
+                }
+                return combined
+            }
+            return moved
         }
     }
 

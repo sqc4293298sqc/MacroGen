@@ -75,11 +75,21 @@ struct True3DModelScreen: View {
     @State private var importedPart: True3DImportedPart?
     @State private var modelOperations: [True3DHistoryOperation] = []
     @State private var selectedEdge: True3DEdgeRef?
+    @State private var selectedEdges: [True3DEdgeRef] = []
     @State private var selectedFace: True3DFaceSelection?
     @State private var pickMode: True3DPickMode = .edge
     @State private var pendingFaceExtrude = false
     @State private var draftFeature: True3DFeatureSpec?
     @State private var showFeatureDrawer = false
+    @State private var showMoveDrawer = false
+    @State private var moveX: Double = 0
+    @State private var moveY: Double = 0
+    @State private var moveZ: Double = 0
+    @State private var moveCopy = false
+    @State private var movePreviewTask: Task<Void, Never>?
+    @State private var movePreviewGeneration = 0
+    @State private var isPreviewingMove = false
+    @State private var movePreviewError: String?
     @State private var filletRadius: Double = 2
     @State private var filletPreview: True3DPreview?
     @State private var filletPreviewRadius: Double?
@@ -479,6 +489,20 @@ struct True3DModelScreen: View {
                 .transition(.move(edge: .leading).combined(with: .opacity))
             }
 
+            if showMoveDrawer, !showFeatureDrawer {
+                VStack {
+                    HStack(alignment: .top) {
+                        AnyView(moveDrawer(width: width))
+                        Spacer(minLength: 0)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 10)
+                .padding(.top, 112)
+                .zIndex(20)
+                .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+
             VStack {
                 Spacer()
                 Text(bottomHint)
@@ -724,6 +748,9 @@ struct True3DModelScreen: View {
                 railItem("eye", "基准面", highlighted: showDatumPlane) { toggleDatumPlane() }
                 railItem("arrow.up.to.line", "拉伸", highlighted: pendingFaceExtrude) { beginFaceExtrude() }
                 railItem("arrow.triangle.2.circlepath", "旋转体") { openFeatureDrawer(.revolveBoss) }
+                railItem("arrow.up.and.down.and.arrow.left.and.right", "移动体", highlighted: showMoveDrawer) {
+                    openMoveDrawer()
+                }
                 railItem("line.diagonal", "圆角", highlighted: selectedEdge != nil) {
                     openEdgeDrawer(chamfer: false)
                 }
@@ -957,6 +984,106 @@ struct True3DModelScreen: View {
     )
     }
 
+    private func moveDrawer(width: CGFloat) -> AnyView {
+        AnyView(VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("移动体")
+                        .font(.system(size: 17, weight: .bold))
+                    Text("Move Body · 沿 XYZ 平移")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { cancelMoveDrawer() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 30, height: 30)
+                        .background(SwiftUI.Color.black.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 14)
+            .padding(.bottom, 8)
+
+            Divider().opacity(0.4)
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("对象").font(.system(size: 12))
+                    Spacer()
+                    Text("当前实体").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                    Button("归零") {
+                        moveX = 0; moveY = 0; moveZ = 0
+                        scheduleMovePreview()
+                    }
+                    .font(.system(size: 11, weight: .semibold))
+                }
+                numRow("X 方向", Binding(get: { moveX }, set: { moveX = $0; scheduleMovePreview() }))
+                numRow("Y 方向", Binding(get: { moveY }, set: { moveY = $0; scheduleMovePreview() }))
+                numRow("Z 方向", Binding(get: { moveZ }, set: { moveZ = $0; scheduleMovePreview() }))
+                Toggle("复制（保留原体）", isOn: Binding(
+                    get: { moveCopy },
+                    set: { moveCopy = $0; scheduleMovePreview() }
+                ))
+                .font(.system(size: 12))
+                Text("开启复制后，原体和移动后的副本都会保留；关闭则只移动当前实体。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+
+            if isPreviewingMove {
+                HStack(spacing: 7) {
+                    ProgressView().scaleEffect(0.7)
+                    Text("正在预览移动…").font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 6)
+            } else if let movePreviewError {
+                Text("预览失败：\(movePreviewError)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 6)
+            }
+
+            Divider().opacity(0.4)
+            HStack(spacing: 10) {
+                Button { cancelMoveDrawer() } label: {
+                    Text("取消").font(.system(size: 13, weight: .semibold))
+                        .frame(maxWidth: .infinity).frame(height: 42)
+                        .background(SwiftUI.Color.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+
+                Button { commitMoveBody() } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark")
+                        Text("应用移动")
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity).frame(height: 42)
+                    .background(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85), in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+                .disabled(isBuilding || importBusy || abs(moveX) + abs(moveY) + abs(moveZ) < 1e-6)
+            }
+            .padding(14)
+        }
+        .frame(width: min(340, width * 0.86), alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(SwiftUI.Color.white.opacity(0.5), lineWidth: 0.5))
+        )
+    }
+
     private func edgeDrawerFields(_ draft: True3DFeatureSpec) -> AnyView {
         AnyView(VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -986,12 +1113,12 @@ struct True3DModelScreen: View {
             if let edge = selectedEdge {
                 HStack {
                     Image(systemName: "line.diagonal")
-                    Text("边 #\(edge.edgeIndex) · \(fmt(edge.length)) mm")
+                    Text("已选 \(max(selectedEdges.count, 1)) 条 · 最后 #\(edge.edgeIndex) · \(fmt(edge.length)) mm")
                     Spacer()
-                    Button("重选") {
-                        selectedEdge = nil
+                    Button("清空重选") {
+                        clearEdgeSelection()
                         pickMode = .edge
-                        notice = "轻点一条边"
+                        notice = "继续轻点边，可多选"
                     }
                     .font(.system(size: 11, weight: .semibold))
                 }
@@ -3498,6 +3625,7 @@ struct True3DModelScreen: View {
             return
         }
         if showFeatureDrawer { cancelFeatureDrawer() }
+        if showMoveDrawer { cancelMoveDrawer() }
         beginDraftPreviewSession()
         pickMode = .edge
         pendingFaceExtrude = false
@@ -3514,6 +3642,10 @@ struct True3DModelScreen: View {
             return
         }
         cancelFeatureDrawer()
+        if showMoveDrawer { cancelMoveDrawer() }
+        selectedEdge = nil
+        selectedEdges.removeAll()
+        removeEdgeHighlights()
         pickMode = .face
         pendingFaceExtrude = true
         selectedFace = nil
@@ -3527,6 +3659,8 @@ struct True3DModelScreen: View {
             return
         }
         if showFeatureDrawer { cancelFeatureDrawer() }
+        if showMoveDrawer { cancelMoveDrawer() }
+        if selectedEdges.isEmpty, let edge = selectedEdge { selectedEdges = [edge] }
         beginDraftPreviewSession()
         edgeFeatureIsChamfer = chamfer
         var f = True3DFeatureSpec(kind: chamfer ? .edgeChamfer : .edgeFillet)
@@ -3538,6 +3672,127 @@ struct True3DModelScreen: View {
         showFeatureDrawer = true
         error = nil
         notice = nil
+    }
+
+    private func openMoveDrawer() {
+        if showMoveDrawer {
+            cancelMoveDrawer()
+            return
+        }
+        if showFeatureDrawer { cancelFeatureDrawer() }
+        beginDraftPreviewSession()
+        moveX = 0
+        moveY = 0
+        moveZ = 0
+        moveCopy = false
+        movePreviewError = nil
+        isPreviewingMove = false
+        showMoveDrawer = true
+        message = "移动体：输入 XYZ 方向距离"
+        notice = nil
+        error = nil
+    }
+
+    private func cancelMoveDrawer() {
+        movePreviewTask?.cancel()
+        movePreviewGeneration += 1
+        if let baseline = draftPreviewBaseline {
+            result = baseline.result
+            scene = baseline.scene
+            applyOrbit()
+        }
+        draftPreviewBaseline = nil
+        isPreviewingMove = false
+        movePreviewError = nil
+        showMoveDrawer = false
+        error = nil
+    }
+
+    private func closeMoveDrawer() {
+        movePreviewTask?.cancel()
+        movePreviewGeneration += 1
+        draftPreviewBaseline = nil
+        isPreviewingMove = false
+        movePreviewError = nil
+        showMoveDrawer = false
+    }
+
+    private func scheduleMovePreview() {
+        guard showMoveDrawer else { return }
+        movePreviewTask?.cancel()
+        movePreviewGeneration += 1
+        let generation = movePreviewGeneration
+        let total = abs(moveX) + abs(moveY) + abs(moveZ)
+        if total < 1e-6 {
+            isPreviewingMove = false
+            movePreviewError = nil
+            if let baseline = draftPreviewBaseline {
+                result = baseline.result
+                scene = baseline.scene
+                applyOrbit()
+            }
+            return
+        }
+        movePreviewError = nil
+        movePreviewTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 600_000_000)
+            } catch { return }
+            guard !Task.isCancelled, generation == movePreviewGeneration, showMoveDrawer else { return }
+            await buildMovePreview(generation: generation)
+        }
+    }
+
+    private func buildMovePreview(generation: Int) async {
+        guard showMoveDrawer else { return }
+        isPreviewingMove = true
+        defer {
+            if generation == movePreviewGeneration { isPreviewingMove = false }
+        }
+        var previewOperations = modelOperations
+        previewOperations.append(True3DHistoryOperation(kind: .translate(
+            dx: moveX, dy: moveY, dz: moveZ, copy: moveCopy
+        )))
+        let document = True3DModelDocument(
+            id: modelDocumentID,
+            params: params,
+            operations: previewOperations
+        )
+        do {
+            let preview = try await kernelService.build(document)
+            guard !Task.isCancelled, generation == movePreviewGeneration,
+                  showMoveDrawer else { return }
+            if draftPreviewBaseline == nil { beginDraftPreviewSession() }
+            result = preview
+            scene = makeScene(result: preview)
+            applyOrbit()
+            movePreviewError = nil
+            message = "移动预览"
+        } catch is CancellationError {
+            return
+        } catch {
+            guard generation == movePreviewGeneration else { return }
+            movePreviewError = error.localizedDescription
+        }
+    }
+
+    private func commitMoveBody() {
+        guard abs(moveX) + abs(moveY) + abs(moveZ) > 1e-6 else { return }
+        let dx = moveX, dy = moveY, dz = moveZ
+        let copy = moveCopy
+        movePreviewTask?.cancel()
+        movePreviewGeneration += 1
+        draftPreviewBaseline = nil
+        isPreviewingMove = false
+        movePreviewError = nil
+        showMoveDrawer = false
+        modelOperations.append(True3DHistoryOperation(kind: .translate(
+            dx: dx, dy: dy, dz: dz, copy: copy
+        )))
+        notice = copy
+            ? "已移动并保留原体：ΔX \(fmt(dx)) ΔY \(fmt(dy)) ΔZ \(fmt(dz))"
+            : "已移动实体：ΔX \(fmt(dx)) ΔY \(fmt(dy)) ΔZ \(fmt(dz))"
+        rebuild()
     }
 
     private func closeFeatureDrawer() {
@@ -3676,25 +3931,44 @@ struct True3DModelScreen: View {
     private func commitFeatureDrawer() {
         guard var draft = draftFeature else { return }
         if draft.kind == .edgeFillet || draft.kind == .edgeChamfer {
-            guard let edge = selectedEdge else {
+            var refs = selectedEdges
+            if refs.isEmpty, let edge = selectedEdge { refs = [edge] }
+            guard !refs.isEmpty else {
                 error = "请先在三维模型上选择一条边"
                 return
             }
+            guard let currentShape = result?.shape else {
+                error = "实体尚未构建完成"
+                return
+            }
+            let validRefs = refs.filter { currentShape.edge(at: $0.edgeIndex) != nil }
+            guard !validRefs.isEmpty else {
+                error = "选中的边已失效，请重新选边"
+                return
+            }
             let requested = max(draft.depth, 0.1)
-            let allowed = maximumBlendSize(for: edge)
-            let size = min(requested, allowed)
-            if draft.kind == .edgeFillet {
-                modelOperations.append(True3DHistoryOperation(kind: .fillet(edge: edge, radius: size)))
+            let maxAllowed = validRefs.map { maximumBlendSize(for: $0) }.min() ?? requested
+            let size = min(requested, maxAllowed)
+            let clamped = abs(size - requested) > 0.01
+            if validRefs.count == 1, let edge = validRefs.first {
+                if draft.kind == .edgeFillet {
+                    modelOperations.append(True3DHistoryOperation(kind: .fillet(edge: edge, radius: size)))
+                } else {
+                    modelOperations.append(True3DHistoryOperation(kind: .chamfer(edge: edge, distance: size)))
+                }
+            } else if draft.kind == .edgeFillet {
+                modelOperations.append(True3DHistoryOperation(kind: .multiFillet(edges: validRefs, radius: size)))
             } else {
-                modelOperations.append(True3DHistoryOperation(kind: .chamfer(edge: edge, distance: size)))
+                modelOperations.append(True3DHistoryOperation(kind: .multiChamfer(edges: validRefs, distance: size)))
             }
             selectedEdge = nil
-            scene.rootNode.childNode(withName: "selectedEdge", recursively: true)?.removeFromParentNode()
+            selectedEdges.removeAll()
+            removeEdgeHighlights()
             closeFeatureDrawer()
             let label = draft.kind == .edgeFillet ? "圆角" : "倒角"
-            notice = abs(size - requested) > 0.01
-                ? "已添加边\(label)，尺寸自动夹到 \(fmt(size)) mm"
-                : "已添加边\(label)"
+            notice = clamped
+                ? "已对 \(validRefs.count) 条边添加\(label)，部分尺寸已自动夹取"
+                : "已对 \(validRefs.count) 条边添加\(label)"
             rebuild()
             return
         }
@@ -4018,6 +4292,7 @@ struct True3DModelScreen: View {
                 self.message = "构建完成"
                 self.pendingFeatureIDs = []
                 self.selectedEdge = nil
+                self.selectedEdges.removeAll()
                 self.selectedFace = nil
                 self.pendingFaceExtrude = false
                 self.scene = self.makeScene(result: newResult)
@@ -4075,7 +4350,8 @@ struct True3DModelScreen: View {
     }
 
     private func previewFillet() {
-        guard let edgeRef = selectedEdge,
+        let refs = selectedEdges.isEmpty ? (selectedEdge.map { [$0] } ?? []) : selectedEdges
+        guard !refs.isEmpty,
               let result,
               !isDirty,
               !isBuilding,
@@ -4086,11 +4362,12 @@ struct True3DModelScreen: View {
             error = edgeFeatureIsChamfer ? "倒角距离必须大于 0" : "圆角半径必须大于 0"
             return
         }
-        guard let edge = result.shape.edge(at: edgeRef.edgeIndex) else {
+        let edges = refs.compactMap { result.shape.edge(at: $0.edgeIndex) }
+        guard !edges.isEmpty else {
             error = "选中的边已经失效，请重新选边"
             return
         }
-        let maxBlend = maximumBlendSize(for: edgeRef)
+        let maxBlend = refs.map { maximumBlendSize(for: $0) }.min() ?? filletRadius
         if filletRadius > maxBlend {
             filletRadius = maxBlend
             draftFeature?.depth = maxBlend
@@ -4115,13 +4392,13 @@ struct True3DModelScreen: View {
                 if self.edgeFeatureIsChamfer {
                     preview = try await self.kernelService.previewChamfer(
                         on: shape,
-                        edge: edge,
+                        edges: edges,
                         distance: radius
                     )
                 } else {
                     preview = try await self.kernelService.previewFillet(
                         on: shape,
-                        edge: edge,
+                        edges: edges,
                         radius: radius
                     )
                 }
@@ -4132,9 +4409,10 @@ struct True3DModelScreen: View {
                 self.scene = self.makePreviewScene(preview)
                 self.applyOrbit()
                 self.isPreviewingFillet = false
-                self.message = self.edgeFeatureIsChamfer
+                self.message = (self.edgeFeatureIsChamfer
                     ? "倒角预览 C\(String(format: "%.2f", radius))"
-                    : "圆角预览 R\(String(format: "%.2f", radius))"
+                    : "圆角预览 R\(String(format: "%.2f", radius))")
+                    + " · \(edges.count) 条边"
             } catch is CancellationError {
                 guard generation == self.filletPreviewGeneration else { return }
                 self.isPreviewingFillet = false
@@ -4147,7 +4425,9 @@ struct True3DModelScreen: View {
     }
 
     private func commitFillet() {
-        guard let edge = selectedEdge,
+        var refs = selectedEdges
+        if refs.isEmpty, let edge = selectedEdge { refs = [edge] }
+        guard !refs.isEmpty,
               filletRadius > 0,
               filletPreview != nil,
               (filletPreviewRadius ?? -1) == filletRadius,
@@ -4156,16 +4436,27 @@ struct True3DModelScreen: View {
               !isBuilding else {
             return
         }
-        if edgeFeatureIsChamfer {
+        if refs.count == 1, let edge = refs.first {
+            if edgeFeatureIsChamfer {
+                modelOperations.append(
+                    True3DHistoryOperation(kind: .chamfer(edge: edge, distance: filletRadius))
+                )
+            } else {
+                modelOperations.append(
+                    True3DHistoryOperation(kind: .fillet(edge: edge, radius: filletRadius))
+                )
+            }
+        } else if edgeFeatureIsChamfer {
             modelOperations.append(
-                True3DHistoryOperation(kind: .chamfer(edge: edge, distance: filletRadius))
+                True3DHistoryOperation(kind: .multiChamfer(edges: refs, distance: filletRadius))
             )
         } else {
             modelOperations.append(
-                True3DHistoryOperation(kind: .fillet(edge: edge, radius: filletRadius))
+                True3DHistoryOperation(kind: .multiFillet(edges: refs, radius: filletRadius))
             )
         }
         selectedEdge = nil
+        selectedEdges.removeAll()
         selectedFeatureID = nil
         error = nil
         notice = nil
@@ -4185,10 +4476,10 @@ struct True3DModelScreen: View {
             scene = makeScene(result: result)
             applyOrbit()
             if showDatumPlane { addDatumPlane(report: false) }
-            if let selectedEdge,
-               let edge = result.shape.edge(at: selectedEdge.edgeIndex),
+            if !selectedEdges.isEmpty,
                let modelRoot = scene.rootNode.childNode(withName: "modelRoot", recursively: false) {
-                highlightSelectedEdge(modelRoot: modelRoot, edge: edge)
+                let edges = selectedEdges.compactMap { result.shape.edge(at: $0.edgeIndex) }
+                highlightSelectedEdges(modelRoot: modelRoot, edges: edges)
             }
         }
     }
@@ -4282,14 +4573,24 @@ struct True3DModelScreen: View {
         }
 
         let reference = True3DEdgeRef.make(edge: edge, in: result.shape)
-        selectedEdge = reference
+        if let index = selectedEdges.firstIndex(of: reference) {
+            selectedEdges.remove(at: index)
+        } else {
+            selectedEdges.append(reference)
+        }
+        selectedEdge = selectedEdges.last
         selectedFace = nil
         scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
         selectedFeatureID = nil
         error = nil
         notice = nil
-        message = "已选中边 #\(reference.edgeIndex)，点圆角/倒角设置参数"
-        highlightSelectedEdge(modelRoot: modelRoot, edge: edge)
+        if let selectedEdge {
+            message = "已选 \(selectedEdges.count) 条边 · 最后一条 #\(selectedEdge.edgeIndex)"
+        } else {
+            message = "已取消边选择"
+        }
+        let selectedShapeEdges = selectedEdges.compactMap { result.shape.edge(at: $0.edgeIndex) }
+        highlightSelectedEdges(modelRoot: modelRoot, edges: selectedShapeEdges)
         if showFeatureDrawer, draftFeature?.kind == .edgeFillet || draftFeature?.kind == .edgeChamfer {
             filletRadius = max(draftFeature?.depth ?? filletRadius, 0.1)
             scheduleFilletPreview()
@@ -4334,8 +4635,9 @@ struct True3DModelScreen: View {
             sizeY: max(sizeY, 1)
         )
         selectedEdge = nil
+        selectedEdges.removeAll()
         selectedFeatureID = nil
-        scene.rootNode.childNode(withName: "selectedEdge", recursively: true)?.removeFromParentNode()
+        removeEdgeHighlights()
         addFaceHighlight(outline: outline, normal: normal)
 
         if pendingFaceExtrude {
@@ -4459,8 +4761,16 @@ struct True3DModelScreen: View {
         marker.addChildNode(outlineNode)
     }
 
+    private func highlightSelectedEdges(modelRoot: SCNNode, edges: [OCCTSwift.Edge]) {
+        for node in modelRoot.childNodes where node.name?.hasPrefix("selectedEdge") == true {
+            node.removeFromParentNode()
+        }
+        for edge in edges {
+            highlightSelectedEdge(modelRoot: modelRoot, edge: edge)
+        }
+    }
+
     private func highlightSelectedEdge(modelRoot: SCNNode, edge: OCCTSwift.Edge) {
-        modelRoot.childNode(withName: "selectedEdge", recursively: false)?.removeFromParentNode()
         let points = edge.points(count: 64)
         guard points.count >= 2 else { return }
 
@@ -4484,7 +4794,7 @@ struct True3DModelScreen: View {
         material.readsFromDepthBuffer = false
         geometry.materials = [material]
         let node = SCNNode(geometry: geometry)
-        node.name = "selectedEdge"
+        node.name = "selectedEdge-\(edge.index)"
         node.renderingOrder = 200
         modelRoot.addChildNode(node)
     }
@@ -4492,8 +4802,16 @@ struct True3DModelScreen: View {
     private func clearEdgeSelection() {
         clearFilletPreview(restoreScene: true)
         selectedEdge = nil
+        selectedEdges.removeAll()
         notice = nil
-        scene.rootNode.childNode(withName: "selectedEdge", recursively: true)?.removeFromParentNode()
+        removeEdgeHighlights()
+    }
+
+    private func removeEdgeHighlights() {
+        guard let root = scene.rootNode.childNode(withName: "modelRoot", recursively: false) else { return }
+        for node in root.childNodes where node.name?.hasPrefix("selectedEdge") == true {
+            node.removeFromParentNode()
+        }
     }
 
     private func toggleDatumPlane() {

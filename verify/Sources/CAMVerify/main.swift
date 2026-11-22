@@ -176,6 +176,28 @@ do {
         fail("history: suppressed operation did not stay suppressed")
     }
     print("PASS history: suppressed operation node retained")
+
+    var moveDocument = document
+    moveDocument.append(True3DHistoryOperation(kind: .translate(dx: 20, dy: 0, dz: 0, copy: false)))
+    let moved = try moveDocument.build()
+    guard moved.stats.valid, moved.nodes.count == 2,
+          moved.nodes[1].name == "移动体",
+          abs(moved.stats.volume - built.stats.volume) < 50,
+          let baseBounds = built.shape.bounds, let movedBounds = moved.shape.bounds,
+          abs((movedBounds.min.x - baseBounds.min.x) - 20) < 0.5 else {
+        fail("history-translate: body did not move by 20 mm")
+    }
+    print("PASS history-translate: ΔX=\(String(format: "%.1f", movedBounds.min.x - baseBounds.min.x))")
+
+    var copyDocument = document
+    copyDocument.append(True3DHistoryOperation(kind: .translate(dx: 120, dy: 0, dz: 0, copy: true)))
+    let copied = try copyDocument.build()
+    guard copied.stats.valid, copied.nodes.count == 2,
+          copied.nodes[1].name == "移动拷贝",
+          copied.stats.volume > built.stats.volume * 1.8 else {
+        fail("history-translate-copy: copy did not keep original body")
+    }
+    print("PASS history-translate-copy: volume=\(String(format: "%.1f", copied.stats.volume))")
 } catch {
     fail("history: \(error.localizedDescription)")
 }
