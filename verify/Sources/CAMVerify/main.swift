@@ -279,4 +279,43 @@ do {
     fail("revolve-profile-base: \(error.localizedDescription)")
 }
 
+
+do {
+    var baseParams = True3DParams()
+    baseParams.edgeMode = .none
+    baseParams.features = []
+    let base = try True3DKernel.build(baseParams)
+    guard base.stats.valid else { fail("face-extrude: base invalid") }
+
+    for (label, wantedZ) in [("top", 1.0), ("side", 0.0)] {
+        guard let face = base.shape.faces().first(where: { f in
+            guard f.isPlanar, let n = f.normal else { return false }
+            return wantedZ > 0.5 ? n.z > 0.9 : abs(n.y) > 0.9
+        }), let wire = face.outerWire, let curve = WireCurve(wire) else {
+            fail("face-extrude-\(label): no planar face/wire")
+        }
+        var pts = curve.points(count: 48).map { True3DPoint3D(x: $0.x, y: $0.y, z: $0.z) }
+        if let first = pts.first, let last = pts.last,
+           hypot(hypot(first.x - last.x, first.y - last.y), first.z - last.z) < 1e-4 {
+            pts.removeLast()
+        }
+        guard let n = face.normal, pts.count >= 3 else { fail("face-extrude-\(label): no outline") }
+        var f = True3DFeatureSpec(kind: .faceBoss)
+        f.name = "面拉伸-\(label)"
+        f.bossHeight = 5
+        f.faceProfile = pts
+        f.faceNormal = True3DPoint3D(x: n.x, y: n.y, z: n.z)
+        f.faceIndex = face.index
+        var params = baseParams
+        params.features = [f]
+        let built = try True3DKernel.build(params)
+        guard built.stats.valid, built.stats.volume > base.stats.volume + 100 else {
+            fail("face-extrude-\(label): volume did not grow (base=\(base.stats.volume) new=\(built.stats.volume))")
+        }
+        print("PASS face-extrude-\(label): faces=\(built.stats.faces) volume=\(String(format: "%.1f", built.stats.volume))")
+    }
+} catch {
+    fail("face-extrude: \(error.localizedDescription)")
+}
+
 print("ALL CAM CHECKS PASSED")
