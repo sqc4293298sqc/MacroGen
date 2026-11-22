@@ -516,7 +516,7 @@ struct SimCanvas: View {
             if iso {
                 yaw = -45 * .pi / 180; pitch = 35 * .pi / 180
             } else {
-                yaw = -90 * .pi / 180; pitch = 89 * .pi / 180
+                yaw = -90 * .pi / 180; pitch = 90 * .pi / 180
             }
             baseYaw = yaw; basePitch = pitch
         }
@@ -524,7 +524,7 @@ struct SimCanvas: View {
             if newValue {
                 yaw = -45 * .pi / 180; pitch = 35 * .pi / 180
             } else {
-                yaw = -90 * .pi / 180; pitch = 89 * .pi / 180
+                yaw = -90 * .pi / 180; pitch = 90 * .pi / 180
             }
             baseYaw = yaw; basePitch = pitch
             pan = .zero; basePan = .zero

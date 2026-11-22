@@ -462,8 +462,10 @@ enum True3DKernel {
             return base
         case .profile:
             guard p.profile.count >= 3,
-                  let wire = profileWire(p.profile, curve: p.profileCurve, z: 0),
-                  let base = Shape.extrude(profile: wire, direction: SIMD3<Double>(0, 0, 1), length: p.height) else {
+                  let base = extrudeProfile(
+                    p.profile, curve: p.profileCurve,
+                    direction: SIMD3<Double>(0, 0, 1), length: p.height
+                  ) else {
                 throw True3DModelError.baseFailed
             }
             return base
@@ -966,6 +968,23 @@ enum True3DKernel {
         return result
     }
 
+    /// 优先按真圆/平滑样条拉伸；失败时回退折线，避免新曲线让整个模型构建失败。
+    private static func extrudeProfile(
+        _ points: [True3DPoint],
+        curve: True3DProfileCurve?,
+        direction: SIMD3<Double>,
+        length: Double
+    ) -> Shape? {
+        if let wire = profileWire(points, curve: curve, z: 0),
+           let shape = Shape.extrude(profile: wire, direction: direction, length: length) {
+            return shape
+        }
+        guard let fallback = Wire.polygon(points.map { SIMD2<Double>($0.x, $0.y) }, closed: true) else {
+            return nil
+        }
+        return Shape.extrude(profile: fallback, direction: direction, length: length)
+    }
+
     /// 草图轮廓转 OCCT 线框：圆用真圆，平滑曲线用周期插值样条，其余保持折线。
     private static func profileWire(_ points: [True3DPoint], curve: True3DProfileCurve?, z: Double) -> Wire? {
         guard points.count >= 3 else { return nil }
@@ -1004,7 +1023,6 @@ enum True3DKernel {
     private static func profileTool(_ f: True3DFeatureSpec, baseHeight h: Double, isBoss: Bool) -> Shape? {
         guard f.profile.count >= 3 else { return nil }
         let moved = f.profile.map { True3DPoint(x: $0.x + f.x, y: $0.y + f.y) }
-        guard let wire = profileWire(moved, curve: f.profileCurve, z: 0) else { return nil }
         let top = f.topZ ?? h
         let length: Double
         let z: Double
@@ -1019,7 +1037,10 @@ enum True3DKernel {
             length = max(start - end, 0.1) + 0.2
             z = top + end
         }
-        guard let prism = Shape.extrude(profile: wire, direction: SIMD3<Double>(0, 0, 1), length: length) else {
+        guard let prism = extrudeProfile(
+            moved, curve: f.profileCurve,
+            direction: SIMD3<Double>(0, 0, 1), length: length
+        ) else {
             return nil
         }
         return prism.translated(by: SIMD3<Double>(0, 0, z))
