@@ -132,6 +132,20 @@ do {
         fail("sketch-profile: extrusion did not produce a valid solid")
     }
     print("PASS sketch-profile: faces=\(sketchBuilt.stats.faces) nodes=\(sketchBuilt.nodes.count)")
+
+    var offsetFeature = sketchFeature
+    offsetFeature.profileStartOffset = 4
+    offsetFeature.profileEndOffset = 14
+    params.features = [offsetFeature]
+    let offsetBuilt = try True3DModelDocument(params: params).build()
+    guard offsetBuilt.stats.valid,
+          let baseBounds = sketchBuilt.shape.bounds,
+          let offsetBounds = offsetBuilt.shape.bounds,
+          abs((offsetBounds.max.z - baseBounds.max.z) - 14) < 0.5,
+          offsetBuilt.stats.volume > sketchBuilt.stats.volume else {
+        fail("sketch-profile-offset: start/end offsets did not apply")
+    }
+    print("PASS sketch-profile-offset: topZ=\(String(format: "%.1f", offsetBounds.max.z))")
 } catch {
     fail("sketch-profile: \(error.localizedDescription)")
 }

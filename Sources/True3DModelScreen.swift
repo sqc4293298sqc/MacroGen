@@ -3469,10 +3469,28 @@ struct True3DModelScreen: View {
                 .font(.system(size: 10)).foregroundStyle(.secondary)))
         case .profileBoss:
             rows.append(AnyView(Text("草图轮廓：\(f.wrappedValue.profile.count) 个点").font(.system(size: 11)).foregroundStyle(.secondary)))
-            rows.append(AnyView(numRow("拉伸高度", f.bossHeight)))
+            rows.append(AnyView(numRow("起点偏移", Binding(
+                get: { f.wrappedValue.profileStartOffset ?? 0 },
+                set: { f.wrappedValue.profileStartOffset = $0 }
+            ))))
+            rows.append(AnyView(numRow("终点偏移", Binding(
+                get: { f.wrappedValue.profileEndOffset ?? f.wrappedValue.bossHeight },
+                set: { f.wrappedValue.profileEndOffset = $0 }
+            ))))
+            rows.append(AnyView(Text("相对草图平面，正值沿 +Z；终点必须大于起点。")
+                .font(.system(size: 10)).foregroundStyle(.secondary)))
         case .profileCut:
             rows.append(AnyView(Text("草图轮廓：\(f.wrappedValue.profile.count) 个点").font(.system(size: 11)).foregroundStyle(.secondary)))
-            rows.append(AnyView(numRow("切除深度", f.depth)))
+            rows.append(AnyView(numRow("起点偏移", Binding(
+                get: { f.wrappedValue.profileStartOffset ?? 0 },
+                set: { f.wrappedValue.profileStartOffset = $0 }
+            ))))
+            rows.append(AnyView(numRow("终点偏移", Binding(
+                get: { f.wrappedValue.profileEndOffset ?? -f.wrappedValue.depth },
+                set: { f.wrappedValue.profileEndOffset = $0 }
+            ))))
+            rows.append(AnyView(Text("相对草图平面，负值沿 -Z；终点必须小于起点。")
+                .font(.system(size: 10)).foregroundStyle(.secondary)))
         }
         if showPosition { rows.append(AnyView(topZEditor(f))) }
         return AnyView(

@@ -120,6 +120,9 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
     var csDia: Double? = nil
     var csAngle: Double? = nil
     var topZ: Double? = nil
+    /// 草图拉伸的起点/终点偏移，相对草图所在平面；正值朝 +Z。
+    var profileStartOffset: Double? = nil
+    var profileEndOffset: Double? = nil
     var cornerRadius: Double = 0
     /// 草图拉伸特征的闭合轮廓，坐标是基础块坐标系（mm）。
     var profile: [True3DPoint] = []
@@ -642,11 +645,21 @@ enum True3DKernel {
             }
             return fused
         case .profileBoss:
+            let start = f.profileStartOffset ?? 0
+            let end = f.profileEndOffset ?? max(f.bossHeight, 0.1)
+            guard end > start else {
+                throw True3DModelError.invalidParameter("草图拉伸的终点偏移必须大于起点偏移")
+            }
             guard let tool = profileTool(f, baseHeight: h, isBoss: true), let fused = current + tool else {
                 throw True3DModelError.featureFailed("\(f.name) 草图拉伸合并失败，轮廓可能不自交或不在实体上")
             }
             return fused
         case .profileCut:
+            let start = f.profileStartOffset ?? 0
+            let end = f.profileEndOffset ?? -max(f.depth, 0.1)
+            guard end < start else {
+                throw True3DModelError.invalidParameter("草图切除的终点偏移必须小于起点偏移")
+            }
             guard let tool = profileTool(f, baseHeight: h, isBoss: false), let cut = current - tool else {
                 throw True3DModelError.featureFailed("\(f.name) 草图切除失败，轮廓可能不自交或切不到实体")
             }
@@ -950,11 +963,15 @@ enum True3DKernel {
         let length: Double
         let z: Double
         if isBoss {
-            length = max(f.bossHeight, 0.1)
-            z = top
+            let start = f.profileStartOffset ?? 0
+            let end = f.profileEndOffset ?? max(f.bossHeight, 0.1)
+            length = max(end - start, 0.1)
+            z = top + start
         } else {
-            length = max(f.depth, 0.1) + 1
-            z = top - max(f.depth, 0.1)
+            let start = f.profileStartOffset ?? 0
+            let end = f.profileEndOffset ?? -max(f.depth, 0.1)
+            length = max(start - end, 0.1) + 0.2
+            z = top + end
         }
         guard let prism = Shape.extrude(profile: wire, direction: SIMD3<Double>(0, 0, 1), length: length) else {
             return nil
