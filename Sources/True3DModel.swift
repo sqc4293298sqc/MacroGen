@@ -64,6 +64,11 @@ struct True3DPoint: Codable, Equatable, Hashable {
     var y: Double
 }
 
+enum True3DProfileCurve: String, Codable, Equatable, Hashable {
+    case polyline
+    case smooth
+}
+
 struct True3DPoint3D: Codable, Equatable, Hashable {
     var x: Double
     var y: Double
@@ -128,6 +133,8 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
     var cornerRadius: Double = 0
     /// 草图拉伸特征的闭合轮廓，坐标是基础块坐标系（mm）。
     var profile: [True3DPoint] = []
+    /// 轮廓曲线类型：折线或平滑样条。
+    var profileCurve: True3DProfileCurve? = nil
     /// 面拉伸：所选面的外轮廓（模型坐标，mm），以及外法向。
     var faceProfile: [True3DPoint3D]? = nil
     var faceNormal: True3DPoint3D? = nil
@@ -290,6 +297,8 @@ struct True3DParams: Equatable, Codable {
     var height: Double = 10
     var baseShape: True3DBaseShape = .box
     var profile: [True3DPoint] = []
+    /// 草图轮廓是否为平滑曲线；nil/ polyline 按折线拉伸，smooth 用周期 B 样条。
+    var profileCurve: True3DProfileCurve? = nil
     var edgeMode: True3DEdgeMode = .none
     var edgeSize: Double = 4
     var features: [True3DFeatureSpec] = makeDefaultTrue3DFeatures()
@@ -452,8 +461,8 @@ enum True3DKernel {
             ) else { throw True3DModelError.baseFailed }
             return base
         case .profile:
-            let pts = p.profile.map { SIMD2<Double>($0.x, $0.y) }
-            guard pts.count >= 3, let wire = Wire.polygon(pts, closed: true),
+            guard p.profile.count >= 3,
+                  let wire = profileWire(p.profile, curve: p.profileCurve, z: 0),
                   let base = Shape.extrude(profile: wire, direction: SIMD3<Double>(0, 0, 1), length: p.height) else {
                 throw True3DModelError.baseFailed
             }
@@ -957,10 +966,45 @@ enum True3DKernel {
         return result
     }
 
+    /// 草图轮廓转 OCCT 线框：圆用真圆，平滑曲线用周期插值样条，其余保持折线。
+    private static func profileWire(_ points: [True3DPoint], curve: True3DProfileCurve?, z: Double) -> Wire? {
+        guard points.count >= 3 else { return nil }
+        if let circle = circleFit(points) {
+            return Wire.circle(
+                origin: SIMD3<Double>(circle.center.x, circle.center.y, z),
+                normal: SIMD3<Double>(0, 0, 1),
+                radius: max(circle.radius, 0.1)
+            )
+        }
+        let pts3D = points.map { SIMD3<Double>($0.x, $0.y, z) }
+        if curve == .smooth || points.count >= 24 {
+            if let smooth = Wire.interpolate(through: pts3D, closed: true, tolerance: 1e-4) {
+                return smooth
+            }
+        }
+        return Wire.polygon(points.map { SIMD2<Double>($0.x, $0.y) }, closed: true)
+    }
+
+    /// 判断闭合点列是否来自一个真圆（半径偏差小于 1.5%）。
+    private static func circleFit(_ points: [True3DPoint]) -> (center: True3DPoint, radius: Double)? {
+        guard points.count >= 12 else { return nil }
+        let cx = points.reduce(0.0) { $0 + $1.x } / Double(points.count)
+        let cy = points.reduce(0.0) { $0 + $1.y } / Double(points.count)
+        let radii = points.map { hypot($0.x - cx, $0.y - cy) }
+        guard let minR = radii.min(), let maxR = radii.max(), minR > 0.05 else { return nil }
+        let mean = radii.reduce(0, +) / Double(radii.count)
+        let tolerance = max(0.015 * mean, 0.01)
+        guard maxR - minR <= tolerance else { return nil }
+        let boxW = (points.map(\.x).max() ?? 0) - (points.map(\.x).min() ?? 0)
+        let boxH = (points.map(\.y).max() ?? 0) - (points.map(\.y).min() ?? 0)
+        guard boxW > 0.1, boxH > 0.1, abs(boxW - boxH) <= max(0.02 * max(boxW, boxH), 0.05) else { return nil }
+        return (True3DPoint(x: cx, y: cy), mean)
+    }
+
     private static func profileTool(_ f: True3DFeatureSpec, baseHeight h: Double, isBoss: Bool) -> Shape? {
         guard f.profile.count >= 3 else { return nil }
-        let pts = f.profile.map { SIMD2<Double>($0.x + f.x, $0.y + f.y) }
-        guard let wire = Wire.polygon(pts, closed: true) else { return nil }
+        let moved = f.profile.map { True3DPoint(x: $0.x + f.x, y: $0.y + f.y) }
+        guard let wire = profileWire(moved, curve: f.profileCurve, z: 0) else { return nil }
         let top = f.topZ ?? h
         let length: Double
         let z: Double

@@ -315,11 +315,15 @@ struct SimCanvas: View {
     /// 高度图余料；给出后俯视图按网格显示已切区域
     var heightmap: SimHeightmap? = nil
 
-    // 双指缩放 + 拖动平移
+    // 单指旋转 / 双指缩放；俯视材料图仍支持拖动平移
     @State private var zoom: CGFloat = 1
     @State private var baseZoom: CGFloat = 1
     @State private var pan: CGSize = .zero
     @State private var basePan: CGSize = .zero
+    @State private var yaw: Double = -45 * .pi / 180
+    @State private var pitch: Double = 35 * .pi / 180
+    @State private var baseYaw: Double = -45 * .pi / 180
+    @State private var basePitch: Double = 35 * .pi / 180
 
     private var zoomPan: some Gesture {
         SimultaneousGesture(
@@ -328,10 +332,23 @@ struct SimCanvas: View {
                 .onEnded { _ in baseZoom = zoom },
             DragGesture()
                 .onChanged { v in
-                    pan = CGSize(width: basePan.width + v.translation.width,
-                                 height: basePan.height + v.translation.height)
+                    if iso {
+                        yaw = baseYaw + Double(v.translation.width) * 0.012
+                        pitch = min(84 * .pi / 180, max(-70 * .pi / 180,
+                            basePitch - Double(v.translation.height) * 0.012))
+                    } else {
+                        pan = CGSize(width: basePan.width + v.translation.width,
+                                     height: basePan.height + v.translation.height)
+                    }
                 }
-                .onEnded { _ in basePan = pan }
+                .onEnded { _ in
+                    if iso {
+                        baseYaw = yaw
+                        basePitch = pitch
+                    } else {
+                        basePan = pan
+                    }
+                }
         )
     }
 
@@ -342,26 +359,43 @@ struct SimCanvas: View {
             ctx.scaleBy(x: zoom, y: zoom)
             ctx.translateBy(x: -size.width / 2, y: -size.height / 2)
 
-            let spanX = max(path.maxX - path.minX, 1)
-            let spanY = max(path.maxY - path.minY, 1)
-            let zSpan = max(path.maxZ - path.minZ, 0.001)
-            let zf = 0.8                    // 立体图里 Z 的视觉比例
-            let needW = iso ? (spanX + spanY) * 0.95 : spanX
-            let needH = iso ? (spanX + spanY) * 0.5 + zSpan * zf : spanY
-            let s = min(size.width * 0.92 / needW, size.height * 0.90 / needH)
             let cx = (path.minX + path.maxX) / 2
             let cy = (path.minY + path.maxY) / 2
-            let zMid = (path.minZ + path.maxZ) / 2
-            let ox = size.width / 2
-            let oy = size.height / 2 + (iso ? zMid * zf * s : 0)
+            let cz = (path.minZ + path.maxZ) / 2
+
+            // 正交轨道相机：绕 Z 轴 yaw、再绕水平轴 pitch，Z 轴始终朝屏幕上方。
+            let cyaw = cos(yaw), syaw = sin(yaw)
+            let cp = cos(pitch), sp = sin(pitch)
+            let right = SIMD3<Double>(-syaw, cyaw, 0)
+            let up = SIMD3<Double>(-sp * cyaw, -sp * syaw, cp)
+
+            func raw(_ x: Double, _ y: Double, _ z: Double) -> SIMD2<Double> {
+                let p = SIMD3<Double>(x - cx, y - cy, z - cz)
+                return SIMD2<Double>(
+                    p.x * right.x + p.y * right.y + p.z * right.z,
+                    p.x * up.x + p.y * up.y + p.z * up.z
+                )
+            }
+            let corners: [SIMD3<Double>] = [
+                SIMD3(path.minX, path.minY, path.minZ), SIMD3(path.minX, path.maxY, path.minZ),
+                SIMD3(path.maxX, path.minY, path.minZ), SIMD3(path.maxX, path.maxY, path.minZ),
+                SIMD3(path.minX, path.minY, path.maxZ), SIMD3(path.minX, path.maxY, path.maxZ),
+                SIMD3(path.maxX, path.minY, path.maxZ), SIMD3(path.maxX, path.maxY, path.maxZ)
+            ]
+            let projected = corners.map { raw($0.x, $0.y, $0.z) }
+            let minPX = projected.map(\.x).min() ?? -1
+            let maxPX = projected.map(\.x).max() ?? 1
+            let minPY = projected.map(\.y).min() ?? -1
+            let maxPY = projected.map(\.y).max() ?? 1
+            let spanX = max(maxPX - minPX, 1)
+            let spanY = max(maxPY - minPY, 1)
+            let s = min(size.width * 0.90 / spanX, size.height * 0.82 / spanY)
+            let ox = size.width / 2 - (minPX + maxPX) / 2 * s
+            let oy = size.height / 2 + (minPY + maxPY) / 2 * s
 
             func project(_ x: Double, _ y: Double, _ z: Double) -> CGPoint {
-                if iso {
-                    let px = (x - cx) - (y - cy)
-                    let py = ((x - cx) + (y - cy)) * 0.5 - z * zf
-                    return CGPoint(x: ox + px * 0.866 * s, y: oy + py * s)
-                }
-                return CGPoint(x: ox + (x - cx) * s, y: oy - (y - cy) * s)
+                let p = raw(x, y, z)
+                return CGPoint(x: ox + p.x * s, y: oy - p.y * s)
             }
 
             guard path.pts.count > 1 else { return }
@@ -371,11 +405,12 @@ struct SimCanvas: View {
             // 不是实体布尔仿真，但能直观看到哪些区域已经被掏空。
             if !iso, toolDia > 0.2 {
                 let pad = CGFloat(toolDia) * 0.9
-                let sx = Double(s)
-                let stockRect = CGRect(x: CGFloat(path.minX * sx) + ox - pad,
-                                       y: CGFloat(-path.maxY * sx) + oy - pad,
-                                       width: CGFloat((path.maxX - path.minX) * sx) + pad * 2,
-                                       height: CGFloat((path.maxY - path.minY) * sx) + pad * 2)
+                let cornerA = project(path.minX, path.maxY, 0)
+                let cornerB = project(path.maxX, path.minY, 0)
+                let stockRect = CGRect(x: min(cornerA.x, cornerB.x) - pad,
+                                       y: min(cornerA.y, cornerB.y) - pad,
+                                       width: abs(cornerB.x - cornerA.x) + pad * 2,
+                                       height: abs(cornerB.y - cornerA.y) + pad * 2)
                 let stockPath = Path { pth in pth.addRect(stockRect) }
                 ctx.fill(stockPath, with: .color(Color(white: 0.86)))
                 ctx.stroke(stockPath, with: .color(Color(white: 0.58)), lineWidth: 1)
@@ -478,9 +513,24 @@ struct SimCanvas: View {
         .gesture(zoomPan)
         .onTapGesture(count: 2) {
             zoom = 1; baseZoom = 1; pan = .zero; basePan = .zero
+            if iso {
+                yaw = -45 * .pi / 180; pitch = 35 * .pi / 180
+            } else {
+                yaw = -90 * .pi / 180; pitch = 89 * .pi / 180
+            }
+            baseYaw = yaw; basePitch = pitch
+        }
+        .onChange(of: iso) { newValue in
+            if newValue {
+                yaw = -45 * .pi / 180; pitch = 35 * .pi / 180
+            } else {
+                yaw = -90 * .pi / 180; pitch = 89 * .pi / 180
+            }
+            baseYaw = yaw; basePitch = pitch
+            pan = .zero; basePan = .zero
         }
         .overlay(alignment: .bottomTrailing) {
-            Text("双指缩放 · 双击复位")
+            Text(iso ? "单指旋转 · 双指缩放 · 双击复位" : "拖动平移 · 双指缩放 · 双击复位")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 8)

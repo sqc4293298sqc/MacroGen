@@ -775,6 +775,9 @@ struct True3DModelScreen: View {
             return "已选面 #\(face.faceIndex) · 点左侧命令设置参数"
         }
         if let edge = selectedEdge {
+            if selectedEdges.count > 1 {
+                return "已选 \(selectedEdges.count) 条边 · 最后 #\(edge.edgeIndex) · 点左侧圆角/倒角设置参数"
+            }
             return "已选边 #\(edge.edgeIndex) · 点左侧圆角/倒角设置参数"
         }
         if pendingFaceExtrude {
@@ -4925,13 +4928,14 @@ struct True3DModelScreen: View {
         }
         var message = ""
         switch output {
-        case .base(let points):
+        case .base(let points, let curve):
             sketchProfile = points
             sketchClosed = points.count >= 3
             let xs = points.map(\.x)
             let ys = points.map(\.y)
             params.baseShape = .profile
             params.profile = points
+            params.profileCurve = curve
             params.edgeMode = .none
             params.edgeSize = 0
             if let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max() {
@@ -5388,8 +5392,7 @@ struct True3DModelScreen: View {
         let nearby3D = max(0.8, diagonal * 0.07)
         let hitPoint = hit.point
 
-        var bestEdge: OCCTSwift.Edge?
-        var bestDistance = Double.greatestFiniteMagnitude
+        var candidates: [(edge: OCCTSwift.Edge, distance: Double)] = []
         for edge in result.shape.edges() {
             let samples = edge.points(count: 24)
             let nearest3D = samples.map { sample -> Double in
@@ -5399,6 +5402,7 @@ struct True3DModelScreen: View {
                 return (dx * dx + dy * dy + dz * dz).squareRoot()
             }.min() ?? .greatestFiniteMagnitude
             guard nearest3D <= nearby3D else { continue }
+            var nearestScreen = Double.greatestFiniteMagnitude
             for sample in samples {
                 let world = modelRoot.convertPosition(
                     SCNVector3(Float(sample.x), Float(sample.y), Float(sample.z)),
@@ -5408,22 +5412,37 @@ struct True3DModelScreen: View {
                 guard projected.z >= 0, projected.z <= 1 else { continue }
                 let dx = Double(projected.x) - Double(point.x)
                 let dy = Double(projected.y) - Double(point.y)
-                let distance = (dx * dx + dy * dy).squareRoot()
-                if distance < bestDistance {
-                    bestDistance = distance
-                    bestEdge = edge
-                }
+                nearestScreen = min(nearestScreen, (dx * dx + dy * dy).squareRoot())
+            }
+            if nearestScreen.isFinite {
+                candidates.append((edge, nearestScreen))
             }
         }
+        candidates.sort { $0.distance < $1.distance }
 
         let tolerance = max(16, min(30, Double(viewSize.width) * 0.045))
-        guard let edge = bestEdge, bestDistance <= tolerance else {
+        guard let nearest = candidates.first, nearest.distance <= tolerance else {
             clearEdgeSelection()
             notice = "没点到边；靠近边线再试"
             return
         }
 
-        let reference = True3DEdgeRef.make(edge: edge, in: result.shape)
+        // 多选时，如果最近边已经选过，优先选屏幕距离仍可接受的下一条未选边；
+        // 这样在圆角/倒角预览挡住重建后，连续点相邻边仍能继续追加。
+        let selectedReferences = selectedEdges
+        let chosenCandidate: (edge: OCCTSwift.Edge, distance: Double)
+        if edgePickRule == 1,
+           selectedReferences.contains(True3DEdgeRef.make(edge: nearest.edge, in: result.shape)),
+           let alternative = candidates.first(where: { candidate in
+               candidate.distance <= tolerance * 1.35 &&
+               !selectedReferences.contains(True3DEdgeRef.make(edge: candidate.edge, in: result.shape))
+           }) {
+            chosenCandidate = alternative
+        } else {
+            chosenCandidate = nearest
+        }
+
+        let reference = True3DEdgeRef.make(edge: chosenCandidate.edge, in: result.shape)
         if let index = selectedEdges.firstIndex(of: reference) {
             selectedEdges.remove(at: index)
         } else if edgePickRule == 0 {

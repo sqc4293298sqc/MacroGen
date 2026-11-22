@@ -4,7 +4,7 @@ import SwiftUI
 // MARK: - 草图结果
 
 enum True3DSketchOutput {
-    case base([True3DPoint])
+    case base([True3DPoint], curve: True3DProfileCurve)
     case feature(True3DFeatureSpec)
     case features([True3DFeatureSpec])
 }
@@ -1857,6 +1857,15 @@ struct True3DSketchScreen: View {
         return True3DPoint(x: ux, y: uy)
     }
 
+    /// 当前轮廓应按折线还是平滑曲线拉伸。圆/椭圆/圆角矩形/腰形/样条都走平滑。
+    private func curveKind(for points: [True3DPoint]) -> True3DProfileCurve {
+        if points.count >= 24 { return .smooth }
+        if [True3DSketchTool.spline, .ellipse, .roundedRect, .slot, .circle].contains(lastShapeTool) {
+            return .smooth
+        }
+        return .polyline
+    }
+
     private func cleanedProfile(_ source: [True3DPoint]) -> [True3DPoint] {
         var result: [True3DPoint] = []
         for p in source {
@@ -2712,7 +2721,7 @@ struct True3DSketchScreen: View {
         onBaseChange?(canvasWidth, canvasDepth)
         switch operation {
         case .base:
-            onCommit(.base(cleanedProfile(points)))
+            onCommit(.base(cleanedProfile(points), curve: curveKind(for: points)))
         case .boss, .cut:
             var profiles = savedProfiles
             if currentIsValid { profiles.append(points) }
@@ -2722,6 +2731,7 @@ struct True3DSketchScreen: View {
                 var feature = True3DFeatureSpec(kind: operation == .boss ? .profileBoss : .profileCut)
                 feature.name = operation == .boss ? "草图凸台" : "草图切除"
                 feature.profile = clean
+                feature.profileCurve = curveKind(for: clean)
                 feature.depth = max(extrudeDepth, 0.1)
                 feature.bossHeight = max(extrudeDepth, 0.1)
                 return feature
