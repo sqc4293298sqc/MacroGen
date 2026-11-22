@@ -434,8 +434,10 @@ struct True3DModelScreen: View {
                 showProgramSheet = true
             } label: {
                 Label("程序单", systemImage: "doc.text")
-                    .font(.system(size: 13, weight: .semibold))
-                    .padding(.horizontal, 8)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(.horizontal, 6)
                     .padding(.vertical, 7)
                     .foregroundStyle(SwiftUI.Color.primary.opacity(0.72))
             }
@@ -508,6 +510,7 @@ struct True3DModelScreen: View {
             initialProfile: sketchProfile,
             initialClosed: sketchClosed,
             initialTool: sketchTool,
+            initialOperation: hasModel ? .boss : .base,
             initialSavedProfiles: sketchSavedProfiles,
             onBaseChange: { w, d in
                 params.width = max(w, 1)
@@ -521,8 +524,7 @@ struct True3DModelScreen: View {
                 sketchSavedProfiles = saved
             }
         ) { output in
-            applySketch(output)
-            stage = .model
+            if applySketch(output) { stage = .model }
         }
     }
 
@@ -4007,6 +4009,10 @@ struct True3DModelScreen: View {
     }
 
     private func openFeatureDrawer(_ kind: True3DFeatureKind) {
+        guard hasModel || importedPart != nil, result != nil else {
+            notice = "建模区为空；请先在草图里画轮廓并应用为基础"
+            return
+        }
         guard importedPart == nil else {
             error = "STEP 模型只能做边圆角/倒角；请先退出 STEP 再用参数化特征"
             return
@@ -4051,6 +4057,10 @@ struct True3DModelScreen: View {
     }
 
     private func beginFaceExtrude() {
+        guard hasModel, result != nil else {
+            notice = "建模区为空；请先在草图里应用基础轮廓"
+            return
+        }
         guard importedPart == nil else {
             error = "STEP 模型暂不支持面拉伸"
             return
@@ -4069,6 +4079,10 @@ struct True3DModelScreen: View {
     }
 
     private func openEdgeDrawer(chamfer: Bool) {
+        guard hasModel, result != nil else {
+            notice = "建模区为空；请先在草图里应用基础轮廓"
+            return
+        }
         guard importedPart == nil else {
             error = "STEP 模型请使用边的圆角/倒角"
             return
@@ -4094,6 +4108,10 @@ struct True3DModelScreen: View {
     }
 
     private func openMoveDrawer() {
+        guard hasModel, result != nil else {
+            notice = "建模区为空；请先在草图里应用基础轮廓"
+            return
+        }
         if showMoveDrawer {
             cancelMoveDrawer()
             return
@@ -4376,6 +4394,10 @@ struct True3DModelScreen: View {
     }
 
     private func beginFaceMove() {
+        guard hasModel, result != nil else {
+            notice = "建模区为空；请先在草图里应用基础轮廓"
+            return
+        }
         guard importedPart == nil else {
             error = "STEP 模型暂不支持移动面"
             return
@@ -4722,6 +4744,10 @@ struct True3DModelScreen: View {
     }
 
     private func addFeature(_ kind: True3DFeatureKind) {
+        guard hasModel, result != nil else {
+            notice = "建模区为空；请先在草图里应用基础轮廓"
+            return
+        }
         pushModelUndo()
         error = nil
         notice = nil
@@ -4784,6 +4810,10 @@ struct True3DModelScreen: View {
     }
 
     private func addHolePattern() {
+        guard hasModel, result != nil else {
+            notice = "建模区为空；请先在草图里应用基础轮廓"
+            return
+        }
         pushModelUndo()
         let rows = max(1, min(patternRows, 8))
         let cols = max(1, min(patternCols, 8))
@@ -4835,6 +4865,10 @@ struct True3DModelScreen: View {
     }
 
     private func addCircularHolePattern() {
+        guard hasModel, result != nil else {
+            notice = "建模区为空；请先在草图里应用基础轮廓"
+            return
+        }
         pushModelUndo()
         let count = max(3, min(circularCount, 24))
         let dia = max(patternHoleDia, 0.5)
@@ -4917,7 +4951,16 @@ struct True3DModelScreen: View {
         return (minX, maxX, minY, maxY)
     }
 
-    private func applySketch(_ output: True3DSketchOutput) {
+    @discardableResult
+    private func applySketch(_ output: True3DSketchOutput) -> Bool {
+        if case .feature = output, !hasModel, importedPart == nil {
+            error = "当前还没有基础实体；请把草图操作设为“作为基础轮廓”再应用"
+            return false
+        }
+        if case .features = output, !hasModel, importedPart == nil {
+            error = "当前还没有基础实体；请把草图操作设为“作为基础轮廓”再应用"
+            return false
+        }
         pushModelUndo()
         hasModel = true
         if params.features.count == 3,
@@ -4983,6 +5026,7 @@ struct True3DModelScreen: View {
         }
         rebuild()
         notice = message
+        return true
     }
 
     private func newBlankProject() {

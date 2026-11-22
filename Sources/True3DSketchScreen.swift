@@ -144,6 +144,7 @@ struct True3DSketchScreen: View {
         initialProfile: [True3DPoint] = [],
         initialClosed: Bool = false,
         initialTool: True3DSketchTool = .polyline,
+        initialOperation: True3DSketchOperation = .base,
         initialSavedProfiles: [[True3DPoint]] = [],
         onBaseChange: ((Double, Double) -> Void)? = nil,
         onBack: (() -> Void)? = nil,
@@ -161,6 +162,7 @@ struct True3DSketchScreen: View {
         _closed = State(initialValue: initialClosed)
         _lastShapeTool = State(initialValue: initialTool)
         _tool = State(initialValue: initialTool)
+        _operation = State(initialValue: initialOperation)
         _savedProfiles = State(initialValue: initialSavedProfiles)
         let xs = initialProfile.map(\.x)
         let ys = initialProfile.map(\.y)
@@ -181,7 +183,7 @@ struct True3DSketchScreen: View {
     @State private var gridStep: Double = 5
     @State private var snap = true
     @State private var showGrid = false
-    @State private var operation: True3DSketchOperation = .boss
+    @State private var operation: True3DSketchOperation = .base
     @State private var extrudeDepth: Double = 5
     @State private var error: String?
     @State private var canvasSize: CGSize = .zero
