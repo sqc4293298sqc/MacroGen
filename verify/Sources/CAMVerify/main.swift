@@ -264,6 +264,19 @@ do {
         fail("history-move-face-inward: inward move did not cut adjacent faces")
     }
     print("PASS history-move-face-inward: volume=\(String(format: "%.1f", faceCut.stats.volume))")
+
+    var rotateDocument = document
+    rotateDocument.append(True3DHistoryOperation(kind: .rotate(axis: "Z", angle: 90, copy: false)))
+    let rotated = try rotateDocument.build()
+    guard rotated.stats.valid, rotated.nodes.count == 2,
+          rotated.nodes[1].name == "旋转体",
+          abs(rotated.stats.volume - 96000) < 50,
+          let rotatedBounds = rotated.shape.bounds,
+          abs((rotatedBounds.max.x - rotatedBounds.min.x) - 80) < 0.5,
+          abs((rotatedBounds.max.y - rotatedBounds.min.y) - 120) < 0.5 else {
+        fail("history-rotate: body did not rotate around its center")
+    }
+    print("PASS history-rotate: size=\(String(format: "%.1f", rotatedBounds.max.x - rotatedBounds.min.x))×\(String(format: "%.1f", rotatedBounds.max.y - rotatedBounds.min.y))")
 } catch {
     fail("history: \(error.localizedDescription)")
 }

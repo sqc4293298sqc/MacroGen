@@ -123,6 +123,7 @@ struct True3DHistoryOperation: Identifiable, Codable, Equatable, Sendable {
         case multiChamfer(edges: [True3DEdgeRef], distance: Double)
         case variableFillet(edge: True3DEdgeRef, radius1: Double, radius2: Double)
         case moveFace(points: [True3DPoint3D], normal: True3DPoint3D, distance: Double)
+        case rotate(axis: String, angle: Double, copy: Bool)
     }
 
     var id: UUID
@@ -144,6 +145,7 @@ struct True3DHistoryOperation: Identifiable, Codable, Equatable, Sendable {
         case .multiChamfer(let edges, _): return "多边倒角 \(edges.count) 条"
         case .variableFillet: return "变半径圆角"
         case .moveFace: return "移动面"
+        case .rotate(_, _, let copy): return copy ? "旋转拷贝" : "旋转体"
         }
     }
 
@@ -163,6 +165,8 @@ struct True3DHistoryOperation: Identifiable, Codable, Equatable, Sendable {
             return "R\(fmt(r1))→R\(fmt(r2))"
         case .moveFace(_, _, let distance):
             return distance >= 0 ? "沿法向 +\(fmt(distance))" : "沿法向 \(fmt(distance))"
+        case .rotate(let axis, let angle, _):
+            return "绕\(axis)轴 \(fmt(angle))°"
         }
     }
 
@@ -405,6 +409,7 @@ struct True3DModelDocument: Identifiable, @unchecked Sendable {
         case .multiChamfer: return .chamfer
         case .variableFillet: return .fillet
         case .moveFace: return .feature
+        case .rotate: return .feature
         }
     }
 
@@ -450,6 +455,39 @@ struct True3DModelDocument: Identifiable, @unchecked Sendable {
                 )
             }
             return result
+
+        case .rotate(let axis, let angle, let copy):
+            guard abs(angle) > 1e-6 else {
+                throw True3DModelError.invalidParameter("旋转角度不能为 0")
+            }
+            let axisVector: SIMD3<Double>
+            switch axis.uppercased() {
+            case "X": axisVector = SIMD3<Double>(1, 0, 0)
+            case "Y": axisVector = SIMD3<Double>(0, 1, 0)
+            case "Z": axisVector = SIMD3<Double>(0, 0, 1)
+            default:
+                throw True3DModelError.invalidParameter("旋转轴必须是 X/Y/Z")
+            }
+            guard let bounds = shape.bounds else {
+                throw True3DModelError.featureFailed("旋转体：无法取得实体包围盒")
+            }
+            let center = SIMD3<Double>(
+                (bounds.min.x + bounds.max.x) / 2,
+                (bounds.min.y + bounds.max.y) / 2,
+                (bounds.min.z + bounds.max.z) / 2
+            )
+            guard let local = shape.translated(by: SIMD3<Double>(-center.x, -center.y, -center.z)),
+                  let rotated = local.rotated(axis: axisVector, angle: angle * Double.pi / 180),
+                  let placed = rotated.translated(by: center) else {
+                throw True3DModelError.featureFailed("旋转体失败")
+            }
+            if copy {
+                guard let combined = shape + placed else {
+                    throw True3DModelError.featureFailed("旋转拷贝布尔合并失败")
+                }
+                return combined
+            }
+            return placed
 
         case .moveFace(let points, let normal, let distance):
             guard points.count >= 3 else {

@@ -86,6 +86,9 @@ struct True3DModelScreen: View {
     @State private var moveX: Double = 0
     @State private var moveY: Double = 0
     @State private var moveZ: Double = 0
+    @State private var moveMode = 0
+    @State private var rotateAxis = 2
+    @State private var rotateAngle: Double = 45
     @State private var moveCopy = false
     @State private var movePreviewTask: Task<Void, Never>?
     @State private var movePreviewGeneration = 0
@@ -1020,9 +1023,9 @@ struct True3DModelScreen: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("移动体")
+                    Text(moveMode == 0 ? "移动体" : "旋转体")
                         .font(.system(size: 17, weight: .bold))
-                    Text("Move Body · 沿 XYZ 平移")
+                    Text(moveMode == 0 ? "Move Body · 沿 XYZ 平移" : "Rotate Body · 绕体中心旋转")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
@@ -1046,21 +1049,58 @@ struct True3DModelScreen: View {
                     Text("对象").font(.system(size: 12))
                     Spacer()
                     Text("当前实体").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                    Button("归零") {
-                        moveX = 0; moveY = 0; moveZ = 0
-                        scheduleMovePreview()
+                    if moveMode == 0 {
+                        Button("归零") {
+                            moveX = 0; moveY = 0; moveZ = 0
+                            scheduleMovePreview()
+                        }
+                        .font(.system(size: 11, weight: .semibold))
                     }
-                    .font(.system(size: 11, weight: .semibold))
                 }
-                numRow("X 方向", Binding(get: { moveX }, set: { moveX = $0; scheduleMovePreview() }))
-                numRow("Y 方向", Binding(get: { moveY }, set: { moveY = $0; scheduleMovePreview() }))
-                numRow("Z 方向", Binding(get: { moveZ }, set: { moveZ = $0; scheduleMovePreview() }))
+                Picker("变换", selection: Binding(
+                    get: { moveMode },
+                    set: { moveMode = $0; scheduleMovePreview() }
+                )) {
+                    Text("移动").tag(0)
+                    Text("旋转").tag(1)
+                }
+                .pickerStyle(.segmented)
+                if moveMode == 0 {
+                    numRow("X 方向", Binding(get: { moveX }, set: { moveX = $0; scheduleMovePreview() }))
+                    numRow("Y 方向", Binding(get: { moveY }, set: { moveY = $0; scheduleMovePreview() }))
+                    numRow("Z 方向", Binding(get: { moveZ }, set: { moveZ = $0; scheduleMovePreview() }))
+                } else {
+                    HStack {
+                        Text("旋转轴").font(.system(size: 12))
+                        Spacer()
+                        Picker("", selection: Binding(
+                            get: { rotateAxis },
+                            set: { rotateAxis = $0; scheduleMovePreview() }
+                        )) {
+                            Text("X").tag(0)
+                            Text("Y").tag(1)
+                            Text("Z").tag(2)
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 140)
+                    }
+                    numRow("角度", Binding(
+                        get: { rotateAngle },
+                        set: { rotateAngle = $0; scheduleMovePreview() }
+                    ))
+                    Text("旋转围绕当前实体的包围盒中心，角度单位为度。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Toggle("复制（保留原体）", isOn: Binding(
                     get: { moveCopy },
                     set: { moveCopy = $0; scheduleMovePreview() }
                 ))
                 .font(.system(size: 12))
-                Text("开启复制后，原体和移动后的副本都会保留；关闭则只移动当前实体。")
+                Text(moveMode == 0
+                    ? "开启复制后，原体和移动后的副本都会保留；关闭则只移动当前实体。"
+                    : "开启复制后，旋转副本和原体会一起保留；关闭则只保留旋转后的实体。")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1070,7 +1110,7 @@ struct True3DModelScreen: View {
             if isPreviewingMove {
                 HStack(spacing: 7) {
                     ProgressView().scaleEffect(0.7)
-                    Text("正在预览移动…").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text(moveMode == 0 ? "正在预览移动…" : "正在预览旋转…").font(.system(size: 10)).foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 14)
                 .padding(.bottom, 6)
@@ -1095,7 +1135,7 @@ struct True3DModelScreen: View {
                 Button { commitMoveBody() } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark")
-                        Text("应用移动")
+                        Text(moveMode == 0 ? "应用移动" : "应用旋转")
                     }
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white)
@@ -1103,7 +1143,9 @@ struct True3DModelScreen: View {
                     .background(SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85), in: RoundedRectangle(cornerRadius: 10))
                 }
                 .buttonStyle(.plain)
-                .disabled(isBuilding || importBusy || abs(moveX) + abs(moveY) + abs(moveZ) < 1e-6)
+                .disabled(isBuilding || importBusy || (moveMode == 0
+                    ? abs(moveX) + abs(moveY) + abs(moveZ) < 1e-6
+                    : abs(rotateAngle) < 1e-6))
             }
             .padding(14)
         }
@@ -3879,6 +3921,9 @@ struct True3DModelScreen: View {
         moveX = 0
         moveY = 0
         moveZ = 0
+        moveMode = 0
+        rotateAxis = 2
+        rotateAngle = 45
         moveCopy = false
         movePreviewError = nil
         isPreviewingMove = false
@@ -3917,7 +3962,9 @@ struct True3DModelScreen: View {
         movePreviewTask?.cancel()
         movePreviewGeneration += 1
         let generation = movePreviewGeneration
-        let total = abs(moveX) + abs(moveY) + abs(moveZ)
+        let total = moveMode == 0
+            ? abs(moveX) + abs(moveY) + abs(moveZ)
+            : abs(rotateAngle)
         if total < 1e-6 {
             isPreviewingMove = false
             movePreviewError = nil
@@ -3945,9 +3992,15 @@ struct True3DModelScreen: View {
             if generation == movePreviewGeneration { isPreviewingMove = false }
         }
         var previewOperations = modelOperations
-        previewOperations.append(True3DHistoryOperation(kind: .translate(
-            dx: moveX, dy: moveY, dz: moveZ, copy: moveCopy
-        )))
+        if moveMode == 0 {
+            previewOperations.append(True3DHistoryOperation(kind: .translate(
+                dx: moveX, dy: moveY, dz: moveZ, copy: moveCopy
+            )))
+        } else {
+            previewOperations.append(True3DHistoryOperation(kind: .rotate(
+                axis: rotateAxisName, angle: rotateAngle, copy: moveCopy
+            )))
+        }
         let document = True3DModelDocument(
             id: modelDocumentID,
             params: params,
@@ -3962,7 +4015,7 @@ struct True3DModelScreen: View {
             scene = makeScene(result: preview)
             applyOrbit()
             movePreviewError = nil
-            message = "移动预览"
+            message = moveMode == 0 ? "移动预览" : "旋转预览"
         } catch is CancellationError {
             return
         } catch {
@@ -3972,8 +4025,14 @@ struct True3DModelScreen: View {
     }
 
     private func commitMoveBody() {
-        guard abs(moveX) + abs(moveY) + abs(moveZ) > 1e-6 else { return }
+        if moveMode == 0 {
+            guard abs(moveX) + abs(moveY) + abs(moveZ) > 1e-6 else { return }
+        } else {
+            guard abs(rotateAngle) > 1e-6 else { return }
+        }
         let dx = moveX, dy = moveY, dz = moveZ
+        let angle = rotateAngle
+        let axis = rotateAxisName
         let copy = moveCopy
         movePreviewTask?.cancel()
         movePreviewGeneration += 1
@@ -3981,13 +4040,28 @@ struct True3DModelScreen: View {
         isPreviewingMove = false
         movePreviewError = nil
         showMoveDrawer = false
-        modelOperations.append(True3DHistoryOperation(kind: .translate(
-            dx: dx, dy: dy, dz: dz, copy: copy
-        )))
-        notice = copy
-            ? "已移动并保留原体：ΔX \(fmt(dx)) ΔY \(fmt(dy)) ΔZ \(fmt(dz))"
-            : "已移动实体：ΔX \(fmt(dx)) ΔY \(fmt(dy)) ΔZ \(fmt(dz))"
+        if moveMode == 0 {
+            modelOperations.append(True3DHistoryOperation(kind: .translate(
+                dx: dx, dy: dy, dz: dz, copy: copy
+            )))
+            notice = copy
+                ? "已移动并保留原体：ΔX \(fmt(dx)) ΔY \(fmt(dy)) ΔZ \(fmt(dz))"
+                : "已移动实体：ΔX \(fmt(dx)) ΔY \(fmt(dy)) ΔZ \(fmt(dz))"
+        } else {
+            modelOperations.append(True3DHistoryOperation(kind: .rotate(
+                axis: axis, angle: angle, copy: copy
+            )))
+            notice = "已绕 \(axis) 轴旋转 \(fmt(angle))°" + (copy ? "，并保留原体" : "")
+        }
         rebuild()
+    }
+
+    private var rotateAxisName: String {
+        switch rotateAxis {
+        case 0: return "X"
+        case 1: return "Y"
+        default: return "Z"
+        }
     }
 
     private func beginFaceMove() {
