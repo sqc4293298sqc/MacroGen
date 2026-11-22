@@ -1153,7 +1153,10 @@ struct True3DModelScreen: View {
                         Text("未选择面").font(.system(size: 11)).foregroundStyle(.orange)
                     }
                 }
-                Picker("方向", selection: $faceMoveOutward) {
+                Picker("方向", selection: Binding(
+                    get: { faceMoveOutward },
+                    set: { faceMoveOutward = $0; scheduleFaceMovePreview() }
+                )) {
                     Text("向外（+法向）").tag(true)
                     Text("向内（−法向）").tag(false)
                 }
