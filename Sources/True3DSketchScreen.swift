@@ -129,6 +129,7 @@ private enum True3DSketchTab: String, CaseIterable, Identifiable {
 
 struct True3DSketchScreen: View {
     var embedded: Bool = false
+    var allowsFeatureOperations: Bool = true
     var onBaseChange: ((Double, Double) -> Void)? = nil
     var onBack: (() -> Void)? = nil
     let onDraftChange: (([True3DPoint], Bool, True3DSketchTool, [[True3DPoint]]) -> Void)?
@@ -145,6 +146,7 @@ struct True3DSketchScreen: View {
         initialClosed: Bool = false,
         initialTool: True3DSketchTool = .polyline,
         initialOperation: True3DSketchOperation = .base,
+        allowsFeatureOperations: Bool = true,
         initialSavedProfiles: [[True3DPoint]] = [],
         onBaseChange: ((Double, Double) -> Void)? = nil,
         onBack: (() -> Void)? = nil,
@@ -152,6 +154,7 @@ struct True3DSketchScreen: View {
         onCommit: @escaping (True3DSketchOutput) -> Void
     ) {
         self.embedded = embedded
+        self.allowsFeatureOperations = allowsFeatureOperations
         self.onBaseChange = onBaseChange
         self.onBack = onBack
         self.onDraftChange = onDraftChange
@@ -884,7 +887,7 @@ struct True3DSketchScreen: View {
                 Button { showFinishPanel = false } label: { Image(systemName: "xmark") }
             }
             Picker("操作", selection: $operation) {
-                ForEach(True3DSketchOperation.allCases) { item in
+                ForEach(allowsFeatureOperations ? True3DSketchOperation.allCases : [.base]) { item in
                     Text(item.rawValue).tag(item)
                 }
             }
@@ -1739,7 +1742,7 @@ struct True3DSketchScreen: View {
             }
             HStack(spacing: 10) {
                 Picker("操作", selection: $operation) {
-                    ForEach(True3DSketchOperation.allCases) { item in
+                    ForEach(allowsFeatureOperations ? True3DSketchOperation.allCases : [.base]) { item in
                         Text(item.rawValue).tag(item)
                     }
                 }

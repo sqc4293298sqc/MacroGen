@@ -162,6 +162,7 @@ struct True3DModelScreen: View {
     @State private var hasModel = false
     @State private var modelUndoStack: [ModelHistorySnapshot] = []
     @State private var modelRedoStack: [ModelHistorySnapshot] = []
+    @State private var featureEditUndoFor: UUID?
     @State private var selectedFeatureID: UUID?
     @State private var pendingFeatureIDs: [UUID] = []
     @State private var showMeasurePanel = false
@@ -315,7 +316,7 @@ struct True3DModelScreen: View {
                             Label("载入工程", systemImage: "folder")
                         }
                         Divider()
-                        Button { rebuild() } label: {
+                        Button { rebuildFromUI() } label: {
                             Label("重新生成", systemImage: "arrow.clockwise")
                         }
                     } else if stage == .operation || stage == .machine {
@@ -511,6 +512,7 @@ struct True3DModelScreen: View {
             initialClosed: sketchClosed,
             initialTool: sketchTool,
             initialOperation: hasModel ? .boss : .base,
+            allowsFeatureOperations: hasModel,
             initialSavedProfiles: sketchSavedProfiles,
             onBaseChange: { w, d in
                 params.width = max(w, 1)
@@ -802,7 +804,7 @@ struct True3DModelScreen: View {
             .buttonStyle(.plain)
 
             Menu {
-                Button { rebuild() } label: { Label("重新构建模型", systemImage: "arrow.clockwise") }
+                Button { rebuildFromUI() } label: { Label("重新构建模型", systemImage: "arrow.clockwise") }
                 Button { importMode = .step; showImporter = true } label: {
                     Label("导入 STEP", systemImage: "cube.transparent")
                 }
@@ -3198,7 +3200,7 @@ struct True3DModelScreen: View {
     private var buildButton: some View {
         HStack(spacing: 10) {
             Button {
-                rebuild()
+                rebuildFromUI()
             } label: {
                 Label(isBuilding ? "生成中…" : (importedPart == nil ? "生成实体" : "重新构建 STEP"), systemImage: "cube.transparent")
                     .frame(maxWidth: .infinity)
@@ -3524,6 +3526,7 @@ struct True3DModelScreen: View {
     private func featureRow(_ feature: True3DFeatureSpec) -> some View {
         HStack(spacing: 9) {
             Button {
+                featureEditUndoFor = nil
                 selectedFeatureID = selectedFeatureID == feature.id ? nil : feature.id
             } label: {
                 Image(systemName: icon(for: feature.kind))
@@ -3577,6 +3580,10 @@ struct True3DModelScreen: View {
                 params.features.first(where: { $0.id == feature.id }) ?? feature
             },
             set: { newValue in
+                if !isBuilding, !importBusy, featureEditUndoFor != feature.id {
+                    pushModelUndo()
+                    featureEditUndoFor = feature.id
+                }
                 if let index = params.features.firstIndex(where: { $0.id == feature.id }) {
                     params.features[index] = newValue
                 }
@@ -5113,6 +5120,15 @@ struct True3DModelScreen: View {
         notice = "已重做上一步建模操作"
     }
 
+    /// 用户从界面触发的重建：参数/特征改过但还没生成时，先把旧状态压入撤销栈。
+    private func rebuildFromUI() {
+        if isDirty, !isBuilding, !importBusy, featureEditUndoFor == nil {
+            pushModelUndo()
+        }
+        featureEditUndoFor = nil
+        rebuild()
+    }
+
     private func rebuild() {
         guard hasModel || importedPart != nil else {
             buildTask?.cancel()
@@ -5120,7 +5136,7 @@ struct True3DModelScreen: View {
             result = nil
             scene = SCNScene()
             isBuilding = false
-            message = ""
+            message = "建模区为空；请先在草图里画轮廓并应用为基础"
             return
         }
         captureCameraOrbit()
