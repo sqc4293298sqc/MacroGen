@@ -714,10 +714,6 @@ struct True3DModelScreen: View {
                 railItem("eye", "基准面", highlighted: showDatumPlane) { toggleDatumPlane() }
                 railItem("arrow.up.to.line", "拉伸", highlighted: pendingFaceExtrude) { beginFaceExtrude() }
                 railItem("arrow.triangle.2.circlepath", "旋转体") { openFeatureDrawer(.revolveBoss) }
-                railItem("arrow.triangle.2.circlepath.circle", "同步") {
-                    notice = "正在同步草图与实体…"
-                    rebuild()
-                }
                 railItem("line.diagonal", "圆角", highlighted: selectedEdge != nil) {
                     openEdgeDrawer(chamfer: false)
                 }
@@ -1160,8 +1156,8 @@ struct True3DModelScreen: View {
             ("放样凸台", .loftBoss),
             ("螺旋扫掠", .sweepBoss),
             ("拔模", .draft),
-            ("全边圆角", .edgeFillet),
-            ("全边倒角", .edgeChamfer),
+            ("边圆角", .edgeFillet),
+            ("边倒角", .edgeChamfer),
             ("抽壳", .shell),
             ("旋转凸台", .revolveBoss),
             ("旋转切除", .revolveCut),
@@ -1427,6 +1423,24 @@ struct True3DModelScreen: View {
                     parametersArea
                     featureListArea
                     patternArea
+
+                    HStack(spacing: 8) {
+                        Text("参数修改后需应用")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button {
+                            clampFeaturePositionsToBase()
+                            showModelDrawer = false
+                            rebuild()
+                        } label: {
+                            Label("应用参数并重建", systemImage: "arrow.clockwise")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(red: 0.12, green: 0.42, blue: 0.85))
+                        .disabled(isBuilding)
+                    }
                 }
             }
             .padding(14)
@@ -1882,10 +1896,10 @@ struct True3DModelScreen: View {
     }
 
     private func addAxisGizmo(to parent: SCNNode, size: Double, center: SCNVector3) {
-        let length = Float(min(max(size * 0.38, 18), 48))
-        let shaftRadius: CGFloat = 0.9
-        let headRadius: CGFloat = 2.4
-        let headHeight: CGFloat = 6.5
+        let length = Float(min(max(size * 0.40, 22), 52))
+        let shaftRadius: CGFloat = 1.25
+        let headRadius: CGFloat = 3.1
+        let headHeight: CGFloat = 8.0
         let group = SCNNode()
         group.name = "axisGizmo"
         group.position = center
@@ -1920,22 +1934,26 @@ struct True3DModelScreen: View {
         }
 
         func label(_ text: String, _ color: UIColor, _ position: SCNVector3) {
-            let side: CGFloat = 80
+            let side: CGFloat = 96
             let image = UIGraphicsImageRenderer(size: CGSize(width: side, height: side)).image { context in
-                UIColor.clear.setFill()
-                context.fill(CGRect(x: 0, y: 0, width: side, height: side))
+                let circle = UIBezierPath(ovalIn: CGRect(x: 6, y: 6, width: side - 12, height: side - 12))
+                UIColor.white.withAlphaComponent(0.94).setFill()
+                circle.fill()
+                color.setStroke()
+                circle.lineWidth = 5
+                circle.stroke()
                 let attributes: [NSAttributedString.Key: Any] = [
-                    .font: UIFont.systemFont(ofSize: 58, weight: .heavy),
+                    .font: UIFont.systemFont(ofSize: 52, weight: .heavy),
                     .foregroundColor: color
                 ]
                 let string = text as NSString
                 let textSize = string.size(withAttributes: attributes)
                 string.draw(
-                    at: CGPoint(x: (side - textSize.width) / 2, y: (side - textSize.height) / 2),
+                    at: CGPoint(x: (side - textSize.width) / 2, y: (side - textSize.height) / 2 + 1),
                     withAttributes: attributes
                 )
             }
-            let plane = SCNPlane(width: 9.5, height: 9.5)
+            let plane = SCNPlane(width: 11.0, height: 11.0)
             let material = SCNMaterial()
             material.lightingModel = .constant
             material.diffuse.contents = image
@@ -1960,15 +1978,15 @@ struct True3DModelScreen: View {
         // 圆柱/圆锥的轴默认沿 +Y；用欧拉角旋到 X/Y/Z。
         shaft(xColor, SCNVector3(length / 2, 0, 0), SCNVector3(0, 0, -Float.pi / 2))
         head(xColor, SCNVector3(length + Float(headHeight * 0.42), 0, 0), SCNVector3(0, 0, -Float.pi / 2))
-        label("X", xColor, SCNVector3(length + 10, -1, 0))
+        label("X", xColor, SCNVector3(length + 11, -1, 0))
 
         shaft(yColor, SCNVector3(0, length / 2, 0), SCNVector3(0, 0, 0))
         head(yColor, SCNVector3(0, length + Float(headHeight * 0.42), 0), SCNVector3(0, 0, 0))
-        label("Y", yColor, SCNVector3(-1, length + 10, 0))
+        label("Y", yColor, SCNVector3(-1, length + 11, 0))
 
         shaft(zColor, SCNVector3(0, 0, length / 2), SCNVector3(Float.pi / 2, 0, 0))
         head(zColor, SCNVector3(0, 0, length + Float(headHeight * 0.42)), SCNVector3(Float.pi / 2, 0, 0))
-        label("Z", zColor, SCNVector3(-1, -1, length + 10))
+        label("Z", zColor, SCNVector3(-1, -1, length + 11))
 
         let origin = SCNSphere(radius: 2.1)
         origin.materials = [overlayMaterial(UIColor(red: 0.20, green: 0.23, blue: 0.28, alpha: 1))]
@@ -2051,18 +2069,6 @@ struct True3DModelScreen: View {
                     numRow("零点偏移 Y", $cam.originY)
                     intRow("程序号 O", $cam.programNo)
                 }
-                group("毛坯 / 坐标") {
-                    numRow("XY 单边余量", $cam.stockMarginXY)
-                    numRow("底面余量", $cam.stockExtraBottom)
-                    Picker("工件坐标系", selection: $cam.coord) {
-                        ForEach([54, 55, 56, 57, 58, 59], id: \.self) { c in
-                            Text("G\(c)").tag(c)
-                        }
-                    }
-                    numRow("零点偏移 X", $cam.originX)
-                    numRow("零点偏移 Y", $cam.originY)
-                    intRow("程序号 O", $cam.programNo)
-                }
 
                 Button {
                     generateCAM(switchToMachine: true)
@@ -2083,6 +2089,14 @@ struct True3DModelScreen: View {
             }
             .padding(16)
             .padding(.bottom, 24)
+        }
+        .onChange(of: operations) { _ in
+            camResult = nil
+            gcodeURL = nil
+        }
+        .onChange(of: cam) { _ in
+            camResult = nil
+            gcodeURL = nil
         }
     }
 
@@ -2819,6 +2833,46 @@ struct True3DModelScreen: View {
         }
     }
 
+    private func clampFeaturePositionsToBase() {
+        guard params.baseShape != .profile else { return }
+        let margin = 0.6
+        for i in params.features.indices {
+            let f = params.features[i]
+            switch f.kind {
+            case .hole, .boss, .rectBoss, .coneBoss, .loftBoss, .sweepBoss,
+                 .circularPocket, .rectPocket, .slot, .profileBoss, .profileCut,
+                 .revolveBoss, .revolveCut:
+                break
+            default:
+                continue
+            }
+            let clearance = max(f.dia / 2, f.width / 2, f.depthY / 2) + margin
+            var x = f.x
+            var y = f.y
+            switch params.baseShape {
+            case .box:
+                let hx = max(params.width / 2 - clearance, 0)
+                let hy = max(params.depth / 2 - clearance, 0)
+                x = min(max(x, -hx), hx)
+                y = min(max(y, -hy), hy)
+            case .circle:
+                let radius = max(min(params.width, params.depth) / 2 - clearance, 0)
+                let distance = hypot(x, y)
+                if distance > radius, distance > 0.001 {
+                    let scale = radius / distance
+                    x *= scale
+                    y *= scale
+                }
+            case .profile:
+                break
+            }
+            if abs(x - f.x) > 0.001 || abs(y - f.y) > 0.001 {
+                params.features[i].x = x
+                params.features[i].y = y
+            }
+        }
+    }
+
     private var parametersArea: some View {
         VStack(alignment: .leading, spacing: 12) {
             sectionTitle("基础形状")
@@ -2827,7 +2881,13 @@ struct True3DModelScreen: View {
                     .textFieldStyle(.roundedBorder)
             }
             group("基础块") {
-                Picker("形状", selection: $params.baseShape) {
+                Picker("形状", selection: Binding(
+                    get: { params.baseShape },
+                    set: { newShape in
+                        params.baseShape = newShape
+                        clampFeaturePositionsToBase()
+                    }
+                )) {
                     ForEach(True3DBaseShape.allCases) { shape in
                         Text(shape.rawValue).tag(shape)
                     }
@@ -2936,10 +2996,11 @@ struct True3DModelScreen: View {
                     .minimumScaleFactor(0.7)
             }
             Spacer()
-            Toggle("", isOn: featureBinding(for: feature).suppressed).labelsHidden().scaleEffect(0.8)
+            Toggle("", isOn: suppressionBinding(for: feature)).labelsHidden().scaleEffect(0.8)
             Button(role: .destructive) {
                 params.features.removeAll { $0.id == feature.id }
                 if selectedFeatureID == feature.id { selectedFeatureID = nil }
+                rebuild()
             } label: {
                 Image(systemName: "trash").font(.system(size: 12))
             }
@@ -2948,6 +3009,17 @@ struct True3DModelScreen: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
+    }
+
+    private func suppressionBinding(for feature: True3DFeatureSpec) -> Binding<Bool> {
+        Binding(
+            get: { params.features.first(where: { $0.id == feature.id })?.suppressed ?? false },
+            set: { value in
+                guard let index = params.features.firstIndex(where: { $0.id == feature.id }) else { return }
+                params.features[index].suppressed = value
+                rebuild()
+            }
+        )
     }
 
     private func featureBinding(for feature: True3DFeatureSpec) -> Binding<True3DFeatureSpec> {

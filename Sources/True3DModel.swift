@@ -282,7 +282,7 @@ struct True3DParams: Equatable, Codable {
     var height: Double = 10
     var baseShape: True3DBaseShape = .box
     var profile: [True3DPoint] = []
-    var edgeMode: True3DEdgeMode = .fillet
+    var edgeMode: True3DEdgeMode = .none
     var edgeSize: Double = 4
     var features: [True3DFeatureSpec] = makeDefaultTrue3DFeatures()
 
