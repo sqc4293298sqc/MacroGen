@@ -318,4 +318,112 @@ do {
     fail("face-extrude: \(error.localizedDescription)")
 }
 
+
+// 全特征矩阵：每个参数化特征单独构建一次，检查 B-Rep 是否有效、体积是否为正。
+var featureCases: [(String, True3DFeatureSpec)] = []
+func addFeatureCase(_ name: String, _ kind: True3DFeatureKind, _ mutate: (inout True3DFeatureSpec) -> Void = { _ in }) {
+    var f = True3DFeatureSpec(kind: kind)
+    mutate(&f)
+    featureCases.append((name, f))
+}
+
+for kind in [True3DHoleKind.through, .blind, .counterbore, .countersink, .thread] {
+    addFeatureCase("hole-\(kind.rawValue)", .hole, { f in
+        f.x = 20; f.y = 0; f.dia = 10; f.holeKind = kind; f.holeDepth = 5
+    })
+}
+addFeatureCase("boss", .boss) { f in f.x = 20; f.y = 0; f.dia = 20 }
+addFeatureCase("rect-boss", .rectBoss) { f in f.x = 20; f.y = 0; f.width = 20; f.depthY = 14 }
+addFeatureCase("cone-boss", .coneBoss) { f in f.x = 20; f.y = 0 }
+addFeatureCase("loft-boss", .loftBoss) { f in f.x = 0; f.y = 0 }
+addFeatureCase("sweep-helix", .sweepBoss) { f in f.sweepPathKind = .helix }
+addFeatureCase("sweep-circle", .sweepBoss) { f in f.sweepPathKind = .circle }
+addFeatureCase("sweep-line", .sweepBoss) { f in f.sweepPathKind = .line }
+addFeatureCase("draft", .draft)
+addFeatureCase("edge-fillet-all", .edgeFillet) { f in f.edgeSelection = .all; f.depth = 1 }
+addFeatureCase("edge-fillet-convex", .edgeFillet) { f in f.edgeSelection = .convex; f.depth = 1 }
+addFeatureCase("edge-chamfer-symmetric", .edgeChamfer) { f in f.edgeSelection = .convex; f.chamferMode = .symmetric; f.depth = 1 }
+addFeatureCase("edge-chamfer-two", .edgeChamfer) { f in f.edgeSelection = .convex; f.chamferMode = .twoDistance; f.depth = 1; f.chamferSecondDistance = 1 }
+addFeatureCase("edge-chamfer-angle", .edgeChamfer) { f in f.edgeSelection = .convex; f.chamferMode = .distanceAngle; f.depth = 1; f.chamferAngle = 45 }
+addFeatureCase("shell", .shell) { f in f.depth = 2 }
+addFeatureCase("revolve-boss-z-xz", .revolveBoss) { f in f.revolveAxis = .z; f.revolvePlane = .xz }
+addFeatureCase("revolve-boss-z-yz", .revolveBoss) { f in f.revolveAxis = .z; f.revolvePlane = .yz }
+addFeatureCase("revolve-boss-x-xz", .revolveBoss) { f in f.revolveAxis = .x; f.revolvePlane = .xz }
+addFeatureCase("revolve-boss-x-xy", .revolveBoss) { f in f.revolveAxis = .x; f.revolvePlane = .xy }
+addFeatureCase("revolve-boss-y-xy", .revolveBoss) { f in f.revolveAxis = .y; f.revolvePlane = .xy }
+addFeatureCase("revolve-boss-y-yz", .revolveBoss) { f in f.revolveAxis = .y; f.revolvePlane = .yz }
+addFeatureCase("revolve-cut-z-xz", .revolveCut) { f in f.revolveAxis = .z; f.revolvePlane = .xz }
+addFeatureCase("circular-pocket", .circularPocket) { f in f.x = 20; f.y = 0; f.dia = 20 }
+addFeatureCase("rect-pocket", .rectPocket) { f in f.x = -20; f.y = -10; f.width = 18; f.depthY = 12; f.cornerRadius = 2 }
+addFeatureCase("slot", .slot) { f in f.x = 0; f.y = -20; f.width = 40; f.depthY = 10 }
+addFeatureCase("profile-boss", .profileBoss) { f in
+    f.profile = [True3DPoint(x: -20, y: -10), True3DPoint(x: 20, y: -10), True3DPoint(x: 20, y: 10), True3DPoint(x: -20, y: 10)]
+}
+addFeatureCase("profile-cut", .profileCut) { f in
+    f.profile = [True3DPoint(x: -20, y: -10), True3DPoint(x: 20, y: -10), True3DPoint(x: 20, y: 10), True3DPoint(x: -20, y: 10)]
+}
+addFeatureCase("face-boss-top", .faceBoss) { f in
+    f.faceProfile = [True3DPoint3D(x: -50, y: -30, z: 10), True3DPoint3D(x: 50, y: -30, z: 10), True3DPoint3D(x: 50, y: 30, z: 10), True3DPoint3D(x: -50, y: 30, z: 10)]
+    f.faceNormal = True3DPoint3D(x: 0, y: 0, z: 1)
+}
+addFeatureCase("face-boss-side", .faceBoss) { f in
+    f.faceProfile = [True3DPoint3D(x: 60, y: -30, z: 0), True3DPoint3D(x: 60, y: 30, z: 0), True3DPoint3D(x: 60, y: 30, z: 10), True3DPoint3D(x: 60, y: -30, z: 10)]
+    f.faceNormal = True3DPoint3D(x: 1, y: 0, z: 0)
+}
+
+var featureFailures = 0
+for (name, f) in featureCases {
+    var p = True3DParams()
+    p.edgeMode = .none
+    p.features = [f]
+    do {
+        let built = try True3DKernel.build(p)
+        guard built.stats.valid, built.stats.volume > 0 else {
+            print("FAIL X \(name): invalid/empty")
+            featureFailures += 1
+            continue
+        }
+        print("PASS X \(name): faces=\(built.stats.faces) volume=\(String(format: "%.1f", built.stats.volume))")
+    } catch {
+        print("FAIL X \(name): \(error.localizedDescription)")
+        featureFailures += 1
+    }
+}
+
+// 多特征组合：默认孔+凸台+方腔，以及孔/腔/圆角/抽壳串联。
+var comboCases: [(String, [True3DFeatureSpec])] = []
+comboCases.append(("default-three", True3DParams.defaultFeatures))
+var combo: [True3DFeatureSpec] = []
+var hole = True3DFeatureSpec(kind: .hole); hole.x = -20; hole.y = 0; hole.dia = 10
+var boss = True3DFeatureSpec(kind: .boss); boss.x = 20; boss.y = 0; boss.dia = 16; boss.bossHeight = 6
+var pocket = True3DFeatureSpec(kind: .rectPocket); pocket.x = 0; pocket.y = -20; pocket.width = 18; pocket.depthY = 12; pocket.depth = 4
+combo = [hole, boss, pocket]
+comboCases.append(("hole+boss+pocket", combo))
+var combo2: [True3DFeatureSpec] = []
+var pocket2 = True3DFeatureSpec(kind: .rectPocket); pocket2.x = 0; pocket2.y = 0; pocket2.width = 30; pocket2.depthY = 20; pocket2.depth = 3
+combo2.append(pocket2)
+var shell = True3DFeatureSpec(kind: .shell); shell.depth = 1.5
+combo2.append(shell)
+comboCases.append(("pocket+shell", combo2))
+for (name, features) in comboCases {
+    var p = True3DParams()
+    p.edgeMode = .none
+    p.features = features
+    do {
+        let built = try True3DKernel.build(p)
+        guard built.stats.valid, built.stats.volume > 0 else {
+            print("FAIL C \(name): invalid/empty")
+            featureFailures += 1
+            continue
+        }
+        print("PASS C \(name): faces=\(built.stats.faces) volume=\(String(format: "%.1f", built.stats.volume))")
+    } catch {
+        print("FAIL C \(name): \(error.localizedDescription)")
+        featureFailures += 1
+    }
+}
+if featureFailures > 0 {
+    fail("feature matrix: \(featureFailures) cases failed")
+}
+
 print("ALL CAM CHECKS PASSED")
