@@ -1,9 +1,48 @@
 import Foundation
 
+/// 程序输出格式：宏程序保留 #变量/WHILE，G 代码把宏展开成普通坐标。
+enum ProgramFormat: String, CaseIterable, Identifiable {
+    case macro = "宏程序"
+    case gcode = "G代码"
+
+    var id: String { rawValue }
+
+    var detail: String {
+        switch self {
+        case .macro:
+            return "保留现有宏程序写法：#变量、WHILE 循环和 G41/G42 刀补"
+        case .gcode:
+            return "把同一份宏展开成普通 G 代码：变量和循环算成固定坐标"
+        }
+    }
+}
+
 /// 把本 App 生成的 FANUC 宏程序展开成普通 G 代码，并做 Siemens 兼容输出。
 /// 只处理本 App 自己生成的宏语法（#变量 / WHILE / IF / TAN/FIX 等），
 /// 不是通用 FANUC 宏解释器；G43/G28/G52 等仍需按目标机床核对。
 enum PostProcessor {
+    /// 按用户选择的格式输出：宏程序原样返回，G 代码用现有展开器转换。
+    static func output(_ macro: String, format: ProgramFormat) -> String {
+        switch format {
+        case .macro: return macro
+        case .gcode: return fanuc(macro)
+        }
+    }
+
+    /// FANUC 风格普通 G 代码：保留 O 号和 FANUC 括号注释，只展开宏语法。
+    static func fanuc(_ code: String) -> String {
+        let expanded = MacroExpander.expand(code)
+        var out: [String] = []
+        out.append("( 普通 G 代码：宏变量与 WHILE/IF 已展开 )")
+        out.append("( 由 MacroGen 现有宏程序转换，上机前核对 G43/G28/G52 与 D 刀补 )")
+        for raw in expanded.components(separatedBy: "\n") {
+            let t = raw.trimmingCharacters(in: .whitespaces)
+            if t.isEmpty { continue }
+            out.append(t)
+        }
+        return out.joined(separator: "\n") + "\n"
+    }
+
     static func siemens(_ code: String) -> String {
         let expanded = MacroExpander.expand(code)
         var out: [String] = []

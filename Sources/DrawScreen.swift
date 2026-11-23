@@ -4,6 +4,7 @@ import UIKit
 /// 绘图编程：画一个任意闭合轮廓，直接出带刀补的宏程序
 struct DrawScreen: View {
     @State private var spec = DrawSpec()
+    @State private var format: ProgramFormat = .macro
     @State private var code = ""
     @State private var showResult = false
     @State private var showHelp = false
@@ -194,6 +195,18 @@ struct DrawScreen: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("程序格式") {
+                Picker("程序格式", selection: $format) {
+                    ForEach(ProgramFormat.allCases) { item in
+                        Text(item.rawValue).tag(item)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(format.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             if !issues.isEmpty {
                 Section("检查") {
                     ForEach(issues, id: \.self) { t in
@@ -210,7 +223,8 @@ struct DrawScreen: View {
                 } label: {
                     HStack {
                         Spacer()
-                        Label("生成宏程序 · 含仿真", systemImage: "scribble.variable")
+                        Label(format == .macro ? "生成宏程序 · 含仿真" : "生成 G 代码 · 含仿真",
+                              systemImage: format == .macro ? "scribble.variable" : "list.number")
                         Spacer()
                     }
                     .font(.headline)
@@ -232,7 +246,7 @@ struct DrawScreen: View {
         .navigationTitle("绘图编程")
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(isPresented: $showResult) {
-            ContourResultView(code: code)
+            ContourResultView(code: code, format: format)
         }
         .sheet(isPresented: $showHelp) {
             ContourHelpView()
@@ -287,7 +301,8 @@ struct DrawScreen: View {
     }
 
     private func build() {
-        code = ContourProg.generate(spec)
+        let macro = ContourProg.generate(spec)
+        code = PostProcessor.output(macro, format: format)
         showResult = true
     }
 
@@ -494,6 +509,7 @@ struct DrawScreen: View {
 
 struct ContourResultView: View {
     let code: String
+    var format: ProgramFormat = .macro
     @State private var copied = false
 
     var body: some View {
@@ -531,7 +547,7 @@ struct ContourResultView: View {
         }
         .padding(12)
         .background(Color(.secondarySystemBackground))
-        .navigationTitle("绘图编程 · 程序")
+        .navigationTitle(format == .macro ? "绘图编程 · 宏程序" : "绘图编程 · G 代码")
         .navigationBarTitleDisplayMode(.inline)
     }
 }

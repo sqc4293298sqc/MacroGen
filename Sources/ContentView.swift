@@ -9,6 +9,7 @@ struct ContentView: View {
     }
 
     @State private var spec = PocketSpec()
+    @State private var format: ProgramFormat = .macro
     @State private var result: String = ""
     @State private var manual: String = ""
     @State private var fileURL: URL? = nil
@@ -201,6 +202,18 @@ struct ContentView: View {
                     }
                 }
 
+                Section("程序格式") {
+                    Picker("程序格式", selection: $format) {
+                        ForEach(ProgramFormat.allCases) { item in
+                            Text(item.rawValue).tag(item)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text(format.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 if !spec.issues.isEmpty {
                     Section("检查") {
                         ForEach(spec.issues, id: \.self) { t in
@@ -277,7 +290,8 @@ struct ContentView: View {
                     } label: {
                         HStack {
                             Spacer()
-                            Label("生成宏程序 · 含刀路仿真", systemImage: "function")
+                            Label(format == .macro ? "生成宏程序 · 含刀路仿真" : "生成 G 代码 · 含刀路仿真",
+                                  systemImage: format == .macro ? "function" : "list.number")
                             Spacer()
                         }
                         .font(.headline)
@@ -305,7 +319,7 @@ struct ContentView: View {
                 ImportView()
             }
             .navigationDestination(isPresented: $showResult) {
-                ResultView(code: result, manual: manual, fileURL: fileURL, spec: spec)
+                ResultView(code: result, manual: manual, fileURL: fileURL, spec: spec, format: format)
             }
     }
 
@@ -356,7 +370,11 @@ struct ContentView: View {
     }
 
     private func build() {
-        let code = GCodeGenerator.generate(spec)
+        var source = spec
+        // 普通 G 代码不接受 FANUC 的 ,R/,C 精简写法，改用完整圆角/倒角块。
+        if format == .gcode { source.compact = false }
+        let macro = GCodeGenerator.generate(source)
+        let code = PostProcessor.output(macro, format: format)
         let name: String
         if spec.mode == .taper {
             name = "taper_D\(Int(spec.taperDia))d\(Int(spec.taperDiaSmall))_H\(Int(spec.taperDepth)).nc"
@@ -389,6 +407,7 @@ struct ResultView: View {
     let manual: String
     let fileURL: URL?
     let spec: PocketSpec
+    let format: ProgramFormat
     @State private var didCopy = false
 
     var body: some View {
@@ -430,18 +449,25 @@ struct ResultView: View {
                 .buttonStyle(.plain)
                 .padding(.horizontal, 12)
 
-                DisclosureGroup("使用说明（每个变量怎么改）") {
-                    Text(manual)
-                        .font(.system(size: 13))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.top, 6)
+                if format == .macro {
+                    DisclosureGroup("使用说明（每个变量怎么改）") {
+                        Text(manual)
+                            .font(.system(size: 13))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 6)
+                    }
+                    .padding(12)
+                } else {
+                    Text("已展开为普通 G 代码：程序里不再有 #变量、WHILE 和 IF，坐标全部是固定值。上机前核对 G43/G28/G52 与 D 刀补。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .padding(12)
                 }
-                .padding(12)
             }
         }
         .background(Color(uiColor: .secondarySystemBackground))
-        .navigationTitle("宏程序")
+        .navigationTitle(format == .macro ? "宏程序" : "普通 G 代码")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
