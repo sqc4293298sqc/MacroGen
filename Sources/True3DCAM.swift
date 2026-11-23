@@ -855,8 +855,8 @@ enum True3DCAM {
                 let f = slots.first?.1
                 let cx = f?.x ?? operation.slotCx
                 let cy = f?.y ?? operation.slotCy
-                let length = f?.width ?? operation.slotLength
-                let width = f?.depthY ?? operation.slotWidth
+                let length: Double = f?.width ?? operation.slotLength
+                let width: Double = f?.depthY ?? operation.slotWidth
                 let angle = operation.slotAngle * .pi / 180
                 let half = max(0, (length - width) / 2)
                 let ux = cos(angle), uy = sin(angle)
