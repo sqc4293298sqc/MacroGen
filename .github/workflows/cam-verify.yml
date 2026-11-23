@@ -5,7 +5,7 @@ on:
 
 jobs:
   verify:
-    runs-on: macos-latest
+    runs-on: macos-26-intel
     timeout-minutes: 60
     steps:
       - name: Checkout
