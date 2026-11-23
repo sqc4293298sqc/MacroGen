@@ -2637,6 +2637,17 @@ struct True3DModelScreen: View {
                     }
                     Toggle("G54 毛坯中心 X0Y0", isOn: $cam.stockCenterOrigin)
                         .font(.system(size: 12, weight: .semibold))
+                    Picker("程序格式", selection: $cam.programFormat) {
+                        ForEach(ProgramFormat.allCases) { item in
+                            Text(item.rawValue).tag(item)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text(cam.programFormat == .macro
+                         ? "输出宏变量程序：每序转速/进给/下刀集中在 # 变量，坐标仍固定"
+                         : "输出普通 FANUC G 代码")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
                     numRow("零点偏移 X", $cam.originX)
                     numRow("零点偏移 Y", $cam.originY)
                     intRow("程序号 O", $cam.programNo)
@@ -2798,7 +2809,7 @@ struct True3DModelScreen: View {
 
                     if let gcodeURL {
                         NavigationLink {
-                            True3DGCodeScreen(code: camResult.gcode, fileURL: gcodeURL)
+                            True3DGCodeScreen(code: camResult.gcode, fileURL: gcodeURL, format: cam.programFormat)
                         } label: {
                             HStack {
                                 Label("查看完整 G 代码", systemImage: "text.alignleft")

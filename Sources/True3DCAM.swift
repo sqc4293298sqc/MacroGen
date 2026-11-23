@@ -24,6 +24,8 @@ struct True3DCAMParams: Equatable {
     var originY: Double = 0
     /// 输出 G 代码时把模型中心平移到 G54 X0Y0；仿真仍保留模型坐标。
     var stockCenterOrigin: Bool = true
+    /// 3D 工序输出：普通 G 代码 / 宏变量程序。
+    var programFormat: ProgramFormat = .gcode
     var programNo: Int = 1010
 
     var doRoughing: Bool = true
@@ -844,10 +846,18 @@ enum True3DCAM {
         stats: True3DCAMStats,
         warnings: [String]
     ) -> String {
+        let macro = cam.programFormat == .macro
         var lines: [String] = []
         lines.append("%")
-        lines.append("O\(cam.programNo) (MACROGEN TRUE3D MULTI-OP)")
-        lines.append("( 由 MacroGen 真3D B-Rep 工序树生成 )")
+        if macro {
+            lines.append("O\(cam.programNo) (MACROGEN TRUE3D MULTI-OP MACRO)")
+            lines.append("( 由 MacroGen 真3D 工序树生成 · 宏变量版 )")
+            lines.append("( 每序从 #100 起，+0/+1/+2 = 转速/切削进给/下刀进给；#1 = 安全高度 )")
+            lines.append("( 改对应变量即可调该序参数，坐标仍按生成刀路固定输出 )")
+        } else {
+            lines.append("O\(cam.programNo) (MACROGEN TRUE3D MULTI-OP)")
+            lines.append("( 由 MacroGen 真3D B-Rep 工序树生成 )")
+        }
         lines.append("( 共 \(runs.count) 道工序，总刀路 \(fmt(stats.cutLength, 1))mm，层数 \(stats.layerCount) )")
         lines.append("( 毛坯范围 X\(fmt(bounds.min.x, 2))~\(fmt(bounds.max.x, 2)) Y\(fmt(bounds.min.y, 2))~\(fmt(bounds.max.y, 2)) Z\(fmt(bounds.min.z, 2))~\(fmt(bounds.max.z, 2)) )")
         if cam.stockCenterOrigin {
@@ -855,6 +865,9 @@ enum True3DCAM {
         }
         if !warnings.isEmpty {
             lines.append("( 注意: \(warnings[0]) )")
+        }
+        if macro {
+            lines.append("#1=\(fmt(safeZ, 1)) (安全高度)")
         }
         lines.append("G17 G21 G40 G49 G80 G90 G\(cam.coord)")
         if abs(cam.originX) > 1e-9 || abs(cam.originY) > 1e-9 {
@@ -866,14 +879,22 @@ enum True3DCAM {
 
         for (index, run) in runs.enumerated() {
             let op = run.operation
+            let macroBase = 100 + index * 10
+            let zText = macro ? "#1" : fmt(safeZ, 1)
+            let spindleText = macro ? "#\(macroBase)" : "\(op.spindle)"
             lines.append("( ---- 工序 \(index + 1): \(op.kind.rawValue) ---- )")
             lines.append("( 刀Ø\(fmt(op.toolDia, 2)) T\(op.toolNo) H\(op.hNo) D\(op.dNo) 每层\(fmt(op.stepDown, 2)) 行距\(fmt(op.stepOver, 2)) 转速\(op.spindle) 进给\(op.feed) )")
+            if macro {
+                lines.append("#\(macroBase)=\(op.spindle) (第\(index + 1)序 转速 S)")
+                lines.append("#\(macroBase + 1)=\(op.feed) (第\(index + 1)序 切削 F)")
+                lines.append("#\(macroBase + 2)=\(op.plungeFeed) (第\(index + 1)序 下刀 F)")
+            }
             if let comp = run.comp {
                 lines.append("( 刀补\(comp.side) D\(String(format: "%02d", comp.dNo)) · 真实轮廓精修 )")
             }
             lines.append("T\(op.toolNo) M06")
-            lines.append("G43 H\(op.hNo) Z\(fmt(safeZ, 1))")
-            lines.append("M3 S\(op.spindle)")
+            lines.append("G43 H\(op.hNo) Z\(zText)")
+            lines.append("M3 S\(spindleText)")
             lines.append("M8")
             if let comp = run.comp {
                 appendCompLines(
@@ -882,6 +903,8 @@ enum True3DCAM {
                     plungeFeed: op.plungeFeed,
                     safeZ: safeZ,
                     programOffset: programOffset,
+                    macroStyle: macro,
+                    macroBase: macroBase,
                     lines: &lines
                 )
             } else {
@@ -891,10 +914,12 @@ enum True3DCAM {
                     plungeFeed: op.plungeFeed,
                     safeZ: safeZ,
                     programOffset: programOffset,
+                    macroStyle: macro,
+                    macroBase: macroBase,
                     lines: &lines
                 )
             }
-            lines.append("G0 Z\(fmt(safeZ, 1))")
+            lines.append(macro ? "G0 Z#1" : "G0 Z\(fmt(safeZ, 1))")
             lines.append("M5")
             lines.append("M9")
         }
@@ -916,10 +941,15 @@ enum True3DCAM {
         plungeFeed: Int,
         safeZ: Double,
         programOffset: CGPoint = .zero,
+        macroStyle: Bool = false,
+        macroBase: Int = 100,
         lines: inout [String]
     ) {
         func gx(_ x: CGFloat) -> Double { Double(x) - Double(programOffset.x) }
         func gy(_ y: CGFloat) -> Double { Double(y) - Double(programOffset.y) }
+        let safeText = macroStyle ? "#1" : fmt(safeZ, 1)
+        let feedText = macroStyle ? "F#\(macroBase + 1)" : "F\(feed)"
+        let plungeText = macroStyle ? "F#\(macroBase + 2)" : "F\(plungeFeed)"
         var lastPoint: CGPoint?
         var lastZ: Double?
         for seg in segments {
@@ -933,12 +963,12 @@ enum True3DCAM {
                 needsRapid = true
             }
             if needsRapid {
-                lines.append("G0 Z\(fmt(safeZ, 1))")
+                lines.append("G0 Z\(safeText)")
                 lines.append("G0 X\(fmt(gx(first.x))) Y\(fmt(gy(first.y)))")
-                lines.append("G1 Z\(fmt(seg.z)) F\(plungeFeed)")
+                lines.append("G1 Z\(fmt(seg.z)) \(plungeText)")
             }
             for p in seg.pts.dropFirst() {
-                lines.append("G1 X\(fmt(gx(p.x))) Y\(fmt(gy(p.y))) F\(feed)")
+                lines.append("G1 X\(fmt(gx(p.x))) Y\(fmt(gy(p.y))) \(feedText)")
             }
             lastPoint = lastProgram
             lastZ = seg.z
@@ -951,24 +981,29 @@ enum True3DCAM {
         plungeFeed: Int,
         safeZ: Double,
         programOffset: CGPoint,
+        macroStyle: Bool = false,
+        macroBase: Int = 100,
         lines: inout [String]
     ) {
         func gx(_ x: CGFloat) -> Double { Double(x) - Double(programOffset.x) }
         func gy(_ y: CGFloat) -> Double { Double(y) - Double(programOffset.y) }
         let side = comp.side == "G41" ? "G41" : "G42"
         let dText = String(format: "%02d", comp.dNo)
+        let safeText = macroStyle ? "#1" : fmt(safeZ, 1)
+        let feedText = macroStyle ? "F#\(macroBase + 1)" : "F\(feed)"
+        let plungeText = macroStyle ? "F#\(macroBase + 2)" : "F\(plungeFeed)"
         lines.append("( \(side) D\(dText) · 刀补轮廓 · \(comp.contour.count) 点 )")
-        lines.append("G0 Z\(fmt(safeZ, 1))")
+        lines.append("G0 Z\(safeText)")
         lines.append("G0 X\(fmt(gx(comp.lead.x))) Y\(fmt(gy(comp.lead.y)))")
-        lines.append("G1 Z\(fmt(comp.z)) F\(plungeFeed)")
+        lines.append("G1 Z\(fmt(comp.z)) \(plungeText)")
         if let first = comp.contour.first {
             lines.append("\(side) D\(dText)")
-            lines.append("G1 X\(fmt(gx(first.x))) Y\(fmt(gy(first.y))) F\(feed)")
+            lines.append("G1 X\(fmt(gx(first.x))) Y\(fmt(gy(first.y))) \(feedText)")
             for p in comp.contour.dropFirst() {
-                lines.append("G1 X\(fmt(gx(p.x))) Y\(fmt(gy(p.y))) F\(feed)")
+                lines.append("G1 X\(fmt(gx(p.x))) Y\(fmt(gy(p.y))) \(feedText)")
             }
             if let last = comp.contour.last, distance(last, first) > 0.001 {
-                lines.append("G1 X\(fmt(gx(first.x))) Y\(fmt(gy(first.y))) F\(feed)")
+                lines.append("G1 X\(fmt(gx(first.x))) Y\(fmt(gy(first.y))) \(feedText)")
             }
         }
         lines.append("G40")
@@ -984,10 +1019,17 @@ enum True3DCAM {
         stats: True3DCAMStats,
         warnings: [String]
     ) -> String {
+        let macro = cam.programFormat == .macro
         var lines: [String] = []
         lines.append("%")
-        lines.append("O\(cam.programNo) (MACROGEN TRUE3D)")
-        lines.append("( 由 MacroGen 真3D B-Rep 截面生成 )")
+        if macro {
+            lines.append("O\(cam.programNo) (MACROGEN TRUE3D MACRO)")
+            lines.append("( 由 MacroGen 真3D 截面生成 · 宏变量版 )")
+            lines.append("( #1=安全高度 #2=转速 #3=切削进给 #4=下刀进给 )")
+        } else {
+            lines.append("O\(cam.programNo) (MACROGEN TRUE3D)")
+            lines.append("( 由 MacroGen 真3D B-Rep 截面生成 )")
+        }
         lines.append("( 刀Ø\(fmt(cam.toolDia, 2))  每层\(fmt(cam.stepDown, 2))  行距\(fmt(cam.stepOver, 2)) )")
         lines.append("( 毛坯范围 X\(fmt(bounds.min.x, 2))~\(fmt(bounds.max.x, 2)) Y\(fmt(bounds.min.y, 2))~\(fmt(bounds.max.y, 2)) Z\(fmt(bounds.min.z, 2))~\(fmt(bounds.max.z, 2)) )")
         if cam.stockCenterOrigin {
@@ -997,13 +1039,21 @@ enum True3DCAM {
         if !warnings.isEmpty {
             lines.append("( 注意: \(warnings[0]) )")
         }
+        if macro {
+            lines.append("#1=\(fmt(safeZ, 1)) (安全高度)")
+            lines.append("#2=\(cam.spindle) (转速 S)")
+            lines.append("#3=\(cam.feed) (切削进给 F)")
+            lines.append("#4=\(cam.plungeFeed) (下刀进给 F)")
+        }
         lines.append("G17 G21 G40 G49 G80 G90 G\(cam.coord)")
         if abs(cam.originX) > 1e-9 || abs(cam.originY) > 1e-9 {
             lines.append("G52 X\(fmt(cam.originX)) Y\(fmt(cam.originY)) (零点偏移)")
         }
+        let initialZ = macro ? "#1" : fmt(safeZ, 1)
+        let initialS = macro ? "#2" : "\(cam.spindle)"
         lines.append("T\(cam.toolNo) M06")
-        lines.append("G43 H\(cam.hNo) Z\(fmt(safeZ, 1))")
-        lines.append("M3 S\(cam.spindle)")
+        lines.append("G43 H\(cam.hNo) Z\(initialZ)")
+        lines.append("M3 S\(initialS)")
         lines.append("M8")
 
         let programOffset = cam.stockCenterOrigin
@@ -1011,6 +1061,9 @@ enum True3DCAM {
             : CGPoint.zero
         func gx(_ x: CGFloat) -> Double { Double(x) - Double(programOffset.x) }
         func gy(_ y: CGFloat) -> Double { Double(y) - Double(programOffset.y) }
+        let safeText = macro ? "#1" : fmt(safeZ, 1)
+        let feedText = macro ? "F#3" : "F\(cam.feed)"
+        let plungeText = macro ? "F#4" : "F\(cam.plungeFeed)"
 
         var lastPoint: CGPoint?
         var lastZ: Double?
@@ -1025,18 +1078,18 @@ enum True3DCAM {
                 needsRapid = true
             }
             if needsRapid {
-                lines.append("G0 Z\(fmt(safeZ, 1))")
+                lines.append("G0 Z\(safeText)")
                 lines.append("G0 X\(fmt(gx(first.x))) Y\(fmt(gy(first.y)))")
-                lines.append("G1 Z\(fmt(seg.z)) F\(cam.plungeFeed)")
+                lines.append("G1 Z\(fmt(seg.z)) \(plungeText)")
             }
             for p in seg.pts.dropFirst() {
-                lines.append("G1 X\(fmt(gx(p.x))) Y\(fmt(gy(p.y))) F\(cam.feed)")
+                lines.append("G1 X\(fmt(gx(p.x))) Y\(fmt(gy(p.y))) \(feedText)")
             }
             lastPoint = lastProgram
             lastZ = seg.z
         }
 
-        lines.append("G0 Z\(fmt(safeZ, 1))")
+        lines.append(macro ? "G0 Z#1" : "G0 Z\(fmt(safeZ, 1))")
         if abs(cam.originX) > 1e-9 || abs(cam.originY) > 1e-9 {
             lines.append("G52 X0 Y0")
         }
