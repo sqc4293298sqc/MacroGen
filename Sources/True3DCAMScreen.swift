@@ -2,6 +2,52 @@ import SwiftUI
 import UIKit
 import SceneKit
 
+/// 多工序刀路的分色信息：一段连续 segments 属于同一道工序。
+struct True3DPathRunBand: Identifiable {
+    let id: Int
+    let range: Range<Int>
+    let color: Color
+    let name: String
+    let toolNo: Int
+    let toolDia: Double
+}
+
+func true3DOperationColor(_ index: Int) -> Color {
+    let palette: [Color] = [
+        Color(red: 1.00, green: 0.42, blue: 0.10),
+        Color(red: 0.18, green: 0.50, blue: 0.93),
+        Color(red: 0.13, green: 0.63, blue: 0.42),
+        Color(red: 0.55, green: 0.36, blue: 0.96),
+        Color(red: 0.88, green: 0.66, blue: 0.00),
+        Color(red: 0.88, green: 0.32, blue: 0.32),
+        Color(red: 0.00, green: 0.65, blue: 0.65),
+        Color(red: 0.42, green: 0.23, blue: 0.80),
+        Color(red: 0.30, green: 0.49, blue: 0.06),
+        Color(red: 0.86, green: 0.15, blue: 0.47)
+    ]
+    return palette[index % palette.count]
+}
+
+func true3DPathBands(_ runs: [True3DCAMRun]) -> [True3DPathRunBand] {
+    var bands: [True3DPathRunBand] = []
+    var start = 0
+    for (index, run) in runs.enumerated() {
+        let end = start + run.segments.count
+        if end > start {
+            bands.append(True3DPathRunBand(
+                id: index,
+                range: start..<end,
+                color: true3DOperationColor(index),
+                name: run.operation.kind.rawValue,
+                toolNo: run.operation.toolNo,
+                toolDia: run.operation.toolDia
+            ))
+        }
+        start = end
+    }
+    return bands
+}
+
 /// 真 3D 刀路：模型由 OCCT B-Rep 提供，刀路由真实截面偏置/行切生成。
 struct True3DCAMScreen: View {
     let result: True3DResult
@@ -28,7 +74,7 @@ struct True3DCAMScreen: View {
                 }
 
                 if let camResult {
-                    True3DPathSimulation(segments: camResult.segments)
+                    True3DPathSimulation(segments: camResult.segments, runs: camResult.runs)
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -229,6 +275,8 @@ struct True3DCAMScreen: View {
                         Text("G\(c)").tag(c)
                     }
                 }
+                Toggle("G54 毛坯中心 X0Y0", isOn: $cam.stockCenterOrigin)
+                    .font(.system(size: 12, weight: .semibold))
                 numRow("零点偏移 X", $cam.originX)
                 numRow("零点偏移 Y", $cam.originY)
                 intRow("程序号 O", $cam.programNo)
@@ -307,15 +355,47 @@ struct True3DCAMScreen: View {
 
 struct True3DPathSimulation: View {
     let segments: [TPSeg]
+    var runs: [True3DCAMRun] = []
 
     @State private var progress: Double = 0
     @State private var playing = false
     @State private var speed: Double = 1
+    @State private var scopeAll = true
+    @State private var selectedRun = 0
 
     private let timer = Timer.publish(every: 0.08, on: .main, in: .common).autoconnect()
 
+    private var safeRunIndex: Int {
+        guard !runs.isEmpty else { return 0 }
+        return min(max(selectedRun, 0), runs.count - 1)
+    }
+
+    private var visibleSegments: [TPSeg] {
+        guard !runs.isEmpty else { return segments }
+        if scopeAll { return segments }
+        return runs[safeRunIndex].segments
+    }
+
+    private var bands: [True3DPathRunBand] {
+        if runs.isEmpty { return [] }
+        if scopeAll { return true3DPathBands(runs) }
+        let index = safeRunIndex
+        let run = runs[index]
+        guard !run.segments.isEmpty else { return [] }
+        return [
+            True3DPathRunBand(
+                id: index,
+                range: 0..<run.segments.count,
+                color: true3DOperationColor(index),
+                name: run.operation.kind.rawValue,
+                toolNo: run.operation.toolNo,
+                toolDia: run.operation.toolDia
+            )
+        ]
+    }
+
     private var totalLength: Double {
-        max(segments.reduce(0) { $0 + max($1.len, 0.001) }, 0.001)
+        max(visibleSegments.reduce(0) { $0 + max($1.len, 0.001) }, 0.001)
     }
 
     /// 1× 速度下走完整条程序所需秒数；长程序自动压缩到 45 秒内。
@@ -324,10 +404,11 @@ struct True3DPathSimulation: View {
     }
 
     private var currentState: (index: Int, z: Double, x: Double, y: Double)? {
-        guard !segments.isEmpty else { return nil }
+        let source = visibleSegments
+        guard !source.isEmpty else { return nil }
         let target = max(0, min(progress, 1)) * totalLength
         var traveled = 0.0
-        for (index, seg) in segments.enumerated() {
+        for (index, seg) in source.enumerated() {
             let length = max(seg.len, 0.001)
             if target <= traveled + length, let first = seg.pts.first {
                 let fraction = max(0, min((target - traveled) / length, 1))
@@ -347,16 +428,84 @@ struct True3DPathSimulation: View {
             }
             traveled += length
         }
-        if let last = segments.last, let p = last.pts.last {
-            return (segments.count - 1, last.z, Double(p.x), Double(p.y))
+        if let last = source.last, let p = last.pts.last {
+            return (source.count - 1, last.z, Double(p.x), Double(p.y))
         }
         return nil
     }
 
+    private var currentBand: True3DPathRunBand? {
+        guard let state = currentState else { return nil }
+        return bands.first { $0.range.contains(state.index) }
+    }
+
+    private var currentOperation: True3DOperation? {
+        guard let band = currentBand, runs.indices.contains(band.id) else { return nil }
+        return runs[band.id].operation
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            True3DPathPreview(segments: segments, progress: progress)
+            if !runs.isEmpty {
+                HStack(spacing: 8) {
+                    Picker("范围", selection: $scopeAll) {
+                        Text("全程序").tag(true)
+                        Text("单序").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 138)
+
+                    if !scopeAll {
+                        Picker("工序", selection: $selectedRun) {
+                            ForEach(runs.indices, id: \.self) { index in
+                                Text("\(index + 1). \(runs[index].operation.kind.rawValue)")
+                                    .tag(index)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                    }
+                    Spacer()
+                    Text(scopeAll ? "\(runs.count) 道工序" : "只走当前一序")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+                .padding(.bottom, 8)
+            }
+
+            True3DPathPreview(segments: visibleSegments, progress: progress, bands: bands)
                 .frame(height: 300)
+                .overlay(alignment: .topLeading) {
+                    if let band = currentBand, let state = currentState {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 5) {
+                                Circle().fill(band.color).frame(width: 7, height: 7)
+                                Text("\(band.id + 1). \(band.name)")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .lineLimit(1)
+                            }
+                            Text(String(format: "X %+.2f   Y %+.2f   Z %+.2f", state.x, state.y, state.z))
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                            if let op = currentOperation {
+                                Text("T\(op.toolNo) H\(op.hNo) D\(op.dNo) · Ø\(String(format: "%.1f", op.toolDia)) · 层 \(runs[band.id].stats.layerCount) · S\(op.spindle) / F\(op.feed)")
+                                    .font(.system(size: 8, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                        )
+                        .padding(9)
+                    }
+                }
 
             HStack(spacing: 8) {
                 Button {
@@ -401,17 +550,28 @@ struct True3DPathSimulation: View {
                 .tint(Color(red: 1.0, green: 0.42, blue: 0.10))
                 .padding(.horizontal, 12)
 
+            if let band = currentBand {
+                HStack(spacing: 6) {
+                    Circle().fill(band.color).frame(width: 7, height: 7)
+                    Text("第 \(band.id + 1) 序 · \(band.name) · T\(band.toolNo) Ø\(String(format: "%.1f", band.toolDia))")
+                        .font(.system(size: 10, weight: .semibold))
+                    Spacer()
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+            }
+
             HStack(spacing: 12) {
                 if let state = currentState {
                     Label(String(format: "X %.2f  Y %.2f", state.x, state.y),
                           systemImage: "scope")
                     Label(String(format: "Z %.2f", state.z), systemImage: "arrow.up.and.down")
-                    Text("第 \(state.index + 1)/\(segments.count) 段")
+                    Text("第 \(state.index + 1)/\(visibleSegments.count) 段")
                 } else {
                     Text("没有可模拟的刀路")
                 }
                 Spacer()
-                Text("立体 · 橙线为已走刀路")
+                Text(scopeAll ? "分色 · 已走刀路" : "单序 · 已走刀路")
                     .foregroundStyle(.secondary)
             }
             .font(.system(size: 10))
@@ -425,12 +585,28 @@ struct True3DPathSimulation: View {
             progress = min(1, progress + step)
             if progress >= 1 { playing = false }
         }
+        .onChange(of: scopeAll) { _ in
+            progress = 0
+            playing = false
+        }
+        .onChange(of: selectedRun) { _ in
+            progress = 0
+            playing = false
+        }
+        .onChange(of: runs.count) { newCount in
+            if newCount == 0 { scopeAll = true; selectedRun = 0 }
+            else if selectedRun >= newCount { selectedRun = newCount - 1 }
+        }
+        .onAppear {
+            if selectedRun >= runs.count { selectedRun = max(0, runs.count - 1) }
+        }
     }
 }
 
 struct True3DPathPreview: View {
     let segments: [TPSeg]
     var progress: Double? = nil
+    var bands: [True3DPathRunBand] = []
 
     @State private var yaw: Double = -0.66
     @State private var pitch: Double = 0.52
@@ -440,6 +616,14 @@ struct True3DPathPreview: View {
 
     private let cutColor = Color(red: 1.0, green: 0.45, blue: 0.10)
     private let rapidColor = Color(red: 0.48, green: 0.56, blue: 0.66)
+
+    private func bandColor(at index: Int) -> Color {
+        bands.first(where: { $0.range.contains(index) })?.color ?? cutColor
+    }
+
+    private func currentBand(at index: Int) -> True3DPathRunBand? {
+        bands.first(where: { $0.range.contains(index) })
+    }
 
     private var totalLength: Double {
         max(segments.reduce(0) { $0 + max($1.len, 0.001) }, 0.001)
@@ -557,10 +741,10 @@ struct True3DPathPreview: View {
                                style: StrokeStyle(lineWidth: width, dash: dashed ? [4, 3] : []))
             }
 
-            // 全刀路：切削橙色，快移灰色虚线
-            for seg in segments {
+            // 全刀路：按工序分色，快移灰色虚线
+            for (index, seg) in segments.enumerated() {
                 stroke(seg, fraction: 1,
-                       color: seg.cut ? cutColor.opacity(0.18) : rapidColor.opacity(0.20),
+                       color: seg.cut ? bandColor(at: index).opacity(0.20) : rapidColor.opacity(0.20),
                        width: seg.cut ? 1.1 : 0.8,
                        dashed: !seg.cut)
             }
@@ -568,24 +752,25 @@ struct True3DPathPreview: View {
             // 已走部分
             let shown = progress ?? 1
             var consumed = max(0, min(shown, 1)) * totalLength
-            for seg in segments {
+            for (index, seg) in segments.enumerated() {
                 let len = max(seg.len, 0.001)
+                let traveled = seg.cut ? bandColor(at: index) : rapidColor.opacity(0.75)
                 if consumed <= 0 {
                     if progress == nil {
                         stroke(seg, fraction: 1,
-                               color: seg.cut ? cutColor : rapidColor.opacity(0.75),
+                               color: traveled,
                                width: seg.cut ? 1.3 : 0.9,
                                dashed: !seg.cut)
                     }
                 } else if consumed >= len {
                     stroke(seg, fraction: 1,
-                           color: seg.cut ? cutColor : rapidColor.opacity(0.75),
+                           color: traveled,
                            width: seg.cut ? 1.3 : 0.9,
                            dashed: !seg.cut)
                     consumed -= len
                 } else {
                     stroke(seg, fraction: consumed / len,
-                           color: seg.cut ? cutColor : rapidColor.opacity(0.75),
+                           color: traveled,
                            width: seg.cut ? 1.3 : 0.9,
                            dashed: !seg.cut)
                     consumed = 0
@@ -594,16 +779,17 @@ struct True3DPathPreview: View {
 
             // 当前刀具位置：圆环 + 到地面的虚线，明确它在 3D 深度里
             if let progress, progress < 1, let pos = currentPosition(at: progress) {
+                let markerColor = currentBand(at: pos.index)?.color ?? cutColor
                 let ground = project(Double(pos.x), Double(pos.y), b.minZ)
                 let knife = project(Double(pos.x), Double(pos.y), pos.z)
                 var drop = Path()
                 drop.move(to: knife)
                 drop.addLine(to: ground)
-                context.stroke(drop, with: .color(cutColor.opacity(0.45)),
+                context.stroke(drop, with: .color(markerColor.opacity(0.45)),
                                style: StrokeStyle(lineWidth: 0.9, dash: [3, 3]))
                 let rect = CGRect(x: knife.x - 5, y: knife.y - 5, width: 10, height: 10)
                 context.fill(Path(ellipseIn: rect), with: .color(.white))
-                context.stroke(Path(ellipseIn: rect), with: .color(Color(red: 0.9, green: 0.22, blue: 0.03)), lineWidth: 2)
+                context.stroke(Path(ellipseIn: rect), with: .color(markerColor), lineWidth: 2)
             }
         }
         .contentShape(Rectangle())
@@ -637,7 +823,7 @@ struct True3DPathPreview: View {
                 .padding(8)
         }
         .overlay(alignment: .bottomTrailing) {
-            Text("立体 · \(segments.count) 段 · X/Y/Z")
+            Text(bands.isEmpty ? "立体 · \(segments.count) 段 · X/Y/Z" : "分色 · \(bands.count) 序 · \(segments.count) 段")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 8)
@@ -648,10 +834,10 @@ struct True3DPathPreview: View {
         }
     }
 
-    private func currentPosition(at progress: Double) -> (x: CGFloat, y: CGFloat, z: Double)? {
+    private func currentPosition(at progress: Double) -> (x: CGFloat, y: CGFloat, z: Double, index: Int)? {
         let target = max(0, min(progress, 1)) * totalLength
         var traveled = 0.0
-        for seg in segments {
+        for (index, seg) in segments.enumerated() {
             let len = max(seg.len, 0.001)
             if target <= traveled + len, let first = seg.pts.first {
                 let fraction = max(0, min((target - traveled) / len, 1))
@@ -661,11 +847,11 @@ struct True3DPathPreview: View {
                 let t = pos - Double(i)
                 let a = seg.pts[i]
                 let b = seg.pts[min(i + 1, n)]
-                return (a.x + (b.x - a.x) * CGFloat(t), a.y + (b.y - a.y) * CGFloat(t), seg.z)
+                return (a.x + (b.x - a.x) * CGFloat(t), a.y + (b.y - a.y) * CGFloat(t), seg.z, index)
             }
             traveled += len
         }
-        if let last = segments.last, let p = last.pts.last { return (p.x, p.y, last.z) }
+        if let last = segments.last, let p = last.pts.last { return (p.x, p.y, last.z, max(segments.count - 1, 0)) }
         return nil
     }
 }

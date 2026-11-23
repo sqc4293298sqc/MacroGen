@@ -22,6 +22,8 @@ struct True3DCAMParams: Equatable {
     var coord: Int = 54
     var originX: Double = 0
     var originY: Double = 0
+    /// 输出 G 代码时把模型中心平移到 G54 X0Y0；仿真仍保留模型坐标。
+    var stockCenterOrigin: Bool = true
     var programNo: Int = 1010
 
     var doRoughing: Bool = true
@@ -43,6 +45,8 @@ enum True3DOperationKind: String, CaseIterable, Identifiable {
     case faceBase = "基础顶面飞面"
     case rough = "外形分层粗铣"
     case finish = "外形精铣"
+    case chamfer = "45°倒角铣"
+    case compFinish = "刀补精修"
     case clearInner = "孔 / 腔清残"
     case faceBoss = "凸台顶面飞面"
     case facePocket = "型腔底面飞面"
@@ -53,7 +57,9 @@ enum True3DOperationKind: String, CaseIterable, Identifiable {
         switch self {
         case .faceBase: return "顶面行切，避开凸台和孔"
         case .rough: return "沿真实截面等高偏置，按层下切"
-        case .finish: return "最后一层沿侧壁精修"
+        case .finish: return "最后一层沿侧壁精修，可选 G41/G42"
+        case .chamfer: return "按 45°/可调角度逐层向内缩，沿外轮廓倒角"
+        case .compFinish: return "沿真实外轮廓输出 G41/G42 D 刀补精修"
         case .clearInner: return "孔、圆腔、方腔、腰槽、草图切除逐层清残"
         case .faceBoss: return "每个凸台顶面单独行切"
         case .facePocket: return "腔底和孔底清根"
@@ -68,17 +74,32 @@ struct True3DOperation: Identifiable, Equatable {
     var toolDia: Double = 6
     var toolNo: Int = 1
     var hNo: Int = 1
+    var dNo: Int = 1
     var spindle: Int = 2000
     var feed: Int = 400
     var plungeFeed: Int = 120
     var stepDown: Double = 3
     var stepOver: Double = 4
+    /// "off" / "G41" / "G42"
+    var comp: String = "off"
+    var chamferDepth: Double = 1
+    var chamferAngle: Double = 45
+}
+
+/// 刀补轮廓：G 代码按真实轮廓 + G41/G42 D 输出，仿真显示刀心轨迹。
+struct True3DCompPass {
+    let side: String
+    let dNo: Int
+    let z: Double
+    let lead: CGPoint
+    let contour: [CGPoint]
 }
 
 struct True3DCAMRun {
     let operation: True3DOperation
     let segments: [TPSeg]
     let stats: True3DCAMStats
+    var comp: True3DCompPass? = nil
 }
 
 struct True3DCAMStats {
@@ -359,7 +380,29 @@ enum True3DCAM {
         var stats = True3DCAMStats()
         var layerKeys = Set<Int>()
 
+        func appendRun(_ run: True3DCAMRun, runWarnings: [String] = []) {
+            allSegments.append(contentsOf: run.segments)
+            for warning in runWarnings {
+                let tagged = "[\(run.operation.kind.rawValue)] \(warning)"
+                if !warnings.contains(tagged) { warnings.append(tagged) }
+            }
+            stats.cutLength += run.stats.cutLength
+            stats.rapidLength += run.stats.rapidLength
+            stats.pathCount += run.stats.pathCount
+            stats.sectionCount += run.stats.sectionCount
+            stats.zMin = runs.isEmpty ? run.stats.zMin : min(stats.zMin, run.stats.zMin)
+            stats.zMax = runs.isEmpty ? run.stats.zMax : max(stats.zMax, run.stats.zMax)
+            for seg in run.segments { layerKeys.insert(Int((seg.z * 1000).rounded())) }
+            stats.layerCount = layerKeys.count
+            runs.append(run)
+        }
+
         for operation in operations {
+            if let special = try makeSpecialRun(operation: operation, result: result, model: model, cam: cam) {
+                appendRun(special.run, runWarnings: special.warnings)
+                continue
+            }
+
             var single = cam
             single.operations = []
             single.doRoughing = false
@@ -372,6 +415,8 @@ enum True3DCAM {
             case .faceBase: single.doFaceBaseTop = true
             case .rough: single.doRoughing = true
             case .finish: single.doFinishing = true
+            case .compFinish: single.doFinishing = true
+            case .chamfer: throw True3DCAMError.emptyToolpath
             case .clearInner: single.doClearInner = true
             case .faceBoss: single.doFaceBossTop = true
             case .facePocket: single.doFacePocketBottom = true
@@ -396,20 +441,12 @@ enum True3DCAM {
                 throw error
             }
 
-            allSegments.append(contentsOf: runResult.segments)
-            for warning in runResult.warnings {
-                let tagged = "[\(operation.kind.rawValue)] \(warning)"
-                if !warnings.contains(tagged) { warnings.append(tagged) }
-            }
-            stats.cutLength += runResult.stats.cutLength
-            stats.rapidLength += runResult.stats.rapidLength
-            stats.pathCount += runResult.stats.pathCount
-            stats.sectionCount += runResult.stats.sectionCount
-            stats.zMin = runs.isEmpty ? runResult.stats.zMin : min(stats.zMin, runResult.stats.zMin)
-            stats.zMax = runs.isEmpty ? runResult.stats.zMax : max(stats.zMax, runResult.stats.zMax)
-            for seg in runResult.segments { layerKeys.insert(Int((seg.z * 1000).rounded())) }
-            stats.layerCount = layerKeys.count
-            runs.append(True3DCAMRun(operation: operation, segments: runResult.segments, stats: runResult.stats))
+            let run = True3DCAMRun(
+                operation: operation,
+                segments: runResult.segments,
+                stats: runResult.stats
+            )
+            appendRun(run, runWarnings: runResult.warnings)
         }
 
         guard !allSegments.isEmpty else { throw True3DCAMError.emptyToolpath }
@@ -431,6 +468,120 @@ enum True3DCAM {
             warnings: warnings,
             runs: runs
         )
+    }
+
+    /// 倒角 / 刀补精修：直接用真实截面外轮廓，不走普通分层偏置。
+    private static func makeSpecialRun(
+        operation: True3DOperation,
+        result: True3DResult,
+        model: True3DParams,
+        cam: True3DCAMParams
+    ) throws -> (run: True3DCAMRun, warnings: [String])? {
+        let kind = operation.kind
+        let compKind = (kind == .finish || kind == .compFinish) && operation.comp != "off"
+        guard kind == .chamfer || compKind else { return nil }
+        guard let bounds = result.shape.bounds else { throw True3DCAMError.invalidModel }
+        let radius = max(operation.toolDia, 0.1) / 2
+        var warnings: [String] = []
+        var segments: [TPSeg] = []
+        var comp: True3DCompPass?
+        var sectionCount = 0
+
+        if kind == .chamfer {
+            let top = bounds.max.z
+            guard let loops = loopsAt(result.shape, z: top - 0.02),
+                  let outer = loops.filter({ !$0.isHole }).max(by: { $0.area < $1.area }) else {
+                throw True3DCAMError.emptyToolpath
+            }
+            let depth = max(0.1, min(operation.chamferDepth, max(0.2, top - bounds.min.z - 0.1)))
+            let angle = max(1, min(80, operation.chamferAngle))
+            let levels = max(1, Int(ceil(depth / max(operation.stepDown, 0.05))))
+            let step = depth / Double(levels)
+            let radialPerDepth = tan(angle * .pi / 180)
+            for level in 1...levels {
+                let d = min(step * Double(level), depth)
+                if let inset = offset(outer, by: d * radialPerDepth, expand: false) {
+                    appendPath(inset, z: top - d, into: &segments)
+                    sectionCount += 1
+                } else {
+                    warnings.append("倒角第 \(level) 层偏置失败，已跳过该层")
+                }
+            }
+            if segments.isEmpty { throw True3DCAMError.emptyToolpath }
+        } else {
+            let z = bounds.min.z
+            guard let loops = loopsAt(result.shape, z: z + 0.02),
+                  let outer = loops.filter({ !$0.isHole }).max(by: { $0.area < $1.area }) else {
+                throw True3DCAMError.emptyToolpath
+            }
+            let side = operation.comp == "G41" ? "G41" : "G42"
+            let display = offset(outer, by: radius, expand: side == "G42")
+            if display == nil {
+                warnings.append("刀补显示轮廓未能偏置，按真实轮廓显示；上机前请仿真确认")
+            }
+            appendPath(display ?? outer.points, z: z, into: &segments)
+            sectionCount = 1
+
+            let contour = outer.points
+            guard let first = contour.first else { throw True3DCAMError.emptyToolpath }
+            let center = centroid(contour)
+            var vx = Double(first.x - center.x)
+            var vy = Double(first.y - center.y)
+            let length = max(sqrt(vx * vx + vy * vy), 0.001)
+            vx /= length; vy /= length
+            let lead = CGPoint(x: first.x + CGFloat(vx) * CGFloat(radius + 2),
+                               y: first.y + CGFloat(vy) * CGFloat(radius + 2))
+            comp = True3DCompPass(
+                side: side,
+                dNo: operation.dNo,
+                z: z,
+                lead: lead,
+                contour: contour
+            )
+        }
+
+        guard !segments.isEmpty else { throw True3DCAMError.emptyToolpath }
+        let stats = makeStats(segments: segments, sectionCount: sectionCount)
+        let run = True3DCAMRun(
+            operation: operation,
+            segments: segments,
+            stats: stats,
+            comp: comp
+        )
+        return (run, warnings)
+    }
+
+    private static func makeStats(segments: [TPSeg], sectionCount: Int) -> True3DCAMStats {
+        var stats = True3DCAMStats()
+        stats.pathCount = segments.count
+        stats.cutLength = segments.reduce(0) { $0 + $1.len }
+        stats.layerCount = Set(segments.map { Int(($0.z * 1000).rounded()) }).count
+        stats.zMin = segments.map(\.z).min() ?? 0
+        stats.zMax = segments.map(\.z).max() ?? 0
+        stats.sectionCount = sectionCount
+        var previousEnd: CGPoint?
+        var previousZ: Double?
+        var rapid = 0.0
+        for seg in segments {
+            guard let first = seg.pts.first, let last = seg.pts.last else { continue }
+            if let pe = previousEnd, let pz = previousZ {
+                if distance(pe, first) > 0.01 {
+                    rapid += sqrt(pow(Double(first.x - pe.x), 2) + pow(Double(first.y - pe.y), 2))
+                }
+                rapid += abs(seg.z - pz) * 2
+            }
+            previousEnd = last
+            previousZ = seg.z
+        }
+        stats.rapidLength = rapid
+        return stats
+    }
+
+    private static func centroid(_ points: [CGPoint]) -> CGPoint {
+        guard !points.isEmpty else { return .zero }
+        let x = points.reduce(0.0) { $0 + Double($1.x) } / Double(points.count)
+        let y = points.reduce(0.0) { $0 + Double($1.y) } / Double(points.count)
+        return CGPoint(x: x, y: y)
     }
 
     // MARK: 截面 / 偏置
@@ -699,6 +850,9 @@ enum True3DCAM {
         lines.append("( 由 MacroGen 真3D B-Rep 工序树生成 )")
         lines.append("( 共 \(runs.count) 道工序，总刀路 \(fmt(stats.cutLength, 1))mm，层数 \(stats.layerCount) )")
         lines.append("( 毛坯范围 X\(fmt(bounds.min.x, 2))~\(fmt(bounds.max.x, 2)) Y\(fmt(bounds.min.y, 2))~\(fmt(bounds.max.y, 2)) Z\(fmt(bounds.min.z, 2))~\(fmt(bounds.max.z, 2)) )")
+        if cam.stockCenterOrigin {
+            lines.append("( 工件零点：毛坯中心 X0Y0 )")
+        }
         if !warnings.isEmpty {
             lines.append("( 注意: \(warnings[0]) )")
         }
@@ -706,22 +860,40 @@ enum True3DCAM {
         if abs(cam.originX) > 1e-9 || abs(cam.originY) > 1e-9 {
             lines.append("G52 X\(fmt(cam.originX)) Y\(fmt(cam.originY)) (零点偏移)")
         }
+        let programOffset = cam.stockCenterOrigin
+            ? CGPoint(x: CGFloat((bounds.min.x + bounds.max.x) / 2), y: CGFloat((bounds.min.y + bounds.max.y) / 2))
+            : CGPoint.zero
 
         for (index, run) in runs.enumerated() {
             let op = run.operation
             lines.append("( ---- 工序 \(index + 1): \(op.kind.rawValue) ---- )")
-            lines.append("( 刀Ø\(fmt(op.toolDia, 2)) 每层\(fmt(op.stepDown, 2)) 行距\(fmt(op.stepOver, 2)) 转速\(op.spindle) 进给\(op.feed) )")
-            lines.append("T\(op.toolNo) M6")
+            lines.append("( 刀Ø\(fmt(op.toolDia, 2)) T\(op.toolNo) H\(op.hNo) D\(op.dNo) 每层\(fmt(op.stepDown, 2)) 行距\(fmt(op.stepOver, 2)) 转速\(op.spindle) 进给\(op.feed) )")
+            if let comp = run.comp {
+                lines.append("( 刀补\(comp.side) D\(String(format: "%02d", comp.dNo)) · 真实轮廓精修 )")
+            }
+            lines.append("T\(op.toolNo) M06")
             lines.append("G43 H\(op.hNo) Z\(fmt(safeZ, 1))")
             lines.append("M3 S\(op.spindle)")
             lines.append("M8")
-            appendSegmentLines(
-                run.segments,
-                feed: op.feed,
-                plungeFeed: op.plungeFeed,
-                safeZ: safeZ,
-                lines: &lines
-            )
+            if let comp = run.comp {
+                appendCompLines(
+                    comp,
+                    feed: op.feed,
+                    plungeFeed: op.plungeFeed,
+                    safeZ: safeZ,
+                    programOffset: programOffset,
+                    lines: &lines
+                )
+            } else {
+                appendSegmentLines(
+                    run.segments,
+                    feed: op.feed,
+                    plungeFeed: op.plungeFeed,
+                    safeZ: safeZ,
+                    programOffset: programOffset,
+                    lines: &lines
+                )
+            }
             lines.append("G0 Z\(fmt(safeZ, 1))")
             lines.append("M5")
             lines.append("M9")
@@ -743,29 +915,63 @@ enum True3DCAM {
         feed: Int,
         plungeFeed: Int,
         safeZ: Double,
+        programOffset: CGPoint = .zero,
         lines: inout [String]
     ) {
+        func gx(_ x: CGFloat) -> Double { Double(x) - Double(programOffset.x) }
+        func gy(_ y: CGFloat) -> Double { Double(y) - Double(programOffset.y) }
         var lastPoint: CGPoint?
         var lastZ: Double?
         for seg in segments {
             guard let first = seg.pts.first, let last = seg.pts.last else { continue }
+            let firstProgram = CGPoint(x: first.x - programOffset.x, y: first.y - programOffset.y)
+            let lastProgram = CGPoint(x: last.x - programOffset.x, y: last.y - programOffset.y)
             let needsRapid: Bool
             if let lp = lastPoint, let lz = lastZ {
-                needsRapid = distance(lp, first) > 0.01 || abs(lz - seg.z) > 0.001
+                needsRapid = distance(lp, firstProgram) > 0.01 || abs(lz - seg.z) > 0.001
             } else {
                 needsRapid = true
             }
             if needsRapid {
                 lines.append("G0 Z\(fmt(safeZ, 1))")
-                lines.append("G0 X\(fmt(Double(first.x))) Y\(fmt(Double(first.y)))")
+                lines.append("G0 X\(fmt(gx(first.x))) Y\(fmt(gy(first.y)))")
                 lines.append("G1 Z\(fmt(seg.z)) F\(plungeFeed)")
             }
             for p in seg.pts.dropFirst() {
-                lines.append("G1 X\(fmt(Double(p.x))) Y\(fmt(Double(p.y))) F\(feed)")
+                lines.append("G1 X\(fmt(gx(p.x))) Y\(fmt(gy(p.y))) F\(feed)")
             }
-            lastPoint = last
+            lastPoint = lastProgram
             lastZ = seg.z
         }
+    }
+
+    private static func appendCompLines(
+        _ comp: True3DCompPass,
+        feed: Int,
+        plungeFeed: Int,
+        safeZ: Double,
+        programOffset: CGPoint,
+        lines: inout [String]
+    ) {
+        func gx(_ x: CGFloat) -> Double { Double(x) - Double(programOffset.x) }
+        func gy(_ y: CGFloat) -> Double { Double(y) - Double(programOffset.y) }
+        let side = comp.side == "G41" ? "G41" : "G42"
+        let dText = String(format: "%02d", comp.dNo)
+        lines.append("( \(side) D\(dText) · 刀补轮廓 · \(comp.contour.count) 点 )")
+        lines.append("G0 Z\(fmt(safeZ, 1))")
+        lines.append("G0 X\(fmt(gx(comp.lead.x))) Y\(fmt(gy(comp.lead.y)))")
+        lines.append("G1 Z\(fmt(comp.z)) F\(plungeFeed)")
+        if let first = comp.contour.first {
+            lines.append("\(side) D\(dText)")
+            lines.append("G1 X\(fmt(gx(first.x))) Y\(fmt(gy(first.y))) F\(feed)")
+            for p in comp.contour.dropFirst() {
+                lines.append("G1 X\(fmt(gx(p.x))) Y\(fmt(gy(p.y))) F\(feed)")
+            }
+            if let last = comp.contour.last, distance(last, first) > 0.001 {
+                lines.append("G1 X\(fmt(gx(first.x))) Y\(fmt(gy(first.y))) F\(feed)")
+            }
+        }
+        lines.append("G40")
     }
 
     // MARK: G 代码
@@ -784,6 +990,9 @@ enum True3DCAM {
         lines.append("( 由 MacroGen 真3D B-Rep 截面生成 )")
         lines.append("( 刀Ø\(fmt(cam.toolDia, 2))  每层\(fmt(cam.stepDown, 2))  行距\(fmt(cam.stepOver, 2)) )")
         lines.append("( 毛坯范围 X\(fmt(bounds.min.x, 2))~\(fmt(bounds.max.x, 2)) Y\(fmt(bounds.min.y, 2))~\(fmt(bounds.max.y, 2)) Z\(fmt(bounds.min.z, 2))~\(fmt(bounds.max.z, 2)) )")
+        if cam.stockCenterOrigin {
+            lines.append("( 工件零点：毛坯中心 X0Y0 )")
+        }
         lines.append("( 刀路长度\(fmt(stats.cutLength, 1))mm  层数\(stats.layerCount)  上机前请仿真 )")
         if !warnings.isEmpty {
             lines.append("( 注意: \(warnings[0]) )")
@@ -792,30 +1001,38 @@ enum True3DCAM {
         if abs(cam.originX) > 1e-9 || abs(cam.originY) > 1e-9 {
             lines.append("G52 X\(fmt(cam.originX)) Y\(fmt(cam.originY)) (零点偏移)")
         }
-        lines.append("T\(cam.toolNo) M6")
+        lines.append("T\(cam.toolNo) M06")
         lines.append("G43 H\(cam.hNo) Z\(fmt(safeZ, 1))")
         lines.append("M3 S\(cam.spindle)")
         lines.append("M8")
+
+        let programOffset = cam.stockCenterOrigin
+            ? CGPoint(x: CGFloat((bounds.min.x + bounds.max.x) / 2), y: CGFloat((bounds.min.y + bounds.max.y) / 2))
+            : CGPoint.zero
+        func gx(_ x: CGFloat) -> Double { Double(x) - Double(programOffset.x) }
+        func gy(_ y: CGFloat) -> Double { Double(y) - Double(programOffset.y) }
 
         var lastPoint: CGPoint?
         var lastZ: Double?
         for seg in segments {
             guard let first = seg.pts.first, let last = seg.pts.last else { continue }
+            let firstProgram = CGPoint(x: first.x - programOffset.x, y: first.y - programOffset.y)
+            let lastProgram = CGPoint(x: last.x - programOffset.x, y: last.y - programOffset.y)
             let needsRapid: Bool
             if let lp = lastPoint, let lz = lastZ {
-                needsRapid = distance(lp, first) > 0.01 || abs(lz - seg.z) > 0.001
+                needsRapid = distance(lp, firstProgram) > 0.01 || abs(lz - seg.z) > 0.001
             } else {
                 needsRapid = true
             }
             if needsRapid {
                 lines.append("G0 Z\(fmt(safeZ, 1))")
-                lines.append("G0 X\(fmt(Double(first.x))) Y\(fmt(Double(first.y)))")
+                lines.append("G0 X\(fmt(gx(first.x))) Y\(fmt(gy(first.y)))")
                 lines.append("G1 Z\(fmt(seg.z)) F\(cam.plungeFeed)")
             }
             for p in seg.pts.dropFirst() {
-                lines.append("G1 X\(fmt(Double(p.x))) Y\(fmt(Double(p.y))) F\(cam.feed)")
+                lines.append("G1 X\(fmt(gx(p.x))) Y\(fmt(gy(p.y))) F\(cam.feed)")
             }
-            lastPoint = last
+            lastPoint = lastProgram
             lastZ = seg.z
         }
 

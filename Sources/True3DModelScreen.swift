@@ -2548,7 +2548,7 @@ struct True3DModelScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 8) {
-                    Text("工序")
+                    Text("多工序")
                         .font(.system(size: 22, weight: .bold))
                     Text("CAM")
                         .font(.system(size: 11, weight: .semibold))
@@ -2563,7 +2563,7 @@ struct True3DModelScreen: View {
                         .foregroundStyle(result == nil ? .orange : .green)
                 }
 
-                Text("选择加工策略和刀具参数。工序按当前 3D 实体截面生成，预览在“加工”页。")
+                Text("每道工序独立设置 T/H/D、刀具、转速和进给；按列表顺序生成合并 G 代码，加工页按工序分色仿真。")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2578,6 +2578,17 @@ struct True3DModelScreen: View {
                     Label("工序树", systemImage: "list.number")
                         .font(.system(size: 13, weight: .semibold))
                     Spacer()
+                    if !operations.isEmpty {
+                        Button {
+                            operations.removeAll()
+                            camResult = nil
+                            gcodeURL = nil
+                        } label: {
+                            Label("清空", systemImage: "trash")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.red)
+                        }
+                    }
                     Menu {
                         ForEach(True3DOperationKind.allCases) { kind in
                             Button(kind.rawValue) { appendOperation(kind) }
@@ -2590,10 +2601,14 @@ struct True3DModelScreen: View {
 
                 VStack(spacing: 10) {
                     ForEach(operations.indices, id: \.self) { index in
-                        operationCard(Binding(
-                            get: { operations[index] },
-                            set: { operations[index] = $0 }
-                        ))
+                        operationCard(
+                            Binding(
+                                get: { operations[index] },
+                                set: { operations[index] = $0 }
+                            ),
+                            colorIndex: operations[..<index].filter(\.enabled).count,
+                            displayIndex: index + 1
+                        )
                     }
                 }
 
@@ -2601,6 +2616,14 @@ struct True3DModelScreen: View {
                     Label("至少启用一道工序才能生成刀路", systemImage: "exclamationmark.triangle.fill")
                         .font(.system(size: 11))
                         .foregroundStyle(.orange)
+                } else {
+                    HStack(spacing: 6) {
+                        Image(systemName: "square.stack.3d.up")
+                        Text("\(operations.filter(\.enabled).count) 道启用 · \(Set(operations.filter(\.enabled).map(\.toolNo)).count) 把刀 · 按列表顺序合并")
+                        Spacer()
+                    }
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
                 }
 
                 group("安全 / 坐标 / 毛坯") {
@@ -2612,6 +2635,8 @@ struct True3DModelScreen: View {
                             Text("G\(c)").tag(c)
                         }
                     }
+                    Toggle("G54 毛坯中心 X0Y0", isOn: $cam.stockCenterOrigin)
+                        .font(.system(size: 12, weight: .semibold))
                     numRow("零点偏移 X", $cam.originX)
                     numRow("零点偏移 Y", $cam.originY)
                     intRow("程序号 O", $cam.programNo)
@@ -2620,7 +2645,7 @@ struct True3DModelScreen: View {
                 Button {
                     generateCAM(switchToMachine: true)
                 } label: {
-                    Label(isGeneratingCAM ? "正在生成刀路…" : "生成刀路并进入加工",
+                    Label(isGeneratingCAM ? "正在生成刀路…" : "生成合并刀路并进入加工",
                           systemImage: "point.3.connected.trianglepath.dotted")
                         .frame(maxWidth: .infinity)
                         .font(.system(size: 15, weight: .semibold))
@@ -2653,7 +2678,7 @@ struct True3DModelScreen: View {
                 HStack(spacing: 8) {
                     Text("加工")
                         .font(.system(size: 22, weight: .bold))
-                    Text("3D 刀路")
+                    Text("多工序合并")
                         .font(.system(size: 11, weight: .semibold))
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
@@ -2678,7 +2703,7 @@ struct True3DModelScreen: View {
                     .pickerStyle(.segmented)
 
                     if simulationMode == 0 {
-                        True3DPathSimulation(segments: camResult.segments)
+                        True3DPathSimulation(segments: camResult.segments, runs: camResult.runs)
                             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -2711,10 +2736,13 @@ struct True3DModelScreen: View {
 
                     if !camResult.runs.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("工序执行结果")
+                            Text("多工序执行结果")
                                 .font(.system(size: 12, weight: .semibold))
                             ForEach(Array(camResult.runs.enumerated()), id: \.offset) { index, run in
                                 HStack(spacing: 8) {
+                                    Circle()
+                                        .fill(true3DOperationColor(index))
+                                        .frame(width: 8, height: 8)
                                     Text("\(index + 1)")
                                         .font(.system(size: 10, weight: .bold))
                                         .frame(width: 18, height: 18)
@@ -2866,6 +2894,14 @@ struct True3DModelScreen: View {
         case .finish:
             op.toolDia = 4; op.toolNo = 3; op.stepDown = 1; op.stepOver = 2
             op.spindle = 4000; op.feed = 500; op.plungeFeed = 150
+        case .chamfer:
+            op.toolDia = 6; op.toolNo = 6; op.stepDown = 0.5; op.stepOver = 2
+            op.spindle = 4000; op.feed = 450; op.plungeFeed = 120
+            op.chamferDepth = 1.5; op.chamferAngle = 45
+        case .compFinish:
+            op.toolDia = 4; op.toolNo = 7; op.stepDown = 1; op.stepOver = 2
+            op.spindle = 4000; op.feed = 450; op.plungeFeed = 120
+            op.comp = "G42"
         case .clearInner:
             op.toolDia = 3; op.toolNo = 4; op.stepDown = 2; op.stepOver = 2
             op.spindle = 4500; op.feed = 400; op.plungeFeed = 120
@@ -2876,6 +2912,8 @@ struct True3DModelScreen: View {
             op.toolDia = 3; op.toolNo = 4; op.stepDown = 2; op.stepOver = 2
             op.spindle = 4500; op.feed = 400; op.plungeFeed = 120
         }
+        op.hNo = op.toolNo
+        op.dNo = op.toolNo
         operations.append(op)
     }
 
@@ -2886,14 +2924,17 @@ struct True3DModelScreen: View {
         operations.swapAt(index, target)
     }
 
-    private func operationCard(_ operation: Binding<True3DOperation>) -> some View {
+    private func operationCard(_ operation: Binding<True3DOperation>, colorIndex: Int, displayIndex: Int) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
+                Circle()
+                    .fill(operation.wrappedValue.enabled ? true3DOperationColor(colorIndex) : Color.secondary.opacity(0.35))
+                    .frame(width: 9, height: 9)
                 Toggle(isOn: operation.enabled) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(operation.wrappedValue.kind.rawValue)
+                        Text("第 \(displayIndex) 序 · \(operation.wrappedValue.kind.rawValue)")
                             .font(.system(size: 13, weight: .semibold))
-                        Text("T\(operation.wrappedValue.toolNo) · Ø\(fmt(operation.wrappedValue.toolDia)) · AP\(fmt(operation.wrappedValue.stepDown)) · AE\(fmt(operation.wrappedValue.stepOver))")
+                        Text("T\(operation.wrappedValue.toolNo) H\(operation.wrappedValue.hNo) D\(operation.wrappedValue.dNo) · Ø\(fmt(operation.wrappedValue.toolDia)) · AP\(fmt(operation.wrappedValue.stepDown)) · AE\(fmt(operation.wrappedValue.stepOver))")
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
@@ -2932,15 +2973,35 @@ struct True3DModelScreen: View {
                     }
                     HStack(spacing: 8) {
                         intRow("H", operation.hNo)
+                        intRow("D", operation.dNo)
+                    }
+                    HStack(spacing: 8) {
                         intRow("转速 S", operation.spindle)
+                        intRow("进给 F", operation.feed)
                     }
                     HStack(spacing: 8) {
                         numRow("切深 AP", operation.stepDown)
                         numRow("行距 AE", operation.stepOver)
                     }
-                    HStack(spacing: 8) {
-                        intRow("进给 F", operation.feed)
-                        intRow("下刀 F", operation.plungeFeed)
+                    intRow("下刀 F", operation.plungeFeed)
+
+                    if operation.wrappedValue.kind == .chamfer {
+                        HStack(spacing: 8) {
+                            numRow("倒角深度", operation.chamferDepth)
+                            numRow("角度 °", operation.chamferAngle)
+                        }
+                    }
+
+                    if operation.wrappedValue.kind == .finish || operation.wrappedValue.kind == .compFinish {
+                        Picker("刀补方式", selection: operation.comp) {
+                            Text("关闭").tag("off")
+                            Text("G41 左刀补").tag("G41")
+                            Text("G42 右刀补").tag("G42")
+                        }
+                        .pickerStyle(.menu)
+                        Text("开启后输出 G41/G42 D.. 与 G40；只精修真实外轮廓，粗铣仍走上道工序。")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
                     }
                 }
                 .padding(.top, 8)
@@ -6511,7 +6572,8 @@ struct True3DModelScreen: View {
 
     private static func defaultOperations() -> [True3DOperation] {
         var ops: [True3DOperation] = []
-        for kind in True3DOperationKind.allCases {
+        let coreKinds: [True3DOperationKind] = [.faceBase, .rough, .finish, .clearInner, .faceBoss, .facePocket]
+        for kind in coreKinds {
             var op = True3DOperation(kind: kind)
             switch kind {
             case .faceBase:
@@ -6523,6 +6585,14 @@ struct True3DModelScreen: View {
             case .finish:
                 op.toolDia = 4; op.toolNo = 3; op.stepDown = 1; op.stepOver = 2
                 op.spindle = 4000; op.feed = 500; op.plungeFeed = 150
+            case .chamfer:
+                op.toolDia = 6; op.toolNo = 6; op.stepDown = 0.5; op.stepOver = 2
+                op.spindle = 4000; op.feed = 450; op.plungeFeed = 120
+                op.chamferDepth = 1.5; op.chamferAngle = 45
+            case .compFinish:
+                op.toolDia = 4; op.toolNo = 7; op.stepDown = 1; op.stepOver = 2
+                op.spindle = 4000; op.feed = 450; op.plungeFeed = 120
+                op.comp = "G42"
             case .clearInner:
                 op.toolDia = 3; op.toolNo = 4; op.stepDown = 2; op.stepOver = 2
                 op.spindle = 4500; op.feed = 400; op.plungeFeed = 120
@@ -6534,6 +6604,10 @@ struct True3DModelScreen: View {
                 op.spindle = 4500; op.feed = 400; op.plungeFeed = 120
             }
             ops.append(op)
+        }
+        for (index, _) in ops.enumerated() {
+            ops[index].hNo = ops[index].toolNo
+            ops[index].dNo = ops[index].toolNo
         }
         return ops
     }
