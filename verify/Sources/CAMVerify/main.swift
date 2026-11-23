@@ -91,6 +91,76 @@ cam.toolDia = 10
 base = True3DParams()
 verifyCase("large-tool-default", model: base, cam: cam)
 
+// 多工序：按序程序、宏变量、冷却/余量/方向、整圆弧。
+do {
+    let base = True3DParams()
+    let built = try True3DKernel.build(base)
+    var cam = True3DCAMParams()
+    cam.operations = [
+        True3DOperation(kind: .rough),
+        True3DOperation(kind: .hole)
+    ]
+    let multi = try True3DCAM.generate(result: built, model: base, cam: cam)
+    guard !multi.runs.isEmpty, multi.runCodes.count == multi.runs.count else {
+        fail("multi-op: runCodes count \(multi.runCodes.count) != runs \(multi.runs.count)")
+    }
+    guard multi.runCodes.allSatisfy({ $0.contains("M30") }) else {
+        fail("multi-op: a per-operation program has no M30")
+    }
+    guard multi.gcode.contains("M08") else {
+        fail("multi-op: missing flood coolant M08")
+    }
+    print("PASS multi-op: runs=\(multi.runs.count) perOpPrograms=\(multi.runCodes.count) chars=\(multi.gcode.count)")
+
+    var macroCam = cam
+    macroCam.programFormat = .macro
+    let macro = try True3DCAM.generate(result: built, model: base, cam: macroCam)
+    guard macro.gcode.contains("#100"), macro.gcode.contains("#101"), macro.gcode.contains("#102") else {
+        fail("multi-op-macro: missing per-operation #100/#101/#102")
+    }
+    guard macro.runCodes.contains(where: { $0.contains("#100") }) else {
+        fail("multi-op-macro: per-operation program is not macro-style")
+    }
+    print("PASS multi-op-macro: chars=\(macro.gcode.count)")
+
+    var rough = True3DOperation(kind: .rough)
+    rough.coolant = .mist
+    rough.stockLeft = 2
+    rough.climb = false
+    var finish = True3DOperation(kind: .finish)
+    finish.coolant = .off
+    var paramCam = True3DCAMParams()
+    paramCam.operations = [rough, finish]
+    let paramsResult = try True3DCAM.generate(result: built, model: base, cam: paramCam)
+    guard paramsResult.gcode.contains("M07") else {
+        fail("op-params: mist M07 was not emitted")
+    }
+    guard !paramsResult.gcode.contains("M08") else {
+        fail("op-params: flood M08 leaked from an off operation")
+    }
+    print("PASS op-params: coolant/stock/climb pipeline ran")
+
+    var roundModel = True3DParams()
+    var roundPocket = True3DFeatureSpec(kind: .circularPocket, x: 38, y: -28)
+    roundPocket.name = "圆腔验证"; roundPocket.dia = 20; roundPocket.depth = 5
+    roundModel.features.append(roundPocket)
+    let roundBuilt = try True3DKernel.build(roundModel)
+    var roundOp = True3DOperation(kind: .pocketRound)
+    roundOp.targetFeatureIndex = roundModel.features.count - 1
+    roundOp.toolDia = 6
+    roundOp.stepDown = 2
+    roundOp.stepOver = 3
+    var roundCam = True3DCAMParams()
+    roundCam.operations = [roundOp]
+    let roundResult = try True3DCAM.generate(result: roundBuilt, model: roundModel, cam: roundCam)
+    guard roundResult.gcode.contains("G2 ") || roundResult.gcode.contains("G3 ") else {
+        fail("arc-output: no G2/G3 in circular pocket program")
+    }
+    print("PASS arc-output: G2/G3 emitted for a closed circular pocket")
+} catch {
+    fail("multi-op: \(error.localizedDescription)")
+}
+
 }
 
 do {
