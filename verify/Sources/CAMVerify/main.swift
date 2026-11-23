@@ -178,6 +178,33 @@ do {
         fail("partial-arc: slotArc output still has no G2/G3")
     }
     print("PASS partial-arc: slotArc uses G2/G3 for a 120° circular slot")
+
+    let flatR = true3DEffectiveToolRadius(diameter: 10, type: .flat, cornerRadius: 2, depth: 2)
+    let ballR = true3DEffectiveToolRadius(diameter: 10, type: .ball, cornerRadius: 2, depth: 2)
+    let bullR = true3DEffectiveToolRadius(diameter: 10, type: .bull, cornerRadius: 2, depth: 1)
+    guard abs(flatR - 5) < 0.001, abs(ballR - 4) < 0.001,
+          abs(bullR - (3 + sqrt(3))) < 0.01 else {
+        fail("tool-shape: effective radius calculation wrong flat=\(flatR) ball=\(ballR) bull=\(bullR)")
+    }
+    print("PASS tool-shape: flat=\(flatR) ball=\(ballR) bull@1mm=\(bullR)")
+
+    var loopOp = True3DOperation(kind: .rough)
+    loopOp.toolDia = 6
+    loopOp.stepDown = 2
+    loopOp.stepOver = 4
+    loopOp.toolType = .ball
+    loopOp.cornerRadius = 1
+    var loopCam = True3DCAMParams()
+    loopCam.operations = [loopOp]
+    loopCam.programFormat = .macro
+    let loopResult = try True3DCAM.generate(result: built, model: base, cam: loopCam)
+    guard loopResult.gcode.contains("WHILE["),
+          loopResult.gcode.contains("END1"),
+          loopResult.gcode.contains("IF[#100LE0]GOTO"),
+          loopResult.gcode.contains("N9000") else {
+        fail("macro-depth: missing WHILE/IF/N label")
+    }
+    print("PASS macro-depth: WHILE/IF/GOTO emitted, chars=\(loopResult.gcode.count)")
 } catch {
     fail("multi-op: \(error.localizedDescription)")
 }
