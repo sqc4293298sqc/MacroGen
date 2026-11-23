@@ -2642,6 +2642,21 @@ struct True3DModelScreen: View {
                             Text("G\(c)").tag(c)
                         }
                     }
+                    Picker("单刀具类型", selection: Binding(
+                        get: { cam.toolType ?? .flat },
+                        set: { cam.toolType = $0 }
+                    )) {
+                        ForEach(True3DToolType.allCases) { item in
+                            Text(item.rawValue).tag(item)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    if (cam.toolType ?? .flat) == .bull {
+                        numRow("单刀圆角 R", Binding(
+                            get: { cam.cornerRadius ?? max(cam.toolDia * 0.25, 0.2) },
+                            set: { cam.cornerRadius = $0 }
+                        ))
+                    }
                     Toggle("G54 毛坯中心 X0Y0", isOn: $cam.stockCenterOrigin)
                         .font(.system(size: 12, weight: .semibold))
                     Picker("程序格式", selection: $cam.programFormat) {
@@ -3032,6 +3047,24 @@ struct True3DModelScreen: View {
                         intRow("H", operation.hNo)
                         intRow("D", operation.dNo)
                     }
+                    Picker("刀具类型", selection: Binding(
+                        get: { operation.wrappedValue.toolType ?? .flat },
+                        set: { operation.wrappedValue.toolType = $0 }
+                    )) {
+                        ForEach(True3DToolType.allCases) { item in
+                            Text(item.rawValue).tag(item)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    if (operation.wrappedValue.toolType ?? .flat) == .bull {
+                        numRow("圆角 R", Binding(
+                            get: { operation.wrappedValue.cornerRadius ?? max(operation.wrappedValue.toolDia * 0.25, 0.2) },
+                            set: { operation.wrappedValue.cornerRadius = $0 }
+                        ))
+                    }
+                    Text("球刀/圆鼻刀按当前切深的有效半径偏置；2.5D 分层近似，不替代真实 3D 残留计算。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
                     HStack(spacing: 8) {
                         intRow("转速 S", operation.spindle)
                         intRow("进给 F", operation.feed)

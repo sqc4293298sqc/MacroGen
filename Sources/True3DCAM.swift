@@ -4,6 +4,32 @@ import OCCTSwift
 
 // MARK: - 3D 加工参数
 
+enum True3DToolType: String, CaseIterable, Identifiable, Codable {
+    case flat = "平底刀"
+    case ball = "球刀"
+    case bull = "圆鼻刀"
+    var id: String { rawValue }
+}
+
+/// 2.5D 分层下，按当前切深计算刀具实际参与偏置的半径。
+/// 平底刀恒定；球刀/圆鼻刀按刀尖圆弧截面收缩，避免用满刀径偏置造成过切。
+func true3DEffectiveToolRadius(diameter: Double, type: True3DToolType, cornerRadius: Double, depth: Double) -> Double {
+    let full = max(diameter, 0.1) / 2
+    let z = max(0, depth)
+    switch type {
+    case .flat:
+        return full
+    case .ball:
+        let t = min(z, full)
+        return max(0.1, sqrt(max(0, full * full - (full - t) * (full - t))))
+    case .bull:
+        let corner = min(max(cornerRadius, 0.1), max(0.1, full - 0.05))
+        let base = max(0.05, full - corner)
+        let t = min(z, corner)
+        return max(0.1, base + sqrt(max(0, corner * corner - (corner - t) * (corner - t))))
+    }
+}
+
 struct True3DCAMParams: Equatable, Codable {
     var toolDia: Double = 6
     var toolNo: Int = 1
@@ -30,6 +56,9 @@ struct True3DCAMParams: Equatable, Codable {
     var programFormat: ProgramFormat = .gcode
     var programNo: Int = 1010
     var coolant: True3DCoolant = .flood
+    /// 可选以兼容旧工程快照；nil 等于平底刀。
+    var toolType: True3DToolType? = nil
+    var cornerRadius: Double? = nil
 
     var doRoughing: Bool = true
     var doFinishing: Bool = true
@@ -39,6 +68,17 @@ struct True3DCAMParams: Equatable, Codable {
     var doFacePocketBottom: Bool = true
 
     var toolRadius: Double { max(toolDia, 0.1) / 2 }
+
+    var resolvedToolType: True3DToolType { toolType ?? .flat }
+    var resolvedCornerRadius: Double { cornerRadius ?? max(toolRadius * 0.25, 0.2) }
+    func effectiveToolRadius(atDepthBelowTop depth: Double) -> Double {
+        true3DEffectiveToolRadius(
+            diameter: toolDia,
+            type: resolvedToolType,
+            cornerRadius: resolvedCornerRadius,
+            depth: depth
+        )
+    }
 
     /// 非空时按工序树逐道生成，忽略上面的 doXxx 开关和单刀具字段。
     var operations: [True3DOperation] = []
@@ -178,6 +218,21 @@ struct True3DOperation: Identifiable, Equatable, Codable {
     var slotArcR: Double = 30
     var slotArcStart: Double = -60
     var slotArcEnd: Double = 60
+
+    /// 可选以兼容旧工程快照；nil 等于平底刀。
+    var toolType: True3DToolType? = nil
+    var cornerRadius: Double? = nil
+
+    var resolvedToolType: True3DToolType { toolType ?? .flat }
+    var resolvedCornerRadius: Double { cornerRadius ?? max(toolDia * 0.25, 0.2) }
+    func effectiveToolRadius(atDepthBelowTop depth: Double) -> Double {
+        true3DEffectiveToolRadius(
+            diameter: toolDia,
+            type: resolvedToolType,
+            cornerRadius: resolvedCornerRadius,
+            depth: depth
+        )
+    }
 }
 
 /// 刀补轮廓：G 代码按真实轮廓 + G41/G42 D 输出，仿真显示刀心轨迹。
@@ -261,7 +316,7 @@ enum True3DCAM {
             throw True3DCAMError.invalidModel
         }
 
-        let radius = cam.toolRadius
+        let faceRadius = cam.effectiveToolRadius(atDepthBelowTop: 0)
         let allowance = max(0, cam.stockLeft)
         let bottom = bounds.min.z - max(0, cam.stockExtraBottom)
         let top = bounds.max.z
@@ -281,14 +336,14 @@ enum True3DCAM {
                     obstacles.append(circlePoints(
                         cx: boss.x,
                         cy: boss.y,
-                        r: boss.dia / 2 + radius + 0.4
+                        r: boss.dia / 2 + faceRadius + 0.4
                     ))
                 }
                 let faceSegs = faceSegments(
                     outer: outer.points,
                     obstacles: obstacles,
                     z: baseTop,
-                    radius: radius,
+                    radius: faceRadius,
                     stepOver: cam.stepOver
                 )
                 segments.append(contentsOf: faceSegs)
@@ -306,7 +361,7 @@ enum True3DCAM {
                         outer: outer.points,
                         obstacles: [],
                         z: zTop,
-                        radius: radius,
+                        radius: faceRadius,
                         stepOver: cam.stepOver
                     )
                     segments.append(contentsOf: faceSegs)
@@ -327,7 +382,7 @@ enum True3DCAM {
                         outer: inner.points,
                         obstacles: [],
                         z: zBottom,
-                        radius: radius,
+                        radius: faceRadius,
                         stepOver: cam.stepOver
                     )
                     segments.append(contentsOf: faceSegs)
@@ -364,22 +419,23 @@ enum True3DCAM {
             sectionCount += 1
             let outerLoops = loops.filter { !$0.isHole }
             let holeLoops = loops.filter(\.isHole)
+            let sectionRadius = cam.effectiveToolRadius(atDepthBelowTop: top - level)
 
             for outer in outerLoops {
                 let maxRing = max(
                     0,
-                    Int(floor((max(0, cam.stockMarginXY) - radius - allowance) / max(cam.stepOver, 0.1)))
+                    Int(floor((max(0, cam.stockMarginXY) - sectionRadius - allowance) / max(cam.stepOver, 0.1)))
                 )
                 if cam.doRoughing, maxRing > 0 {
                     for k in stride(from: maxRing, through: 1, by: -1) {
-                        let distance = radius + allowance + Double(k) * cam.stepOver
+                        let distance = sectionRadius + allowance + Double(k) * cam.stepOver
                         if let poly = offset(outer, by: distance, expand: true) {
                             appendPath(poly, z: level, into: &segments)
                         }
                     }
                 }
                 if cam.doFinishing || (cam.doRoughing && maxRing == 0) {
-                    if let poly = offset(outer, by: radius + allowance, expand: true) {
+                    if let poly = offset(outer, by: sectionRadius + allowance, expand: true) {
                         appendPath(poly, z: level, into: &segments)
                     } else {
                         warnings.append("Z\(fmt(level)) 外轮廓偏置失败，已跳过")
@@ -391,14 +447,14 @@ enum True3DCAM {
                 if cam.doClearInner {
                     var k = 0
                     while k < 60 {
-                        let distance = radius + Double(k) * cam.stepOver
+                        let distance = sectionRadius + Double(k) * cam.stepOver
                         guard let poly = offset(hole, by: distance, expand: false) else { break }
                         appendPath(poly, z: level, into: &segments)
                         if polygonArea(poly) < 0.5 { break }
                         k += 1
                     }
                 } else if cam.doFinishing {
-                    if let poly = offset(hole, by: radius, expand: false) {
+                    if let poly = offset(hole, by: sectionRadius, expand: false) {
                         appendPath(poly, z: level, into: &segments)
                     }
                 }
@@ -432,15 +488,15 @@ enum True3DCAM {
         }
         stats.rapidLength = rapid
 
-        if radius * 2 >= min(model.width, model.depth) {
+        if faceRadius * 2 >= min(model.width, model.depth) {
             warnings.append("刀具直径接近工件最小边，外形可能被过切")
         }
-        for hole in model.holeFeatures where radius * 2 >= hole.dia {
+        for hole in model.holeFeatures where faceRadius * 2 >= hole.dia {
             warnings.append("刀具直径不小于孔 \(hole.name) 的直径，孔内清残无法完整加工")
         }
         for pocket in model.pocketFeatures {
             let minSize = pocket.kind == .circularPocket ? pocket.dia : min(pocket.width, pocket.depthY)
-            if radius * 2 >= minSize {
+            if faceRadius * 2 >= minSize {
                 warnings.append("刀具直径不小于 \(pocket.name) 的最小边，型腔内部无法完整清残")
             }
         }
@@ -532,6 +588,8 @@ enum True3DCAM {
             single.stepDown = operation.stepDown
             single.stepOver = operation.stepOver
             single.stockLeft = operation.kind == .rough ? operation.stockLeft : 0
+            single.toolType = operation.toolType
+            single.cornerRadius = operation.cornerRadius
 
             let runResult: True3DCAMResult
             do {
@@ -678,7 +736,8 @@ enum True3DCAM {
         cam: True3DCAMParams
     ) throws -> (run: True3DCAMRun, warnings: [String]) {
         let kind = operation.kind
-        let radius = max(operation.toolDia, 0.1) / 2
+        let radius = operation.effectiveToolRadius(atDepthBelowTop: 0)
+        func effectiveR(_ depth: Double) -> Double { operation.effectiveToolRadius(atDepthBelowTop: depth) }
         let step = max(operation.stepDown, 0.05)
         let stepOver = max(operation.stepOver, 0.1)
         let stock = max(0, operation.stockLeft)
@@ -714,15 +773,16 @@ enum True3DCAM {
         }
 
         func holePasses(cx: Double, cy: Double, holeR: Double, top: Double, depth: Double, label: String) {
+            let r = effectiveR(depth)
             let finishedR = holeR - stock
-            guard finishedR >= radius - 0.01 else {
-                warnings.append("\(label) Ø\(fmt(holeR * 2)) 扣余量后小于刀径 Ø\(fmt(operation.toolDia))，已跳过")
+            guard finishedR >= r - 0.01 else {
+                warnings.append("\(label) Ø\(fmt(holeR * 2)) 扣余量后小于有效刀径 Ø\(fmt(r * 2))，已跳过")
                 return
             }
-            let maxR = max(radius, finishedR - radius)
+            let maxR = max(r, finishedR - r)
             let ringStep = max(stepOver, 0.5)
             for z in layers(top: top, depth: depth) {
-                var ringR = min(radius, maxR)
+                var ringR = min(r, maxR)
                 repeat {
                     appendLoop(circlePoints(cx: cx, cy: cy, r: ringR), z: z)
                     ringR += ringStep
@@ -732,15 +792,16 @@ enum True3DCAM {
         }
 
         func rectPocketPasses(_ f: True3DFeatureSpec, top: Double, depth: Double) {
-            let w = max(operation.toolDia + 0.5, f.width)
-            let h = max(operation.toolDia + 0.5, f.depthY)
-            let maxInset = min(w, h) / 2 - radius - 0.05 - stock
-            guard maxInset >= radius - 0.01 else {
+            let r = effectiveR(depth)
+            let w = max(2 * r + 0.5, f.width)
+            let h = max(2 * r + 0.5, f.depthY)
+            let maxInset = min(w, h) / 2 - r - 0.05 - stock
+            guard maxInset >= r - 0.01 else {
                 warnings.append("\(f.name) 扣余量后尺寸太小，无法用 Ø\(fmt(operation.toolDia)) 清腔")
                 return
             }
             for z in layers(top: top, depth: depth) {
-                var inset = radius
+                var inset = r
                 while inset <= maxInset + 0.01 {
                     let hw = w / 2 - inset, hh = h / 2 - inset
                     guard hw > 0.1, hh > 0.1 else { break }
@@ -761,8 +822,9 @@ enum True3DCAM {
             let len = max(sqrt(dx * dx + dy * dy), 0.001)
             let ux = dx / len, uy = dy / len
             let nx = -uy, ny = ux
-            let cutWidth = max(operation.toolDia + 0.1, width - 2 * stock)
-            let across = max(0, cutWidth - operation.toolDia)
+            let r = effectiveR(depth)
+            let cutWidth = max(2 * r + 0.1, width - 2 * stock)
+            let across = max(0, cutWidth - 2 * r)
             let nPass = max(1, Int(ceil(across / stepOver)) + 1)
             for z in layers(top: top, depth: depth) {
                 for k in 0..<nPass {
@@ -883,11 +945,12 @@ enum True3DCAM {
             let seed = matchingFeature([.slot]).first?.1
             let cx = seed?.x ?? operation.slotCx
             let cy = seed?.y ?? operation.slotCy
-            let R = max(operation.toolDia, operation.slotArcR)
+            let r = effectiveR(max(operation.slotDepth, 0.1))
+            let R = max(2 * r, operation.slotArcR)
             let a0 = operation.slotArcStart * .pi / 180
             let a1 = operation.slotArcEnd * .pi / 180
-            let width = max(operation.toolDia, operation.slotWidth - 2 * stock)
-            let across = max(0, width - operation.toolDia)
+            let width = max(2 * r, operation.slotWidth - 2 * stock)
+            let across = max(0, width - 2 * r)
             let nPass = max(1, Int(ceil(across / stepOver)) + 1)
             let n = max(12, min(90, Int(abs(a1 - a0) * R / 2)))
             let top = seed?.topZ ?? model.height
@@ -914,7 +977,8 @@ enum True3DCAM {
                     warnings.append("\(f.name) 轮廓点不足，已跳过")
                     continue
                 }
-                let inset = offsetPolygon(raw, by: -(radius + stock)) ?? raw
+                let r = effectiveR(max(f.depth, 0.1))
+                let inset = offsetPolygon(raw, by: -(r + stock)) ?? raw
                 let top = f.topZ ?? model.height
                 for z in layers(top: top, depth: max(f.depth, 0.1)) {
                     appendLoop(inset, z: z)
@@ -1262,7 +1326,7 @@ enum True3DCAM {
             lines.append("O\(cam.programNo) (MACROGEN TRUE3D MULTI-OP MACRO)")
             lines.append("( 由 MacroGen 真3D 工序树生成 · 宏变量版 )")
             lines.append("( 每序从 #100 起，+0/+1/+2 = 转速/切削进给/下刀进给；#1 = 安全高度 )")
-            lines.append("( 改对应变量即可调该序参数，坐标仍按生成刀路固定输出 )")
+            lines.append("( 改对应变量即可调该序参数；等截面层用 WHILE 深度循环，转速为0用 IF/GOTO 跳过 )")
         } else {
             lines.append("O\(cam.programNo) (MACROGEN TRUE3D MULTI-OP)")
             lines.append("( 由 MacroGen 真3D B-Rep 工序树生成 )")
@@ -1277,6 +1341,7 @@ enum True3DCAM {
         }
         if macro {
             lines.append("#1=\(fmt(safeZ, 1)) (安全高度)")
+            lines.append("IF[#1LT0]GOTO 9999 (安全高度异常保护)")
         }
         lines.append("G17 G21 G40 G49 G80 G90 G\(cam.coord)")
         if abs(cam.originX) > 1e-9 || abs(cam.originY) > 1e-9 {
@@ -1297,6 +1362,7 @@ enum True3DCAM {
                 lines.append("#\(macroBase)=\(op.spindle) (第\(index + 1)序 转速 S)")
                 lines.append("#\(macroBase + 1)=\(op.feed) (第\(index + 1)序 切削 F)")
                 lines.append("#\(macroBase + 2)=\(op.plungeFeed) (第\(index + 1)序 下刀 F)")
+                lines.append("IF[#\(macroBase)LE0]GOTO \(9000 + index) (转速为0跳过本序)")
             }
             if let comp = run.comp {
                 lines.append("( 刀补\(comp.side) D\(String(format: "%02d", comp.dNo)) · 真实轮廓精修 )")
@@ -1316,6 +1382,26 @@ enum True3DCAM {
                     macroBase: macroBase,
                     lines: &lines
                 )
+            } else if macro, let loop = macroDepthLoop(run.segments) {
+                let zVar = macroBase + 3, stepVar = macroBase + 4, endVar = macroBase + 5
+                lines.append("#\(zVar)=\(fmt(loop.startZ, 3)) (第\(index + 1)序 循环起始 Z)")
+                lines.append("#\(stepVar)=\(fmt(loop.step, 3)) (第\(index + 1)序 每层递减)")
+                lines.append("#\(endVar)=\(fmt(loop.endZ, 3)) (第\(index + 1)序 循环终止 Z)")
+                lines.append("( 等截面刀路：同一 XY 轮廓按 Z 循环，减少重复程序段 )")
+                lines.append("WHILE[#\(zVar)GE#\(endVar)]DO1")
+                appendSegmentLines(
+                    loop.segments,
+                    feed: op.feed,
+                    plungeFeed: op.plungeFeed,
+                    safeZ: safeZ,
+                    programOffset: programOffset,
+                    macroStyle: macro,
+                    macroBase: macroBase,
+                    zTextOverride: "#\(zVar)",
+                    lines: &lines
+                )
+                lines.append("#\(zVar)=#\(zVar)-#\(stepVar)")
+                lines.append("END1")
             } else {
                 appendSegmentLines(
                     run.segments,
@@ -1331,6 +1417,7 @@ enum True3DCAM {
             lines.append(macro ? "G0 Z#1" : "G0 Z\(fmt(safeZ, 1))")
             lines.append("M5")
             lines.append("M9")
+            if macro { lines.append("N\(9000 + index)") }
         }
 
         if abs(cam.originX) > 1e-9 || abs(cam.originY) > 1e-9 {
@@ -1339,9 +1426,40 @@ enum True3DCAM {
         lines.append("G28 G91 Z0")
         lines.append("G28 G91 Y0")
         lines.append("G90")
+        if macro { lines.append("N9999") }
         lines.append("M30")
         lines.append("%")
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// 找到完全相同的等截面层：同一组 XY 段只按 Z 递减重复时，收成 WHILE 循环。
+    private static func macroDepthLoop(_ segments: [TPSeg]) -> (segments: [TPSeg], startZ: Double, endZ: Double, step: Double)? {
+        var groups: [(z: Double, segs: [TPSeg])] = []
+        for seg in segments {
+            if let last = groups.last, abs(last.z - seg.z) < 1e-6 {
+                groups[groups.count - 1].segs.append(seg)
+            } else {
+                groups.append((seg.z, [seg]))
+            }
+        }
+        guard groups.count >= 2 else { return nil }
+        let first = groups[0]
+        guard first.segs.count > 0 else { return nil }
+        let step = abs(groups[0].z - groups[1].z)
+        guard step > 1e-6, groups[0].z > groups[groups.count - 1].z else { return nil }
+        for i in 1..<groups.count {
+            guard groups[i].z < groups[i - 1].z + 1e-6,
+                  groups[i].segs.count == first.segs.count else { return nil }
+            for j in 0..<first.segs.count {
+                let a = first.segs[j].pts, b = groups[i].segs[j].pts
+                guard a.count == b.count else { return nil }
+                for k in 0..<a.count {
+                    guard abs(Double(a[k].x - b[k].x)) < 0.01,
+                          abs(Double(a[k].y - b[k].y)) < 0.01 else { return nil }
+                }
+            }
+        }
+        return (first.segs, groups[0].z, groups[groups.count - 1].z, step)
     }
 
     private static func appendSegmentLines(
@@ -1352,6 +1470,7 @@ enum True3DCAM {
         programOffset: CGPoint = .zero,
         macroStyle: Bool = false,
         macroBase: Int = 100,
+        zTextOverride: String? = nil,
         lines: inout [String]
     ) {
         func gx(_ x: CGFloat) -> Double { Double(x) - Double(programOffset.x) }
@@ -1374,7 +1493,7 @@ enum True3DCAM {
             if needsRapid {
                 lines.append("G0 Z\(safeText)")
                 lines.append("G0 X\(fmt(gx(first.x))) Y\(fmt(gy(first.y)))")
-                lines.append("G1 Z\(fmt(seg.z)) \(plungeText)")
+                lines.append("G1 Z\(zTextOverride ?? fmt(seg.z)) \(plungeText)")
             }
             if let arc = circularArcCommand(seg.pts, feedText: feedText, programOffset: programOffset) {
                 lines.append(arc)
