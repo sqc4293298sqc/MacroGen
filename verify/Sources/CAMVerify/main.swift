@@ -192,7 +192,7 @@ do {
     loopOp.toolDia = 6
     loopOp.stepDown = 2
     loopOp.stepOver = 4
-    loopOp.toolType = .ball
+    loopOp.toolType = .flat
     loopOp.cornerRadius = 1
     var loopCam = True3DCAMParams()
     loopCam.operations = [loopOp]
