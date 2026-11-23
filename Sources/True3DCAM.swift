@@ -1437,7 +1437,9 @@ enum True3DCAM {
         var groups: [(z: Double, segs: [TPSeg])] = []
         for seg in segments {
             if let last = groups.last, abs(last.z - seg.z) < 1e-6 {
-                groups[groups.count - 1].segs.append(seg)
+                var group = groups.removeLast()
+                group.segs.append(seg)
+                groups.append(group)
             } else {
                 groups.append((seg.z, [seg]))
             }
