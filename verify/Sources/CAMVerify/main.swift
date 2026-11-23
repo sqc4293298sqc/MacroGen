@@ -209,9 +209,9 @@ do {
     fail("multi-op: \(error.localizedDescription)")
 }
 }
-runMultiOpChecks()
-
 }
+
+runMultiOpChecks()
 
 do {
     let document = True3DModelDocument(params: True3DParams())
