@@ -792,7 +792,7 @@ enum True3DCAM {
             }
 
         case .holeRect, .holeCircle:
-            let seed = matchingFeature([.hole]).first?.element
+            let seed = matchingFeature([.hole]).first?.1
             let sx = seed?.x ?? operation.arrayX
             let sy = seed?.y ?? operation.arrayY
             let sr = (seed?.dia ?? operation.arrayDia) / 2
@@ -852,7 +852,7 @@ enum True3DCAM {
                     )
                 }
             } else {
-                let f = slots.first?.element
+                let f = slots.first?.1
                 let cx = f?.x ?? operation.slotCx
                 let cy = f?.y ?? operation.slotCy
                 let length = f?.width ?? operation.slotLength
@@ -877,7 +877,7 @@ enum True3DCAM {
             }
 
         case .slotArc:
-            let seed = matchingFeature([.slot]).first?.element
+            let seed = matchingFeature([.slot]).first?.1
             let cx = seed?.x ?? operation.slotCx
             let cy = seed?.y ?? operation.slotCy
             let R = max(operation.toolDia, operation.slotArcR)
