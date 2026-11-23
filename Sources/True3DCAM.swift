@@ -4,7 +4,7 @@ import OCCTSwift
 
 // MARK: - 3D 加工参数
 
-struct True3DCAMParams: Equatable {
+struct True3DCAMParams: Equatable, Codable {
     var toolDia: Double = 6
     var toolNo: Int = 1
     var hNo: Int = 1
@@ -18,6 +18,8 @@ struct True3DCAMParams: Equatable {
 
     var stockMarginXY: Double = 8
     var stockExtraBottom: Double = 1
+    /// 粗加工侧壁余量；单项工序未单独设置时使用该默认值。
+    var stockLeft: Double = 0
 
     var coord: Int = 54
     var originX: Double = 0
@@ -27,6 +29,7 @@ struct True3DCAMParams: Equatable {
     /// 3D 工序输出：普通 G 代码 / 宏变量程序。
     var programFormat: ProgramFormat = .gcode
     var programNo: Int = 1010
+    var coolant: True3DCoolant = .flood
 
     var doRoughing: Bool = true
     var doFinishing: Bool = true
@@ -43,17 +46,52 @@ struct True3DCAMParams: Equatable {
 
 // MARK: - 工序树
 
-enum True3DOperationKind: String, CaseIterable, Identifiable {
+enum True3DOperationKind: String, CaseIterable, Identifiable, Codable {
     case faceBase = "基础顶面飞面"
     case rough = "外形分层粗铣"
     case finish = "外形精铣"
     case chamfer = "45°倒角铣"
     case compFinish = "刀补精修"
     case clearInner = "孔 / 腔清残"
+    case hole = "孔 / 孔阵列"
+    case holeRect = "矩形孔阵列"
+    case holeCircle = "圆周孔阵列"
+    case pocket = "矩形型腔"
+    case pocketRound = "圆型腔"
+    case slot = "腰槽"
+    case slotHalf = "半腰槽"
+    case slotOpen = "开放槽"
+    case slotArc = "圆弧槽"
+    case profileCut = "轮廓切除"
     case faceBoss = "凸台顶面飞面"
     case facePocket = "型腔底面飞面"
 
     var id: String { rawValue }
+
+    /// 这些工序按模型里的孔/腔/槽/草图切除直接生成局部刀路。
+    var isFeatureInner: Bool {
+        switch self {
+        case .hole, .holeRect, .holeCircle, .pocket, .pocketRound,
+             .slot, .slotHalf, .slotOpen, .slotArc, .profileCut:
+            return true
+        default:
+            return false
+        }
+    }
+
+    var featureButtonKind: True3DFeatureKind? {
+        switch self {
+        case .hole, .holeRect, .holeCircle: return .hole
+        case .pocketRound: return .circularPocket
+        case .pocket: return .rectPocket
+        case .slot, .slotHalf, .slotOpen, .slotArc: return .slot
+        case .profileCut: return .profileCut
+        default: return nil
+        }
+    }
+
+    var needsArray: Bool { self == .holeRect || self == .holeCircle }
+    var needsSlot: Bool { self == .slotHalf || self == .slotOpen || self == .slotArc }
 
     var detail: String {
         switch self {
@@ -63,13 +101,37 @@ enum True3DOperationKind: String, CaseIterable, Identifiable {
         case .chamfer: return "按 45°/可调角度逐层向内缩，沿外轮廓倒角"
         case .compFinish: return "沿真实外轮廓输出 G41/G42 D 刀补精修"
         case .clearInner: return "孔、圆腔、方腔、腰槽、草图切除逐层清残"
+        case .hole: return "按模型孔逐孔螺旋下刀清孔"
+        case .holeRect: return "种子孔按矩形阵列复制清孔"
+        case .holeCircle: return "种子孔按圆周均布复制清孔"
+        case .pocket: return "矩形型腔逐层向内偏置清残"
+        case .pocketRound: return "圆腔逐层环形清残"
+        case .slot: return "腰槽沿中心线分层往复走刀"
+        case .slotHalf: return "开放端到圆端的半腰槽"
+        case .slotOpen: return "从槽端外起刀的开放槽"
+        case .slotArc: return "沿圆弧中心线分层铣槽"
+        case .profileCut: return "沿草图切除轮廓分层精修"
         case .faceBoss: return "每个凸台顶面单独行切"
         case .facePocket: return "腔底和孔底清根"
         }
     }
 }
 
-struct True3DOperation: Identifiable, Equatable {
+enum True3DCoolant: String, CaseIterable, Identifiable, Codable {
+    case off = "关闭"
+    case flood = "M8  flood"
+    case mist = "M7  mist"
+    var id: String { rawValue }
+    var code: String? {
+        switch self {
+        case .off: return nil
+        case .flood: return "M08"
+        case .mist: return "M07"
+        }
+    }
+}
+
+struct True3DOperation: Identifiable, Equatable, Codable {
     var id = UUID()
     var kind: True3DOperationKind = .rough
     var enabled = true
@@ -86,6 +148,36 @@ struct True3DOperation: Identifiable, Equatable {
     var comp: String = "off"
     var chamferDepth: Double = 1
     var chamferAngle: Double = 45
+    /// 粗加工侧壁余量（mm）；精修工序按 0 处理。
+    var stockLeft: Double = 0
+    /// true = 顺铣，false = 逆铣。仅改变刀路方向，不改轮廓。
+    var climb: Bool = true
+    var coolant: True3DCoolant = .flood
+
+    /// 加工对象在 model.features 中的下标；-1 表示所有同类特征。
+    var targetFeatureIndex: Int = -1
+    /// 孔阵列参数。
+    var arrayX: Double = 0
+    var arrayY: Double = 0
+    var arrayDia: Double = 6
+    var arrayDepth: Double = 6
+    var arrayNx: Int = 2
+    var arrayNy: Int = 2
+    var arrayDx: Double = 20
+    var arrayDy: Double = 15
+    var arrayR: Double = 30
+    var arrayN: Int = 6
+    var arrayStart: Double = 0
+    /// 槽参数；没有选中模型槽时使用。
+    var slotCx: Double = 0
+    var slotCy: Double = 0
+    var slotLength: Double = 30
+    var slotWidth: Double = 10
+    var slotDepth: Double = 5
+    var slotAngle: Double = 0
+    var slotArcR: Double = 30
+    var slotArcStart: Double = -60
+    var slotArcEnd: Double = 60
 }
 
 /// 刀补轮廓：G 代码按真实轮廓 + G41/G42 D 输出，仿真显示刀心轨迹。
@@ -120,6 +212,8 @@ struct True3DCAMResult {
     let stats: True3DCAMStats
     let warnings: [String]
     var runs: [True3DCAMRun] = []
+    /// 每道工序单独成程序的 G 代码；runCodes[i] 对应 runs[i]。
+    var runCodes: [String] = []
 }
 
 enum True3DCAMError: LocalizedError {
@@ -168,6 +262,7 @@ enum True3DCAM {
         }
 
         let radius = cam.toolRadius
+        let allowance = max(0, cam.stockLeft)
         let bottom = bounds.min.z - max(0, cam.stockExtraBottom)
         let top = bounds.max.z
         let baseTop = max(0, model.height)
@@ -273,18 +368,18 @@ enum True3DCAM {
             for outer in outerLoops {
                 let maxRing = max(
                     0,
-                    Int(floor((max(0, cam.stockMarginXY) - radius) / max(cam.stepOver, 0.1)))
+                    Int(floor((max(0, cam.stockMarginXY) - radius - allowance) / max(cam.stepOver, 0.1)))
                 )
                 if cam.doRoughing, maxRing > 0 {
                     for k in stride(from: maxRing, through: 1, by: -1) {
-                        let distance = radius + Double(k) * cam.stepOver
+                        let distance = radius + allowance + Double(k) * cam.stepOver
                         if let poly = offset(outer, by: distance, expand: true) {
                             appendPath(poly, z: level, into: &segments)
                         }
                     }
                 }
                 if cam.doFinishing || (cam.doRoughing && maxRing == 0) {
-                    if let poly = offset(outer, by: radius, expand: true) {
+                    if let poly = offset(outer, by: radius + allowance, expand: true) {
                         appendPath(poly, z: level, into: &segments)
                     } else {
                         warnings.append("Z\(fmt(level)) 外轮廓偏置失败，已跳过")
@@ -364,7 +459,8 @@ enum True3DCAM {
             segments: segments,
             gcode: gcode,
             stats: stats,
-            warnings: warnings
+            warnings: warnings,
+            runCodes: [gcode]
         )
     }
 
@@ -383,20 +479,21 @@ enum True3DCAM {
         var layerKeys = Set<Int>()
 
         func appendRun(_ run: True3DCAMRun, runWarnings: [String] = []) {
-            allSegments.append(contentsOf: run.segments)
+            let directed = (!run.operation.climb && run.comp == nil) ? reverseRun(run) : run
+            allSegments.append(contentsOf: directed.segments)
             for warning in runWarnings {
-                let tagged = "[\(run.operation.kind.rawValue)] \(warning)"
+                let tagged = "[\(directed.operation.kind.rawValue)] \(warning)"
                 if !warnings.contains(tagged) { warnings.append(tagged) }
             }
-            stats.cutLength += run.stats.cutLength
-            stats.rapidLength += run.stats.rapidLength
-            stats.pathCount += run.stats.pathCount
-            stats.sectionCount += run.stats.sectionCount
-            stats.zMin = runs.isEmpty ? run.stats.zMin : min(stats.zMin, run.stats.zMin)
-            stats.zMax = runs.isEmpty ? run.stats.zMax : max(stats.zMax, run.stats.zMax)
-            for seg in run.segments { layerKeys.insert(Int((seg.z * 1000).rounded())) }
+            stats.cutLength += directed.stats.cutLength
+            stats.rapidLength += directed.stats.rapidLength
+            stats.pathCount += directed.stats.pathCount
+            stats.sectionCount += directed.stats.sectionCount
+            stats.zMin = runs.isEmpty ? directed.stats.zMin : min(stats.zMin, directed.stats.zMin)
+            stats.zMax = runs.isEmpty ? directed.stats.zMax : max(stats.zMax, directed.stats.zMax)
+            for seg in directed.segments { layerKeys.insert(Int((seg.z * 1000).rounded())) }
             stats.layerCount = layerKeys.count
-            runs.append(run)
+            runs.append(directed)
         }
 
         for operation in operations {
@@ -420,6 +517,9 @@ enum True3DCAM {
             case .compFinish: single.doFinishing = true
             case .chamfer: throw True3DCAMError.emptyToolpath
             case .clearInner: single.doClearInner = true
+            case .hole, .holeRect, .holeCircle, .pocket, .pocketRound,
+                 .slot, .slotHalf, .slotOpen, .slotArc, .profileCut:
+                single.doClearInner = true
             case .faceBoss: single.doFaceBossTop = true
             case .facePocket: single.doFacePocketBottom = true
             }
@@ -431,6 +531,7 @@ enum True3DCAM {
             single.plungeFeed = operation.plungeFeed
             single.stepDown = operation.stepDown
             single.stepOver = operation.stepOver
+            single.stockLeft = operation.kind == .rough ? operation.stockLeft : 0
 
             let runResult: True3DCAMResult
             do {
@@ -463,12 +564,25 @@ enum True3DCAM {
             stats: stats,
             warnings: warnings
         )
+        let runCodes = runs.enumerated().map { offset, run -> String in
+            var oneCam = cam
+            oneCam.programNo = cam.programNo + offset + 1
+            return makeMultiGCode(
+                runs: [run],
+                cam: oneCam,
+                safeZ: safeZ,
+                bounds: bounds,
+                stats: run.stats,
+                warnings: []
+            )
+        }
         return True3DCAMResult(
             segments: allSegments,
             gcode: gcode,
             stats: stats,
             warnings: warnings,
-            runs: runs
+            runs: runs,
+            runCodes: runCodes
         )
     }
 
@@ -480,6 +594,9 @@ enum True3DCAM {
         cam: True3DCAMParams
     ) throws -> (run: True3DCAMRun, warnings: [String])? {
         let kind = operation.kind
+        if kind.isFeatureInner {
+            return try makeFeatureRun(operation: operation, result: result, model: model, cam: cam)
+        }
         let compKind = (kind == .finish || kind == .compFinish) && operation.comp != "off"
         guard kind == .chamfer || compKind else { return nil }
         guard let bounds = result.shape.bounds else { throw True3DCAMError.invalidModel }
@@ -551,6 +668,273 @@ enum True3DCAM {
             comp: comp
         )
         return (run, warnings)
+    }
+
+    /// 按模型里的孔/腔/槽/草图切除生成独立工序刀路。
+    private static func makeFeatureRun(
+        operation: True3DOperation,
+        result: True3DResult,
+        model: True3DParams,
+        cam: True3DCAMParams
+    ) throws -> (run: True3DCAMRun, warnings: [String]) {
+        let kind = operation.kind
+        let radius = max(operation.toolDia, 0.1) / 2
+        let step = max(operation.stepDown, 0.05)
+        let stepOver = max(operation.stepOver, 0.1)
+        let stockBottom = max(0, cam.stockExtraBottom)
+        var warnings: [String] = []
+        var segments: [TPSeg] = []
+        var sectionCount = 0
+
+        func layers(top: Double, depth: Double) -> [Double] {
+            let bottom = top - max(0.1, depth)
+            var zs: [Double] = []
+            var z = top - min(step, max(0.1, depth))
+            while z >= bottom - 1e-6 {
+                zs.append(max(z, bottom))
+                z -= step
+            }
+            if zs.isEmpty { zs = [bottom] }
+            return zs
+        }
+
+        func appendLoop(_ pts: [CGPoint], z: Double) {
+            guard pts.count >= 3 else { return }
+            var closed = pts
+            if let first = closed.first, let last = closed.last, distance(first, last) > 0.001 {
+                closed.append(first)
+            }
+            appendPath(closed, z: z, into: &segments)
+        }
+
+        func appendOpen(_ pts: [CGPoint], z: Double) {
+            guard pts.count >= 2 else { return }
+            appendPath(pts, z: z, into: &segments)
+        }
+
+        func holePasses(cx: Double, cy: Double, holeR: Double, top: Double, depth: Double, label: String) {
+            guard holeR >= radius - 0.01 else {
+                warnings.append("\(label) Ø\(fmt(holeR * 2)) 小于刀径 Ø\(fmt(operation.toolDia))，已跳过")
+                return
+            }
+            let maxR = max(radius, holeR - radius)
+            let ringStep = max(stepOver, 0.5)
+            for z in layers(top: top, depth: depth) {
+                var ringR = min(radius, maxR)
+                repeat {
+                    appendLoop(circlePoints(cx: cx, cy: cy, r: ringR), z: z)
+                    ringR += ringStep
+                } while ringR <= maxR + 0.01
+                sectionCount += 1
+            }
+        }
+
+        func rectPocketPasses(_ f: True3DFeatureSpec, top: Double, depth: Double) {
+            let w = max(operation.toolDia + 0.5, f.width)
+            let h = max(operation.toolDia + 0.5, f.depthY)
+            let maxInset = min(w, h) / 2 - radius - 0.05
+            guard maxInset >= radius - 0.01 else {
+                warnings.append("\(f.name) 尺寸太小，无法用 Ø\(fmt(operation.toolDia)) 清腔")
+                return
+            }
+            for z in layers(top: top, depth: depth) {
+                var inset = radius
+                while inset <= maxInset + 0.01 {
+                    let hw = w / 2 - inset, hh = h / 2 - inset
+                    guard hw > 0.1, hh > 0.1 else { break }
+                    appendLoop([
+                        CGPoint(x: f.x - hw, y: f.y - hh),
+                        CGPoint(x: f.x + hw, y: f.y - hh),
+                        CGPoint(x: f.x + hw, y: f.y + hh),
+                        CGPoint(x: f.x - hw, y: f.y + hh)
+                    ], z: z)
+                    inset += stepOver
+                }
+                sectionCount += 1
+            }
+        }
+
+        func slotPasses(start: CGPoint, end: CGPoint, width: Double, top: Double, depth: Double) {
+            let dx = Double(end.x - start.x), dy = Double(end.y - start.y)
+            let len = max(sqrt(dx * dx + dy * dy), 0.001)
+            let ux = dx / len, uy = dy / len
+            let nx = -uy, ny = ux
+            let across = max(0, width - operation.toolDia)
+            let nPass = max(1, Int(ceil(across / stepOver)) + 1)
+            for z in layers(top: top, depth: depth) {
+                for k in 0..<nPass {
+                    let off = nPass == 1 ? 0 : -across / 2 + Double(k) * across / Double(nPass - 1)
+                    appendOpen([
+                        CGPoint(x: Double(start.x) + nx * off, y: Double(start.y) + ny * off),
+                        CGPoint(x: Double(end.x) + nx * off, y: Double(end.y) + ny * off)
+                    ], z: z)
+                }
+                sectionCount += 1
+            }
+        }
+
+        func matchingFeature(_ kinds: [True3DFeatureKind]) -> [(Int, True3DFeatureSpec)] {
+            let all = model.features.enumerated().filter { !$0.element.suppressed && kinds.contains($0.element.kind) }
+            if operation.targetFeatureIndex >= 0 {
+                return all.filter { $0.offset == operation.targetFeatureIndex }
+            }
+            return all
+        }
+
+        switch kind {
+        case .hole:
+            let holes = matchingFeature([.hole])
+            if holes.isEmpty { warnings.append("模型里没有可加工的孔") }
+            for (_, f) in holes {
+                let top = f.topZ ?? model.height
+                let depth = f.holeKind == .through ? top + stockBottom : max(f.depth, f.holeDepth)
+                holePasses(cx: f.x, cy: f.y, holeR: f.dia / 2, top: top, depth: depth, label: f.name)
+            }
+
+        case .holeRect, .holeCircle:
+            let seed = matchingFeature([.hole]).first?.element
+            let sx = seed?.x ?? operation.arrayX
+            let sy = seed?.y ?? operation.arrayY
+            let sr = (seed?.dia ?? operation.arrayDia) / 2
+            let top = seed?.topZ ?? model.height
+            let depth = max(operation.arrayDepth, 0.1)
+            if seed == nil { warnings.append("没有种子孔，阵列中心按 (0,0) / 参数生成") }
+            if kind == .holeRect {
+                let nx = max(1, min(30, operation.arrayNx))
+                let ny = max(1, min(30, operation.arrayNy))
+                for j in 0..<ny {
+                    for i in 0..<nx {
+                        let x = sx + (Double(i) - Double(nx - 1) / 2) * operation.arrayDx
+                        let y = sy + (Double(j) - Double(ny - 1) / 2) * operation.arrayDy
+                        holePasses(cx: x, cy: y, holeR: sr, top: top, depth: depth, label: "矩形阵列孔")
+                    }
+                }
+            } else {
+                let n = max(2, min(90, operation.arrayN))
+                for i in 0..<n {
+                    let a = operation.arrayStart * .pi / 180 + Double(i) / Double(n) * 2 * .pi
+                    holePasses(cx: sx + cos(a) * operation.arrayR, cy: sy + sin(a) * operation.arrayR,
+                               holeR: sr, top: top, depth: depth, label: "圆周阵列孔")
+                }
+            }
+
+        case .pocket:
+            let pockets = matchingFeature([.rectPocket])
+            if pockets.isEmpty { warnings.append("模型里没有矩形型腔") }
+            for (_, f) in pockets {
+                rectPocketPasses(f, top: f.topZ ?? model.height, depth: max(f.depth, 0.1))
+            }
+
+        case .pocketRound:
+            let pockets = matchingFeature([.circularPocket, .hole])
+            if pockets.isEmpty { warnings.append("模型里没有圆腔/孔") }
+            for (_, f) in pockets {
+                let top = f.topZ ?? model.height
+                let depth = f.kind == .hole
+                    ? (f.holeKind == .through ? top + stockBottom : max(f.depth, f.holeDepth))
+                    : max(f.depth, 0.1)
+                holePasses(cx: f.x, cy: f.y, holeR: f.dia / 2, top: top, depth: depth, label: f.name)
+            }
+
+        case .slot, .slotHalf, .slotOpen:
+            let slots = matchingFeature([.slot])
+            if kind == .slot {
+                if slots.isEmpty { warnings.append("模型里没有腰槽") }
+                for (_, f) in slots {
+                    let top = f.topZ ?? model.height
+                    let half = max(0, (f.width - f.depthY) / 2)
+                    slotPasses(
+                        start: CGPoint(x: f.x - half, y: f.y),
+                        end: CGPoint(x: f.x + half, y: f.y),
+                        width: f.depthY,
+                        top: top,
+                        depth: max(f.depth, 0.1)
+                    )
+                }
+            } else {
+                let f = slots.first?.element
+                let cx = f?.x ?? operation.slotCx
+                let cy = f?.y ?? operation.slotCy
+                let length = f?.width ?? operation.slotLength
+                let width = f?.depthY ?? operation.slotWidth
+                let angle = operation.slotAngle * .pi / 180
+                let half = max(0, (length - width) / 2)
+                let ux = cos(angle), uy = sin(angle)
+                let top = f?.topZ ?? model.height
+                let depth = max(f?.depth ?? operation.slotDepth, 0.1)
+                let start: CGPoint
+                if kind == .slotOpen {
+                    let ext = half + max(8, width)
+                    start = CGPoint(x: cx - ux * ext, y: cy - uy * ext)
+                } else {
+                    start = CGPoint(x: cx - ux * half, y: cy - uy * half)
+                }
+                let end = kind == .slotHalf
+                    ? CGPoint(x: cx, y: cy)
+                    : CGPoint(x: cx + ux * half, y: cy + uy * half)
+                slotPasses(start: start, end: end, width: width, top: top, depth: depth)
+                warnings.append(kind == .slotOpen ? "开放槽从槽端外起刀，边缘请对刀确认" : "半腰槽按中心到一端生成，开放端请按图纸确认")
+            }
+
+        case .slotArc:
+            let seed = matchingFeature([.slot]).first?.element
+            let cx = seed?.x ?? operation.slotCx
+            let cy = seed?.y ?? operation.slotCy
+            let R = max(operation.toolDia, operation.slotArcR)
+            let a0 = operation.slotArcStart * .pi / 180
+            let a1 = operation.slotArcEnd * .pi / 180
+            let width = max(operation.toolDia, operation.slotWidth)
+            let across = max(0, width - operation.toolDia)
+            let nPass = max(1, Int(ceil(across / stepOver)) + 1)
+            let n = max(12, min(90, Int(abs(a1 - a0) * R / 2)))
+            let top = seed?.topZ ?? model.height
+            for z in layers(top: top, depth: max(operation.slotDepth, 0.1)) {
+                for k in 0..<nPass {
+                    let off = nPass == 1 ? 0 : -across / 2 + Double(k) * across / Double(nPass - 1)
+                    var pts: [CGPoint] = []
+                    for i in 0...n {
+                        let a = a0 + (a1 - a0) * Double(i) / Double(n)
+                        let rr = R + off
+                        pts.append(CGPoint(x: cx + cos(a) * rr, y: cy + sin(a) * rr))
+                    }
+                    appendOpen(pts, z: z)
+                }
+                sectionCount += 1
+            }
+
+        case .profileCut:
+            let profiles = matchingFeature([.profileCut])
+            if profiles.isEmpty { warnings.append("模型里没有草图切除轮廓") }
+            for (_, f) in profiles {
+                let raw = f.profile.map { CGPoint(x: $0.x, y: $0.y) }
+                guard raw.count >= 3 else {
+                    warnings.append("\(f.name) 轮廓点不足，已跳过")
+                    continue
+                }
+                let inset = offsetPolygon(raw, by: -radius) ?? raw
+                let top = f.topZ ?? model.height
+                for z in layers(top: top, depth: max(f.depth, 0.1)) {
+                    appendLoop(inset, z: z)
+                    sectionCount += 1
+                }
+            }
+
+        default:
+            throw True3DCAMError.emptyToolpath
+        }
+
+        guard !segments.isEmpty else { throw True3DCAMError.emptyToolpath }
+        let stats = makeStats(segments: segments, sectionCount: sectionCount)
+        let run = True3DCAMRun(operation: operation, segments: segments, stats: stats)
+        return (run, warnings)
+    }
+
+    private static func reverseRun(_ run: True3DCAMRun) -> True3DCAMRun {
+        let segments = run.segments.map { seg in
+            TPSeg(cut: seg.cut, z: seg.z, pts: Array(seg.pts.reversed()), len: seg.len)
+        }
+        let stats = makeStats(segments: segments, sectionCount: run.stats.sectionCount)
+        return True3DCAMRun(operation: run.operation, segments: segments, stats: stats, comp: run.comp)
     }
 
     private static func makeStats(segments: [TPSeg], sectionCount: Int) -> True3DCAMStats {
@@ -895,7 +1279,7 @@ enum True3DCAM {
             lines.append("T\(op.toolNo) M06")
             lines.append("G43 H\(op.hNo) Z\(zText)")
             lines.append("M3 S\(spindleText)")
-            lines.append("M8")
+            if let coolant = op.coolant.code { lines.append(coolant) }
             if let comp = run.comp {
                 appendCompLines(
                     comp,
@@ -967,12 +1351,56 @@ enum True3DCAM {
                 lines.append("G0 X\(fmt(gx(first.x))) Y\(fmt(gy(first.y)))")
                 lines.append("G1 Z\(fmt(seg.z)) \(plungeText)")
             }
-            for p in seg.pts.dropFirst() {
-                lines.append("G1 X\(fmt(gx(p.x))) Y\(fmt(gy(p.y))) \(feedText)")
+            if let arc = fullCircleCommand(seg.pts, feedText: feedText, programOffset: programOffset) {
+                lines.append(arc)
+            } else {
+                for p in seg.pts.dropFirst() {
+                    lines.append("G1 X\(fmt(gx(p.x))) Y\(fmt(gy(p.y))) \(feedText)")
+                }
             }
             lastPoint = lastProgram
             lastZ = seg.z
         }
+    }
+
+    /// 整圆识别：点列首尾闭合且所有点落在同一圆上时，输出 G2/G3 整圆。
+    private static func fullCircleCommand(
+        _ points: [CGPoint],
+        feedText: String,
+        programOffset: CGPoint
+    ) -> String? {
+        guard points.count >= 8, let first = points.first, let last = points.last else { return nil }
+        guard distance(first, last) < 0.01 else { return nil }
+        var unique = Array(points.dropLast())
+        guard unique.count >= 6 else { return nil }
+        let p0 = unique[0]
+        let p1 = unique[unique.count / 3]
+        let p2 = unique[unique.count * 2 / 3]
+        let ax = Double(p0.x), ay = Double(p0.y)
+        let bx = Double(p1.x), by = Double(p1.y)
+        let cx = Double(p2.x), cy = Double(p2.y)
+        let d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+        guard abs(d) > 0.1 else { return nil }
+        let ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) + (cx * cx + cy * cy) * (ay - by)) / d
+        let uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) + (cx * cx + cy * cy) * (bx - ax)) / d
+        let r = hypot(ax - ux, ay - uy)
+        guard r > 0.2 else { return nil }
+        let tolerance = max(0.015, r * 0.004)
+        for p in unique {
+            if abs(hypot(Double(p.x) - ux, Double(p.y) - uy) - r) > tolerance { return nil }
+        }
+        var signedArea = 0.0
+        for i in 0..<unique.count {
+            let a = unique[i], b = unique[(i + 1) % unique.count]
+            signedArea += Double(a.x) * Double(b.y) - Double(b.x) * Double(a.y)
+        }
+        let ccw = signedArea >= 0
+        let cmd = ccw ? "G3" : "G2"
+        let sx = Double(first.x) - Double(programOffset.x)
+        let sy = Double(first.y) - Double(programOffset.y)
+        let ix = ux - Double(first.x)
+        let iy = uy - Double(first.y)
+        return "\(cmd) X\(fmt(sx)) Y\(fmt(sy)) I\(fmt(ix)) J\(fmt(iy)) \(feedText)"
     }
 
     private static func appendCompLines(
@@ -1054,7 +1482,7 @@ enum True3DCAM {
         lines.append("T\(cam.toolNo) M06")
         lines.append("G43 H\(cam.hNo) Z\(initialZ)")
         lines.append("M3 S\(initialS)")
-        lines.append("M8")
+        if let coolant = cam.coolant.code { lines.append(coolant) }
 
         let programOffset = cam.stockCenterOrigin
             ? CGPoint(x: CGFloat((bounds.min.x + bounds.max.x) / 2), y: CGFloat((bounds.min.y + bounds.max.y) / 2))

@@ -70,6 +70,11 @@ struct True3DAssemblyComponent: Identifiable, Equatable {
 }
 
 struct True3DModelScreen: View {
+    private struct FeatureOption: Identifiable {
+        let id: Int
+        let label: String
+    }
+
     private struct ModelHistorySnapshot {
         var params: True3DParams
         var operations: [True3DHistoryOperation]
@@ -187,6 +192,7 @@ struct True3DModelScreen: View {
     @State private var circularRadius: Double = 32
     @State private var isGeneratingCAM = false
     @State private var gcodeURL: URL?
+    @State private var runGCodeURLs: [URL] = []
     @State private var showImporter = false
     @State private var showTreePanel = false
     @State private var showToolbox = false
@@ -373,7 +379,7 @@ struct True3DModelScreen: View {
                 height: params.height,
                 scene: scene,
                 cam: cam,
-                operations: cam.operations,
+                operations: operations,
                 stats: result?.stats
             )
         }
@@ -2583,6 +2589,7 @@ struct True3DModelScreen: View {
                             operations.removeAll()
                             camResult = nil
                             gcodeURL = nil
+                            runGCodeURLs = []
                         } label: {
                             Label("清空", systemImage: "trash")
                                 .font(.system(size: 11, weight: .semibold))
@@ -2676,10 +2683,12 @@ struct True3DModelScreen: View {
         .onChange(of: operations) { _ in
             camResult = nil
             gcodeURL = nil
+            runGCodeURLs = []
         }
         .onChange(of: cam) { _ in
             camResult = nil
             gcodeURL = nil
+            runGCodeURLs = []
         }
     }
 
@@ -2809,7 +2818,7 @@ struct True3DModelScreen: View {
 
                     if let gcodeURL {
                         NavigationLink {
-                            True3DGCodeScreen(code: camResult.gcode, fileURL: gcodeURL, format: cam.programFormat)
+                            True3DGCodeScreen(code: camResult.gcode, fileURL: gcodeURL, format: cam.programFormat, runFiles: runGCodeURLs)
                         } label: {
                             HStack {
                                 Label("查看完整 G 代码", systemImage: "text.alignleft")
@@ -2916,6 +2925,43 @@ struct True3DModelScreen: View {
         case .clearInner:
             op.toolDia = 3; op.toolNo = 4; op.stepDown = 2; op.stepOver = 2
             op.spindle = 4500; op.feed = 400; op.plungeFeed = 120
+        case .hole:
+            op.toolDia = 4; op.toolNo = 3; op.stepDown = 1.5; op.stepOver = 2
+            op.spindle = 2500; op.feed = 300; op.plungeFeed = 100
+        case .holeRect:
+            op.toolDia = 4; op.toolNo = 3; op.stepDown = 1.5; op.stepOver = 2
+            op.spindle = 2500; op.feed = 300; op.plungeFeed = 100
+            op.arrayDia = 6; op.arrayDepth = 6; op.arrayNx = 2; op.arrayNy = 2
+            op.arrayDx = 20; op.arrayDy = 15
+        case .holeCircle:
+            op.toolDia = 4; op.toolNo = 3; op.stepDown = 1.5; op.stepOver = 2
+            op.spindle = 2500; op.feed = 300; op.plungeFeed = 100
+            op.arrayDia = 6; op.arrayDepth = 6; op.arrayN = 6; op.arrayR = 30
+        case .pocket:
+            op.toolDia = 6; op.toolNo = 4; op.stepDown = 1.5; op.stepOver = 4
+            op.spindle = 2200; op.feed = 400; op.plungeFeed = 120
+        case .pocketRound:
+            op.toolDia = 6; op.toolNo = 4; op.stepDown = 2; op.stepOver = 3
+            op.spindle = 2200; op.feed = 400; op.plungeFeed = 120
+        case .slot:
+            op.toolDia = 6; op.toolNo = 4; op.stepDown = 1.5; op.stepOver = 4
+            op.spindle = 2200; op.feed = 350; op.plungeFeed = 110
+        case .slotHalf:
+            op.toolDia = 6; op.toolNo = 4; op.stepDown = 1.5; op.stepOver = 4
+            op.spindle = 2200; op.feed = 350; op.plungeFeed = 110
+            op.slotLength = 30; op.slotWidth = 10; op.slotDepth = 5
+        case .slotOpen:
+            op.toolDia = 6; op.toolNo = 4; op.stepDown = 1.5; op.stepOver = 4
+            op.spindle = 2200; op.feed = 350; op.plungeFeed = 110
+            op.slotLength = 30; op.slotWidth = 10; op.slotDepth = 5
+        case .slotArc:
+            op.toolDia = 4; op.toolNo = 5; op.stepDown = 1.5; op.stepOver = 3
+            op.spindle = 2500; op.feed = 350; op.plungeFeed = 100
+            op.slotArcR = 30; op.slotArcStart = -60; op.slotArcEnd = 60
+            op.slotWidth = 10; op.slotDepth = 5
+        case .profileCut:
+            op.toolDia = 4; op.toolNo = 5; op.stepDown = 1.5; op.stepOver = 3
+            op.spindle = 2500; op.feed = 350; op.plungeFeed = 100
         case .faceBoss:
             op.toolDia = 10; op.toolNo = 5; op.stepDown = 2; op.stepOver = 8
             op.spindle = 3000; op.feed = 700; op.plungeFeed = 200
@@ -2995,6 +3041,20 @@ struct True3DModelScreen: View {
                         numRow("行距 AE", operation.stepOver)
                     }
                     intRow("下刀 F", operation.plungeFeed)
+                    HStack(spacing: 8) {
+                        numRow("粗余量", operation.stockLeft)
+                        Picker("切削方向", selection: operation.climb) {
+                            Text("顺铣").tag(true)
+                            Text("逆铣").tag(false)
+                        }
+                        .pickerStyle(.menu)
+                    }
+                    Picker("冷却", selection: operation.coolant) {
+                        ForEach(True3DCoolant.allCases) { item in
+                            Text(item.rawValue).tag(item)
+                        }
+                    }
+                    .pickerStyle(.menu)
 
                     if operation.wrappedValue.kind == .chamfer {
                         HStack(spacing: 8) {
@@ -3018,9 +3078,91 @@ struct True3DModelScreen: View {
                 .padding(.top, 8)
             }
             .font(.system(size: 12))
+
+            if operation.wrappedValue.kind.isFeatureInner {
+                featureParameters(operation)
+            }
         }
         .padding(12)
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func featureParameters(_ operation: Binding<True3DOperation>) -> some View {
+        let kind = operation.wrappedValue.kind
+        let options = featureOptions(for: kind)
+        return VStack(alignment: .leading, spacing: 8) {
+            DisclosureGroup("加工对象 / 特征参数") {
+                VStack(spacing: 8) {
+                    if !options.isEmpty {
+                        Picker("加工对象", selection: operation.targetFeatureIndex) {
+                            Text("全部同类特征").tag(-1)
+                            ForEach(options) { item in
+                                Text(item.label).tag(item.id)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                    }
+
+                    if kind.needsArray {
+                        HStack(spacing: 8) {
+                            numRow("阵列孔 Ø", operation.arrayDia)
+                            numRow("阵列深", operation.arrayDepth)
+                        }
+                        if kind == .holeRect {
+                            HStack(spacing: 8) {
+                                intRow("行数", operation.arrayNx)
+                                intRow("列数", operation.arrayNy)
+                            }
+                            HStack(spacing: 8) {
+                                numRow("行距", operation.arrayDy)
+                                numRow("列距", operation.arrayDx)
+                            }
+                        } else {
+                            HStack(spacing: 8) {
+                                intRow("孔数", operation.arrayN)
+                                numRow("半径 R", operation.arrayR)
+                            }
+                            numRow("起始角 °", operation.arrayStart)
+                        }
+                    }
+
+                    if kind.needsSlot {
+                        if kind == .slotArc {
+                            HStack(spacing: 8) {
+                                numRow("圆心 X", operation.slotCx)
+                                numRow("圆心 Y", operation.slotCy)
+                            }
+                            HStack(spacing: 8) {
+                                numRow("圆弧 R", operation.slotArcR)
+                                numRow("槽宽", operation.slotWidth)
+                            }
+                            HStack(spacing: 8) {
+                                numRow("起点 °", operation.slotArcStart)
+                                numRow("终点 °", operation.slotArcEnd)
+                            }
+                        } else {
+                            HStack(spacing: 8) {
+                                numRow("长度", operation.slotLength)
+                                numRow("槽宽", operation.slotWidth)
+                            }
+                            numRow("槽深", operation.slotDepth)
+                            numRow("角度 °", operation.slotAngle)
+                        }
+                    }
+                }
+                .padding(.top, 8)
+            }
+        }
+        .font(.system(size: 12))
+    }
+
+    private func featureOptions(for kind: True3DOperationKind) -> [FeatureOption] {
+        guard let featureKind = kind.featureButtonKind else { return [] }
+        return params.features.enumerated().compactMap { index, feature in
+            guard !feature.suppressed, feature.kind == featureKind else { return nil }
+            let label = feature.name.isEmpty ? feature.kind.rawValue : feature.name
+            return FeatureOption(id: index, label: "\(label) #\(index + 1)")
+        }
     }
 
     private func generateCAM(switchToMachine: Bool = true) {
@@ -3051,9 +3193,16 @@ struct True3DModelScreen: View {
                 let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 let url = dir.appendingPathComponent("MacroGen-3D-\(programNo).nc")
                 try generated.gcode.write(to: url, atomically: true, encoding: .utf8)
+                var perOpURLs: [URL] = []
+                for (offset, code) in generated.runCodes.enumerated() {
+                    let one = dir.appendingPathComponent("MacroGen-3D-\(programNo)-OP\(offset + 1).nc")
+                    try code.write(to: one, atomically: true, encoding: .utf8)
+                    perOpURLs.append(one)
+                }
                 await MainActor.run {
                     self.camResult = generated
                     self.gcodeURL = url
+                    self.runGCodeURLs = perOpURLs
                     self.isGeneratingCAM = false
                     if switchToMachine { self.stage = .machine }
                 }
@@ -3062,6 +3211,7 @@ struct True3DModelScreen: View {
                     self.error = error.localizedDescription
                     self.camResult = nil
                     self.gcodeURL = nil
+                    runGCodeURLs = []
                     self.isGeneratingCAM = false
                 }
             }
@@ -5221,6 +5371,7 @@ struct True3DModelScreen: View {
         notice = nil
         camResult = nil
         gcodeURL = nil
+        runGCodeURLs = []
         stepURL = nil
         stlURL = nil
         isBuilding = true
@@ -6260,6 +6411,8 @@ struct True3DModelScreen: View {
     }
 
     private func saveProject() {
+        var savedCam = cam
+        savedCam.operations = operations
         let stored: True3DStoredProject
         if let importedPart {
             guard let fileName = importedPart.localURL?.lastPathComponent else {
@@ -6275,7 +6428,8 @@ struct True3DModelScreen: View {
                 importedUnitInMeters: importedPart.unitInMeters,
                 importedAt: importedPart.importedAt,
                 operations: modelOperations,
-                selectedNodeID: selectedFeatureID
+                selectedNodeID: selectedFeatureID,
+                cam: savedCam
             )
         } else {
             stored = True3DStoredProject(
@@ -6284,7 +6438,8 @@ struct True3DModelScreen: View {
                 sourceKind: .parametric,
                 params: params,
                 operations: modelOperations,
-                selectedNodeID: selectedFeatureID
+                selectedNodeID: selectedFeatureID,
+                cam: savedCam
             )
         }
 
@@ -6352,6 +6507,10 @@ struct True3DModelScreen: View {
                     self.hasModel = true
                     self.params = stored.params ?? True3DParams()
                     self.modelOperations = stored.operations
+                    self.cam = stored.cam ?? True3DCAMParams()
+                    self.operations = (stored.cam?.operations.isEmpty == false)
+                        ? stored.cam!.operations : Self.defaultOperations()
+                    self.cam.operations = self.operations
                     self.modelDocumentID = stored.id
                     self.selectedFeatureID = stored.selectedNodeID
                     self.result = nil
@@ -6368,6 +6527,10 @@ struct True3DModelScreen: View {
         importedPart = nil
         params = stored.params ?? True3DParams()
         modelOperations = stored.operations
+        cam = stored.cam ?? True3DCAMParams()
+        operations = (stored.cam?.operations.isEmpty == false)
+            ? stored.cam!.operations : Self.defaultOperations()
+        cam.operations = operations
         modelDocumentID = stored.id
         selectedFeatureID = stored.selectedNodeID
         rebuild()
@@ -6607,6 +6770,27 @@ struct True3DModelScreen: View {
             case .clearInner:
                 op.toolDia = 3; op.toolNo = 4; op.stepDown = 2; op.stepOver = 2
                 op.spindle = 4500; op.feed = 400; op.plungeFeed = 120
+            case .hole:
+                op.toolDia = 4; op.toolNo = 3; op.stepDown = 1.5; op.stepOver = 2
+                op.spindle = 2500; op.feed = 300; op.plungeFeed = 100
+            case .holeRect, .holeCircle:
+                op.toolDia = 4; op.toolNo = 3; op.stepDown = 1.5; op.stepOver = 2
+                op.spindle = 2500; op.feed = 300; op.plungeFeed = 100
+            case .pocket:
+                op.toolDia = 6; op.toolNo = 4; op.stepDown = 1.5; op.stepOver = 4
+                op.spindle = 2200; op.feed = 400; op.plungeFeed = 120
+            case .pocketRound:
+                op.toolDia = 6; op.toolNo = 4; op.stepDown = 2; op.stepOver = 3
+                op.spindle = 2200; op.feed = 400; op.plungeFeed = 120
+            case .slot, .slotHalf, .slotOpen:
+                op.toolDia = 6; op.toolNo = 4; op.stepDown = 1.5; op.stepOver = 4
+                op.spindle = 2200; op.feed = 350; op.plungeFeed = 110
+            case .slotArc:
+                op.toolDia = 4; op.toolNo = 5; op.stepDown = 1.5; op.stepOver = 3
+                op.spindle = 2500; op.feed = 350; op.plungeFeed = 100
+            case .profileCut:
+                op.toolDia = 4; op.toolNo = 5; op.stepDown = 1.5; op.stepOver = 3
+                op.spindle = 2500; op.feed = 350; op.plungeFeed = 100
             case .faceBoss:
                 op.toolDia = 10; op.toolNo = 5; op.stepDown = 2; op.stepOver = 8
                 op.spindle = 3000; op.feed = 700; op.plungeFeed = 200

@@ -1,7 +1,7 @@
 import Foundation
 
 /// 程序输出格式：宏程序保留 #变量/WHILE，G 代码把宏展开成普通坐标。
-enum ProgramFormat: String, CaseIterable, Identifiable {
+enum ProgramFormat: String, CaseIterable, Identifiable, Codable {
     case macro = "宏程序"
     case gcode = "G代码"
 

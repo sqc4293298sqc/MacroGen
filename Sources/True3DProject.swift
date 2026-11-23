@@ -18,6 +18,8 @@ struct True3DStoredProject: Codable {
     var importedAt: Date?
     var operations: [True3DHistoryOperation] = []
     var selectedNodeID: UUID?
+    /// 3D 加工工序与程序格式快照；旧工程没有这个字段时为空。
+    var cam: True3DCAMParams?
 
     init(
         id: UUID,
@@ -29,7 +31,8 @@ struct True3DStoredProject: Codable {
         importedUnitInMeters: Double? = nil,
         importedAt: Date? = nil,
         operations: [True3DHistoryOperation] = [],
-        selectedNodeID: UUID? = nil
+        selectedNodeID: UUID? = nil,
+        cam: True3DCAMParams? = nil
     ) {
         self.id = id
         self.name = name
@@ -41,6 +44,7 @@ struct True3DStoredProject: Codable {
         self.importedAt = importedAt
         self.operations = operations
         self.selectedNodeID = selectedNodeID
+        self.cam = cam
     }
 }
 

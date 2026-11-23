@@ -1153,6 +1153,7 @@ struct True3DGCodeScreen: View {
     let code: String
     let fileURL: URL
     var format: ProgramFormat = .gcode
+    var runFiles: [URL] = []
     @State private var copied = false
 
     var body: some View {
@@ -1172,6 +1173,19 @@ struct True3DGCodeScreen: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     ShareLink(item: fileURL) {
                         Image(systemName: "square.and.arrow.up")
+                    }
+                }
+                if !runFiles.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Menu {
+                            ForEach(Array(runFiles.enumerated()), id: \.offset) { offset, url in
+                                ShareLink(item: url) {
+                                    Text("第 \(offset + 1) 序 .nc")
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "square.and.arrow.up.on.square")
+                        }
                     }
                 }
             }
