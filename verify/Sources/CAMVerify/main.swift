@@ -161,6 +161,23 @@ do {
         fail("arc-output: no G2/G3 in circular pocket program")
     }
     print("PASS arc-output: G2/G3 emitted for a closed circular pocket")
+
+    var slotArcOp = True3DOperation(kind: .slotArc)
+    slotArcOp.toolDia = 6
+    slotArcOp.slotArcR = 30
+    slotArcOp.slotArcStart = -60
+    slotArcOp.slotArcEnd = 60
+    slotArcOp.slotWidth = 8
+    slotArcOp.slotDepth = 3
+    slotArcOp.stepDown = 1.5
+    slotArcOp.stepOver = 3
+    var slotArcCam = True3DCAMParams()
+    slotArcCam.operations = [slotArcOp]
+    let slotArcResult = try True3DCAM.generate(result: built, model: base, cam: slotArcCam)
+    guard slotArcResult.gcode.contains("G2 ") || slotArcResult.gcode.contains("G3 ") else {
+        fail("partial-arc: slotArc output still has no G2/G3")
+    }
+    print("PASS partial-arc: slotArc uses G2/G3 for a 120° circular slot")
 } catch {
     fail("multi-op: \(error.localizedDescription)")
 }

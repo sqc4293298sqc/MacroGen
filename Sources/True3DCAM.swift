@@ -479,7 +479,7 @@ enum True3DCAM {
         var layerKeys = Set<Int>()
 
         func appendRun(_ run: True3DCAMRun, runWarnings: [String] = []) {
-            let directed = (!run.operation.climb && run.comp == nil) ? reverseRun(run) : run
+            let directed = !run.operation.climb ? reverseRun(run) : run
             allSegments.append(contentsOf: directed.segments)
             for warning in runWarnings {
                 let tagged = "[\(directed.operation.kind.rawValue)] \(warning)"
@@ -681,6 +681,7 @@ enum True3DCAM {
         let radius = max(operation.toolDia, 0.1) / 2
         let step = max(operation.stepDown, 0.05)
         let stepOver = max(operation.stepOver, 0.1)
+        let stock = max(0, operation.stockLeft)
         let stockBottom = max(0, cam.stockExtraBottom)
         var warnings: [String] = []
         var segments: [TPSeg] = []
@@ -713,11 +714,12 @@ enum True3DCAM {
         }
 
         func holePasses(cx: Double, cy: Double, holeR: Double, top: Double, depth: Double, label: String) {
-            guard holeR >= radius - 0.01 else {
-                warnings.append("\(label) Ø\(fmt(holeR * 2)) 小于刀径 Ø\(fmt(operation.toolDia))，已跳过")
+            let finishedR = holeR - stock
+            guard finishedR >= radius - 0.01 else {
+                warnings.append("\(label) Ø\(fmt(holeR * 2)) 扣余量后小于刀径 Ø\(fmt(operation.toolDia))，已跳过")
                 return
             }
-            let maxR = max(radius, holeR - radius)
+            let maxR = max(radius, finishedR - radius)
             let ringStep = max(stepOver, 0.5)
             for z in layers(top: top, depth: depth) {
                 var ringR = min(radius, maxR)
@@ -732,9 +734,9 @@ enum True3DCAM {
         func rectPocketPasses(_ f: True3DFeatureSpec, top: Double, depth: Double) {
             let w = max(operation.toolDia + 0.5, f.width)
             let h = max(operation.toolDia + 0.5, f.depthY)
-            let maxInset = min(w, h) / 2 - radius - 0.05
+            let maxInset = min(w, h) / 2 - radius - 0.05 - stock
             guard maxInset >= radius - 0.01 else {
-                warnings.append("\(f.name) 尺寸太小，无法用 Ø\(fmt(operation.toolDia)) 清腔")
+                warnings.append("\(f.name) 扣余量后尺寸太小，无法用 Ø\(fmt(operation.toolDia)) 清腔")
                 return
             }
             for z in layers(top: top, depth: depth) {
@@ -759,7 +761,8 @@ enum True3DCAM {
             let len = max(sqrt(dx * dx + dy * dy), 0.001)
             let ux = dx / len, uy = dy / len
             let nx = -uy, ny = ux
-            let across = max(0, width - operation.toolDia)
+            let cutWidth = max(operation.toolDia + 0.1, width - 2 * stock)
+            let across = max(0, cutWidth - operation.toolDia)
             let nPass = max(1, Int(ceil(across / stepOver)) + 1)
             for z in layers(top: top, depth: depth) {
                 for k in 0..<nPass {
@@ -883,7 +886,7 @@ enum True3DCAM {
             let R = max(operation.toolDia, operation.slotArcR)
             let a0 = operation.slotArcStart * .pi / 180
             let a1 = operation.slotArcEnd * .pi / 180
-            let width = max(operation.toolDia, operation.slotWidth)
+            let width = max(operation.toolDia, operation.slotWidth - 2 * stock)
             let across = max(0, width - operation.toolDia)
             let nPass = max(1, Int(ceil(across / stepOver)) + 1)
             let n = max(12, min(90, Int(abs(a1 - a0) * R / 2)))
@@ -911,7 +914,7 @@ enum True3DCAM {
                     warnings.append("\(f.name) 轮廓点不足，已跳过")
                     continue
                 }
-                let inset = offsetPolygon(raw, by: -radius) ?? raw
+                let inset = offsetPolygon(raw, by: -(radius + stock)) ?? raw
                 let top = f.topZ ?? model.height
                 for z in layers(top: top, depth: max(f.depth, 0.1)) {
                     appendLoop(inset, z: z)
@@ -934,7 +937,29 @@ enum True3DCAM {
             TPSeg(cut: seg.cut, z: seg.z, pts: Array(seg.pts.reversed()), len: seg.len)
         }
         let stats = makeStats(segments: segments, sectionCount: run.stats.sectionCount)
-        return True3DCAMRun(operation: run.operation, segments: segments, stats: stats, comp: run.comp)
+        var reversedComp: True3DCompPass?
+        if let comp = run.comp, let oldFirst = comp.contour.first {
+            let contour = Array(comp.contour.reversed())
+            let oldLeadDistance = sqrt(pow(Double(comp.lead.x - oldFirst.x), 2) + pow(Double(comp.lead.y - oldFirst.y), 2))
+            let center = centroid(contour)
+            let newFirst = contour.first ?? oldFirst
+            var vx = Double(newFirst.x - center.x)
+            var vy = Double(newFirst.y - center.y)
+            let length = max(sqrt(vx * vx + vy * vy), 0.001)
+            vx /= length; vy /= length
+            let lead = CGPoint(
+                x: newFirst.x + CGFloat(vx) * CGFloat(oldLeadDistance),
+                y: newFirst.y + CGFloat(vy) * CGFloat(oldLeadDistance)
+            )
+            reversedComp = True3DCompPass(
+                side: comp.side == "G41" ? "G42" : "G41",
+                dNo: comp.dNo,
+                z: comp.z,
+                lead: lead,
+                contour: contour
+            )
+        }
+        return True3DCAMRun(operation: run.operation, segments: segments, stats: stats, comp: reversedComp)
     }
 
     private static func makeStats(segments: [TPSeg], sectionCount: Int) -> True3DCAMStats {
@@ -1351,7 +1376,7 @@ enum True3DCAM {
                 lines.append("G0 X\(fmt(gx(first.x))) Y\(fmt(gy(first.y)))")
                 lines.append("G1 Z\(fmt(seg.z)) \(plungeText)")
             }
-            if let arc = fullCircleCommand(seg.pts, feedText: feedText, programOffset: programOffset) {
+            if let arc = circularArcCommand(seg.pts, feedText: feedText, programOffset: programOffset) {
                 lines.append(arc)
             } else {
                 for p in seg.pts.dropFirst() {
@@ -1363,19 +1388,16 @@ enum True3DCAM {
         }
     }
 
-    /// 整圆识别：点列首尾闭合且所有点落在同一圆上时，输出 G2/G3 整圆。
-    private static func fullCircleCommand(
+    /// 圆弧识别：点列共圆时输出 G2/G3；首尾闭合按整圆，不闭合按部分圆弧。
+    private static func circularArcCommand(
         _ points: [CGPoint],
         feedText: String,
         programOffset: CGPoint
     ) -> String? {
-        guard points.count >= 8, let first = points.first, let last = points.last else { return nil }
-        guard distance(first, last) < 0.01 else { return nil }
-        var unique = Array(points.dropLast())
-        guard unique.count >= 6 else { return nil }
-        let p0 = unique[0]
-        let p1 = unique[unique.count / 3]
-        let p2 = unique[unique.count * 2 / 3]
+        guard points.count >= 7, let first = points.first, let last = points.last else { return nil }
+        let p0 = points[0]
+        let p1 = points[points.count / 3]
+        let p2 = points[points.count * 2 / 3]
         let ax = Double(p0.x), ay = Double(p0.y)
         let bx = Double(p1.x), by = Double(p1.y)
         let cx = Double(p2.x), cy = Double(p2.y)
@@ -1386,21 +1408,34 @@ enum True3DCAM {
         let r = hypot(ax - ux, ay - uy)
         guard r > 0.2 else { return nil }
         let tolerance = max(0.015, r * 0.004)
-        for p in unique {
+        for p in points {
             if abs(hypot(Double(p.x) - ux, Double(p.y) - uy) - r) > tolerance { return nil }
         }
-        var signedArea = 0.0
-        for i in 0..<unique.count {
-            let a = unique[i], b = unique[(i + 1) % unique.count]
-            signedArea += Double(a.x) * Double(b.y) - Double(b.x) * Double(a.y)
+
+        // 逐点展开圆心角，判断方向与实际扫角。
+        func angle(_ p: CGPoint) -> Double {
+            atan2(Double(p.y) - uy, Double(p.x) - ux)
         }
-        let ccw = signedArea >= 0
-        let cmd = ccw ? "G3" : "G2"
-        let sx = Double(first.x) - Double(programOffset.x)
-        let sy = Double(first.y) - Double(programOffset.y)
+        var previous = angle(first)
+        var total = 0.0
+        for p in points.dropFirst() {
+            var delta = angle(p) - previous
+            while delta > .pi { delta -= 2 * .pi }
+            while delta < -.pi { delta += 2 * .pi }
+            total += delta
+            previous = angle(p)
+        }
+        let sweep = abs(total)
+        guard sweep >= 0.26 else { return nil }       // 小于 15° 不值得用圆弧
+        guard sweep <= 2 * .pi + 0.05 else { return nil }
+        let closed = distance(first, last) < 0.01
+        let end = closed && sweep > 2 * .pi - 0.1 ? first : last
+        let cmd = total >= 0 ? "G3" : "G2"
+        let ex = Double(end.x) - Double(programOffset.x)
+        let ey = Double(end.y) - Double(programOffset.y)
         let ix = ux - Double(first.x)
         let iy = uy - Double(first.y)
-        return "\(cmd) X\(fmt(sx)) Y\(fmt(sy)) I\(fmt(ix)) J\(fmt(iy)) \(feedText)"
+        return "\(cmd) X\(fmt(ex)) Y\(fmt(ey)) I\(fmt(ix)) J\(fmt(iy)) \(feedText)"
     }
 
     private static func appendCompLines(
