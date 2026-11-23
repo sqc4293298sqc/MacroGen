@@ -2,6 +2,9 @@ import Foundation
 import Darwin
 import OCCTSwift
 
+// CAMVerify 只编译 CAM 引擎，不带 PostProcessor.swift；这里补上同一枚举签名。
+enum ProgramFormat: String, Codable { case macro, gcode }
+
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data(("FAIL: " + message + "\n").utf8))
     exit(1)
@@ -92,6 +95,7 @@ base = True3DParams()
 verifyCase("large-tool-default", model: base, cam: cam)
 
 // 多工序：按序程序、宏变量、冷却/余量/方向、整圆弧。
+func runMultiOpChecks() {
 do {
     let base = True3DParams()
     let built = try True3DKernel.build(base)
@@ -160,6 +164,8 @@ do {
 } catch {
     fail("multi-op: \(error.localizedDescription)")
 }
+}
+runMultiOpChecks()
 
 }
 
