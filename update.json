@@ -1,17 +1,20 @@
 {
   "android": {
-    "versionCode": 26,
-    "versionName": "2.9.5",
-    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.9.5/MacroGen.apk",
-    "changelog": "新增汉字刻字：黑体/宋体/等线/楷体/仿宋/圆体；支持单字宽高、逐字宽高、字距、总宽高、总深、每层切深、刀径和进给；带轮廓预览、G代码仿真、保存和分享。"
+    "versionCode": 74,
+    "versionName": "2.9.35",
+    "package": "com.sqc.macrogen",
+    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.9.35/MacroGen-3D-legacy.apk",
+    "size": 7291425,
+    "sha256": "0ea7a68fc14197b6e71a6454651528a9469ed206e0c95810c9e1c9392ccf8e0c",
+    "changelog": "此版本优化3D建模基本成型，如有BUG或者问题请反馈"
   },
   "android3d": {
-    "versionCode": 73,
-    "versionName": "2.9.34",
+    "versionCode": 74,
+    "versionName": "2.9.35",
     "package": "com.sqc.macrogen3d",
-    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.9.34/MacroGen-3D.apk",
+    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.9.35/MacroGen-3D.apk",
     "size": 7291425,
-    "sha256": "3ed4f5f9a077172ce0385c2df73f84cd6c77ca85c9d2e70c0c05ef1b54219eaa",
+    "sha256": "b78fcfda04845fab1f2b074e9b75bf455e1ede26a46eda7f84a89c2ac0904931",
     "changelog": "此版本优化3D建模基本成型，如有BUG或者问题请反馈"
   }
 }
