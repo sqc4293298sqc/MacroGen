@@ -40,7 +40,7 @@ body{display:flex;justify-content:center}
 #modechip{position:absolute;left:12px;bottom:14px;z-index:3;display:flex;gap:6px;pointer-events:auto}
 #modechip button{border:1px solid #334153;background:rgba(14,20,28,.82);color:#8fa3b8;border-radius:9px;padding:6px 10px;font-size:10px;font-weight:600;backdrop-filter:blur(10px)}
 #modechip button.on{color:#fff;border-color:#ff6b1a;background:linear-gradient(180deg,#ff7d33,#e85a09);box-shadow:0 4px 14px rgba(255,107,26,.35)}
-#hint{position:absolute;left:12px;right:126px;bottom:122px;transform:none;z-index:4;max-width:none;transition:opacity .2s;padding:8px 13px;border-radius:999px;background:rgba(8,12,17,.82);border:1px solid rgba(86,108,132,.5);backdrop-filter:blur(10px);font-size:11px;color:#d8e5f3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+#hint{position:absolute;left:12px;right:126px;bottom:122px;transform:none;z-index:4;max-width:none;transition:opacity .2s;padding:8px 13px;border-radius:999px;background:rgba(8,12,17,.82);border:1px solid rgba(86,108,132,.5);backdrop-filter:blur(10px);font-size:10.5px;color:#d8e5f3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 8px 24px rgba(0,0,0,.35)}
 #hint b{color:#ff9b63;font-weight:700}
 #hint .dotline{display:inline-flex;gap:4px;margin-right:7px;vertical-align:middle}
 #hint .dotline i{width:5px;height:5px;border-radius:50%;background:#3c4b5d;display:block}
@@ -119,12 +119,13 @@ html.embedded #topbar{display:flex!important}
 #zoomBtns button{width:34px;height:34px;border-radius:9px;border:1px solid #334153;background:rgba(17,25,35,.82);color:#dbe7f5;font-size:15px;font-weight:600;backdrop-filter:blur(10px);box-shadow:0 6px 18px rgba(0,0,0,.28)}
 #zoomBtns button:active{transform:scale(.96);background:#223142}
 
-#viewBtns{position:absolute;right:12px;top:198px;z-index:4;display:flex;flex-direction:column;gap:6px;pointer-events:auto}
-#viewBtns button{min-width:62px;height:30px;padding:0 10px;border-radius:8px;border:1px solid #334153;background:rgba(17,25,35,.82);color:#9fb0c4;font-size:12px;font-weight:600;backdrop-filter:blur(10px);box-shadow:0 6px 18px rgba(0,0,0,.24)}
-#viewBtns button.on{border-color:#1d70b8;background:#12365a;color:#d8ecff}
-#viewBtns button:active{transform:scale(.96)}
+#viewBtns{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:7px}
+#viewBtns button{height:29px;padding:0 4px;border-radius:8px;border:1px solid #334153;background:#101923;color:#8fa3b8;font-size:10px;font-weight:600}
+#viewBtns button.on{border-color:#1d70b8;background:#12365a;color:#d8ecff;box-shadow:inset 0 0 0 1px rgba(76,141,255,.18)}
+#viewBtns button:active{transform:scale(.97)}
 
 body.inside #doorHint{display:none!important;}
+#doorHint.fade{opacity:0!important;}
 </style>
 </head>
 <body>
@@ -153,10 +154,6 @@ body.inside #doorHint{display:none!important;}
       <button id="zoomIn" aria-label="放大">＋</button>
       <button id="zoomOut" aria-label="缩小">－</button>
       <button id="zoomReset" aria-label="复位视角">⟲</button>
-    </div>
-    <div id="viewBtns">
-      <button id="viewOutside" class="on">外部</button>
-      <button id="viewInside">加工视角</button>
     </div>
 
     <div id="modechip">
@@ -192,6 +189,11 @@ body.inside #doorHint{display:none!important;}
   </div>
 
   <div id="panel">
+    <div id="viewBtns">
+      <button id="viewOutside" class="on">外部</button>
+      <button id="viewInside">机内正面</button>
+      <button id="viewInsideSide">机内侧面</button>
+    </div>
     <div class="tabs">
       <button class="on" data-tab="pos">位置</button>
       <button data-tab="prog">程序</button>
@@ -260,7 +262,7 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.08;
+  renderer.toneMappingExposure = 1.02;
 
   const scene = new THREE.Scene();
   scene.fog = new THREE.Fog(0x0b1119, 8, 20);
@@ -270,7 +272,8 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   let view = 'outside', camAnim = null;
   const VIEWS = {
     outside: { target:[0, 1.62, 0], theta:0.38, phi:1.36, radius:7.25 },
-    inside:  { target:[0, 1.55, 0.05], theta:0.12, phi:1.02, radius:1.60 }
+    inside:  { target:[0, 1.66, 0.03], theta:0.08, phi:0.55, radius:0.98 },
+    insideSide: { target:[0, 1.66, 0.03], theta:-0.70, phi:0.55, radius:0.98 }
   };
   function updateCamera(){
     const sp = Math.sin(phi), cp = Math.cos(phi);
@@ -278,25 +281,32 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
     camera.lookAt(target);
   }
   function orbitRange(){
-    return view==='inside' ? {rMin:0.55, rMax:2.2, pMin:0.42, pMax:1.55}
-                           : {rMin:3.4, rMax:12.0, pMin:0.15, pMax:1.55};
+    if(view==='outside') return {rMin:3.4, rMax:12.0, pMin:0.15, pMax:1.55};
+    // 机内相机：限制在防护罩内，避免翻到机床顶盖上方或穿出门玻璃
+    const pMin=Math.max(0.55, Math.acos(Math.min(1,(2.50-target.y)/Math.max(0.1,radius))));
+    return {rMin:0.85, rMax:1.15, pMin, pMax:1.00};
   }
   function setView(name){
     const preset = VIEWS[name]; if(!preset) return;
     view = name;
+    orbitVel.t=0; orbitVel.p=0;
     camAnim = {
       t:0, dur:0.55,
       from:{ target: target.clone(), theta, phi, radius },
       to:{ target:new THREE.Vector3(...preset.target), theta:preset.theta, phi:preset.phi, radius:preset.radius }
     };
-    document.body.classList.toggle('inside', name==='inside');
-    const ob = $('#viewOutside'), ib = $('#viewInside');
+    const inInside = name!=='outside';
+    document.body.classList.toggle('inside', inInside);
+    const ob = $('#viewOutside'), ib = $('#viewInside'), sb = $('#viewInsideSide');
     if(ob) ob.classList.toggle('on', name==='outside');
     if(ib) ib.classList.toggle('on', name==='inside');
-    camera.fov = name==='inside' ? 60 : 40;
+    if(sb) sb.classList.toggle('on', name==='insideSide');
+    camera.fov = inInside ? 58 : 40;
     camera.updateProjectionMatrix();
-    if(typeof setHint === 'function') setHint(name==='inside'
-      ? '<b>加工视角</b> 刀尖 / 毛坯近景 · 双指可继续缩放'
+    if(typeof setHint === 'function') setHint(inInside
+      ? (name==='insideSide'
+        ? '<b>机内侧面</b> 工作台侧视 · 双指缩放'
+        : '<b>机内正面</b> 刀尖 / 毛坯近景 · 缩放')
       : '<b>外部视角</b> 单指 360° 旋转 · 双指缩放');
   }
   updateCamera();
@@ -321,31 +331,81 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   const top = new THREE.PointLight(0xffffff, 0.65, 4.5, 2);
   top.position.set(0, 2.65, 1.2);
   scene.add(top);
-  const work = new THREE.PointLight(0xffe8c8, 2.2, 3.4, 2);
+  const work = new THREE.PointLight(0xffe8c8, 1.0, 3.4, 2);
   work.position.set(0, 2.48, 0.18);
   scene.add(work);
   const backFill = new THREE.DirectionalLight(0xcfe0ff, 1.15);
   backFill.position.set(-1.2, 3.4, -6.0);
   scene.add(backFill);
 
+  /* ---------- 程序化 PBR / 环境反射（不引入外部贴图） ---------- */
+  function makePanelMaps(){
+    const c=document.createElement('canvas'); c.width=c.height=512;
+    const g=c.getContext('2d');
+    g.fillStyle='#8d8d8d'; g.fillRect(0,0,512,512);
+    for(let i=0;i<9000;i++){
+      const v=Math.floor(105+Math.random()*95);
+      g.fillStyle=`rgb(${v},${v},${v})`;
+      g.fillRect(Math.random()*512,Math.random()*512,1.4,1.4);
+    }
+    g.globalAlpha=.18;
+    for(let i=0;i<18;i++){
+      g.strokeStyle='#e8e8e8'; g.lineWidth=1;
+      g.beginPath(); g.moveTo(Math.random()*512,0); g.lineTo(Math.random()*512,512); g.stroke();
+    }
+    g.globalAlpha=1;
+    const rough=new THREE.CanvasTexture(c);
+    rough.wrapS=rough.wrapT=THREE.RepeatWrapping; rough.repeat.set(3,3);
+    rough.anisotropy=renderer.capabilities.getMaxAnisotropy();
+    const bump=new THREE.CanvasTexture(c);
+    bump.wrapS=bump.wrapT=THREE.RepeatWrapping; bump.repeat.set(3,3);
+    bump.anisotropy=rough.anisotropy;
+    return {rough,bump};
+  }
+  function makeEnvCube(){
+    const faces=[];
+    for(let f=0;f<6;f++){
+      const c=document.createElement('canvas'); c.width=c.height=128;
+      const g=c.getContext('2d');
+      const lg=g.createLinearGradient(0,0,0,128);
+      if(f===2){ lg.addColorStop(0,'#e8f2ff'); lg.addColorStop(1,'#7da2c2'); }
+      else if(f===3){ lg.addColorStop(0,'#121820'); lg.addColorStop(1,'#202a35'); }
+      else { lg.addColorStop(0,'#344252'); lg.addColorStop(.55,'#18222c'); lg.addColorStop(1,'#0a0e13'); }
+      g.fillStyle=lg; g.fillRect(0,0,128,128);
+      // 一条柔光带，给玻璃/金属一点方向感
+      g.globalAlpha=.55; g.fillStyle='#d8ecff';
+      g.fillRect(0,18+f*7,128,10);
+      g.globalAlpha=1;
+      faces.push(c);
+    }
+    const tex=new THREE.CubeTexture(faces);
+    tex.needsUpdate=true; tex.colorSpace=THREE.SRGBColorSpace;
+    return tex;
+  }
+  const envCube=makeEnvCube();
+  const panelMaps=makePanelMaps();
+
   /* materials */
   const M = {
-    white: new THREE.MeshStandardMaterial({color:0xe9eff5, roughness:0.55, metalness:0.12}),
-    white2: new THREE.MeshStandardMaterial({color:0xd7e0ea, roughness:0.68, metalness:0.08}),
-    blue: new THREE.MeshStandardMaterial({color:0x175a9b, roughness:0.42, metalness:0.25}),
-    blueDark: new THREE.MeshStandardMaterial({color:0x0d3357, roughness:0.5, metalness:0.3}),
-    dark: new THREE.MeshStandardMaterial({color:0x1a232d, roughness:0.5, metalness:0.35}),
-    darker: new THREE.MeshStandardMaterial({color:0x0d131a, roughness:0.6, metalness:0.3}),
-    metal: new THREE.MeshStandardMaterial({color:0x9aa6b2, roughness:0.34, metalness:0.82}),
-    metalDark: new THREE.MeshStandardMaterial({color:0x5b6875, roughness:0.4, metalness:0.78}),
-    table: new THREE.MeshStandardMaterial({color:0x7e8a97, roughness:0.42, metalness:0.7}),
-    glass: new THREE.MeshPhysicalMaterial({color:0xbfe8ff, roughness:0.04, metalness:0, transparent:true, opacity:0.10, side:THREE.DoubleSide, depthWrite:false}),
-    glassEdge: new THREE.MeshStandardMaterial({color:0x4e667c, roughness:0.35, metalness:0.55}),
-    blank: new THREE.MeshStandardMaterial({color:0xb9c4cf, roughness:0.38, metalness:0.72}),
+    white: new THREE.MeshStandardMaterial({color:0xe4e0d5, roughness:0.52, metalness:0.12, roughnessMap:panelMaps.rough, bumpMap:panelMaps.bump, bumpScale:0.0022, envMap:envCube, envMapIntensity:0.18}),
+    white2: new THREE.MeshStandardMaterial({color:0xd7d2c6, roughness:0.64, metalness:0.08, roughnessMap:panelMaps.rough, bumpMap:panelMaps.bump, bumpScale:0.0025, envMap:envCube, envMapIntensity:0.14}),
+    blue: new THREE.MeshStandardMaterial({color:0x1f6fb5, roughness:0.38, metalness:0.28, envMap:envCube, envMapIntensity:0.3}),
+    blueDark: new THREE.MeshStandardMaterial({color:0x0b2d4b, roughness:0.46, metalness:0.3, envMap:envCube, envMapIntensity:0.25}),
+    dark: new THREE.MeshStandardMaterial({color:0x161d25, roughness:0.46, metalness:0.38, envMap:envCube, envMapIntensity:0.2}),
+    darker: new THREE.MeshStandardMaterial({color:0x0b0f14, roughness:0.56, metalness:0.32, envMap:envCube, envMapIntensity:0.15}),
+    metal: new THREE.MeshStandardMaterial({color:0x9aa6b2, roughness:0.32, metalness:0.82, envMap:envCube, envMapIntensity:0.55}),
+    metalDark: new THREE.MeshStandardMaterial({color:0x5b6875, roughness:0.4, metalness:0.78, envMap:envCube, envMapIntensity:0.4}),
+    table: new THREE.MeshStandardMaterial({color:0x4a545f, roughness:0.72, metalness:0.18, roughnessMap:panelMaps.rough, envMap:envCube, envMapIntensity:0.16}),
+    inner: new THREE.MeshStandardMaterial({color:0x252a30, roughness:0.52, metalness:0.2, roughnessMap:panelMaps.rough, envMap:envCube, envMapIntensity:0.08}),
+    inner2: new THREE.MeshStandardMaterial({color:0x151a20, roughness:0.62, metalness:0.18}),
+    glass: new THREE.MeshPhysicalMaterial({color:0x9fd0ea, roughness:0.06, metalness:0, transparent:true, opacity:0.16, side:THREE.DoubleSide, depthWrite:false, envMap:envCube, envMapIntensity:0.9, clearcoat:1, clearcoatRoughness:0.08}),
+    glassEdge: new THREE.MeshStandardMaterial({color:0x2e3842, roughness:0.36, metalness:0.55, envMap:envCube, envMapIntensity:0.25}),
+    blank: new THREE.MeshStandardMaterial({color:0xb9c4cf, roughness:0.34, metalness:0.72, envMap:envCube, envMapIntensity:0.5}),
     orange: new THREE.MeshStandardMaterial({color:0xff6b1a, roughness:0.4, metalness:0.3, emissive:0xff3300, emissiveIntensity:0.08}),
     green: new THREE.MeshStandardMaterial({color:0x35d38b, roughness:0.35, metalness:0.25, emissive:0x0d6b45, emissiveIntensity:0.25}),
     red: new THREE.MeshStandardMaterial({color:0xd83a3a, roughness:0.4, metalness:0.3}),
     yellow: new THREE.MeshStandardMaterial({color:0xf2b53c, roughness:0.45, metalness:0.2}),
+    rubber: new THREE.MeshStandardMaterial({color:0x0a0d10, roughness:0.86, metalness:0.05}),
     label: new THREE.MeshBasicMaterial({color:0xffffff}),
   };
 
@@ -381,6 +441,17 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
     const m=new THREE.Mesh(g,mat); m.position.set(x,y,z); m.castShadow=true; m.receiveShadow=true; parent.add(m); return m;
   }
 
+  /* 接地阴影：补一层软接触阴影，减少“浮在网格上”的感觉 */
+  const csCanvas=document.createElement('canvas'); csCanvas.width=csCanvas.height=256;
+  const csCtx=csCanvas.getContext('2d');
+  const csGrad=csCtx.createRadialGradient(128,128,20,128,128,120);
+  csGrad.addColorStop(0,'rgba(0,0,0,0.55)'); csGrad.addColorStop(.55,'rgba(0,0,0,0.26)'); csGrad.addColorStop(1,'rgba(0,0,0,0)');
+  csCtx.fillStyle=csGrad; csCtx.fillRect(0,0,256,256);
+  const csTex=new THREE.CanvasTexture(csCanvas);
+  const csMat=new THREE.MeshBasicMaterial({map:csTex, transparent:true, depthWrite:false, opacity:0.75, polygonOffset:true, polygonOffsetFactor:-1});
+  const contact=new THREE.Mesh(new THREE.PlaneGeometry(3.7,3.1),csMat);
+  contact.rotation.x=-Math.PI/2; contact.position.y=0.008; scene.add(contact);
+
   /* floor */
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(16,16), new THREE.MeshStandardMaterial({color:0x0d141c, roughness:0.72, metalness:0.12}));
   floor.rotation.x = -Math.PI/2; floor.position.y = -0.002; floor.receiveShadow = true; scene.add(floor);
@@ -401,8 +472,9 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   /* 下层白色钣金：底黑上白，黑色底座占整机约 20% 高度 */
   roundPanel(W-0.06, 0.86, D-0.08, 0.025, M.white, 0, 1.00, 0);
   /* 底部脚垫 */
-  [[-1.08,-0.88],[1.08,-0.88],[-1.08,0.88],[1.08,0.88]].forEach(([x,z])=>{
-    cyl(0.055,0.07,0.16,M.dark,x,0.08,z,machine,16);
+  [[-1.08,-0.88],[1.08,-0.88],[-1.08,0.88],[1.08,0.88],[0,-0.88],[0,0.88]].forEach(([x,z])=>{
+    cyl(0.050,0.072,0.16,M.dark,x,0.08,z,machine,16);
+    cyl(0.062,0.062,0.018,M.metalDark,x,0.015,z,machine,16);
   });
 
   /* 左右两侧独立箱体：真机是“左品牌板 + 中防护门 + 右操作箱” */
@@ -420,15 +492,24 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   box(0.55, 0.06, 2.02, M.white2, 0.96, 2.62, 0);
 
   /* 中央加工区：后壁、顶、左右内壁 */
-  box(1.30, 1.42, 0.08, M.white2, 0, 2.06, -1.00);
-  box(1.30, 0.10, 2.02, M.white2, 0, 2.58, 0);
-  box(0.08, 1.42, 2.02, M.white2, -0.65, 2.06, 0);
-  box(0.08, 1.42, 2.02, M.white2, 0.65, 2.06, 0);
+  box(1.30, 1.42, 0.08, M.inner, 0, 2.06, -1.00);
+  box(1.30, 0.10, 2.02, M.inner2, 0, 2.58, 0);
+  box(0.08, 1.42, 2.02, M.inner, -0.65, 2.06, 0);
+  box(0.08, 1.42, 2.02, M.inner, 0.65, 2.06, 0);
   /* 前框：两侧蓝柱 + 上梁 + 下梁 */
   box(0.10, 1.36, 0.10, M.blue, -0.66, 2.06, 1.035);
   box(0.10, 1.36, 0.10, M.blue, 0.66, 2.06, 1.035);
-  box(1.38, 0.10, 0.10, M.blue, 0, 2.58, 1.035);
+  box(1.38, 0.10, 0.10, M.white2, 0, 2.58, 1.035);
   const frontBeam = box(1.38, 0.10, 0.10, M.dark, 0, 1.38, 1.035);
+  /* 前挡屑板 / 门导轨 / 铰链 */
+  box(1.28, 0.20, 0.055, M.dark, 0, 1.10, 1.055);
+  box(1.26, 0.02, 0.07, M.metalDark, 0, 1.21, 1.082);
+  box(1.36, 0.025, 0.035, M.metalDark, 0, 2.51, 1.080);
+  box(1.34, 0.028, 0.040, M.metalDark, 0, 1.34, 1.078);
+  for (const hx of [-0.655, 0.655]) for (const hy of [1.74, 2.30]) {
+    const hinge = cyl(0.018, 0.018, 0.10, M.metalDark, hx, hy, 1.092, machine, 12);
+    hinge.rotation.z = Math.PI/2;
+  }
 
   /* 前门：两扇，门宽约为总宽的一半，不再是整面墙 */
   const doorL = new THREE.Group(), doorR = new THREE.Group();
@@ -450,24 +531,30 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   /* 工作台 / 鞍座 / 虎钳：按 1000×500 工作台比例 */
   const tableGroup = new THREE.Group(); tableGroup.name='tableGroup'; machine.add(tableGroup);
   const saddle = box(1.30, 0.14, 0.82, M.dark, 0, 1.24, 0, tableGroup); saddle.name='saddle';       // 鞍座
-  const tableTop = box(1.00, 0.12, 0.52, M.table, 0, 1.35, 0.02, tableGroup); tableTop.name='tableTop';   // 工作台
-  for (const x of [-0.34,-0.17,0,0.17,0.34]) box(0.022,0.012,0.48,M.darker,x,1.416,0.02,tableGroup);
+  const tableTop = box(1.00, 0.12, 0.52, M.table, 0, 1.40, 0.02, tableGroup); tableTop.name='tableTop';   // 工作台
+  /* 防护罩内深色集屑盘：盖住白色床身上表面，避免机内视角一片白 */
+  box(1.27, 0.018, 1.94, M.inner2, 0, 1.438, 0, machine);
+  for (const x of [-0.34,-0.17,0,0.17,0.34]) box(0.030,0.014,0.48,M.darker,x,1.466,0.02,tableGroup);
   /* 虎钳 */
-  const viseBase = box(0.50, 0.10, 0.42, M.metalDark, 0, 1.47, 0.03, tableGroup); viseBase.name='viseBase';
-  box(0.50, 0.22, 0.075, M.metal, 0, 1.61, -0.13, tableGroup);
-  box(0.50, 0.22, 0.075, M.metal, 0, 1.61, 0.20, tableGroup);
-  box(0.08, 0.12, 0.28, M.metalDark, 0, 1.55, 0.31, tableGroup);
-  cyl(0.02,0.02,0.26,M.metal,0,1.55,0.42, tableGroup,16).rotation.x = Math.PI/2;
+  const viseBase = box(0.32, 0.09, 0.38, M.metalDark, 0, 1.465, 0.03, tableGroup); viseBase.name='viseBase';
+  box(0.055, 0.13, 0.36, M.metal, -0.11, 1.585, 0.03, tableGroup);
+  box(0.055, 0.13, 0.36, M.metal,  0.16, 1.585, 0.03, tableGroup);
+  box(0.10, 0.10, 0.065, M.metalDark, 0.235, 1.55, 0.03, tableGroup);
+  cyl(0.017,0.017,0.24,M.metal,0.35,1.55,0.03, tableGroup,16).rotation.z = Math.PI/2;
   /* 毛坯 100×100×50 左右视觉比例 */
-  const blank = box(0.34, 0.20, 0.30, M.blank, 0, 1.62, 0.03, tableGroup); blank.name='blank';
+  const blank = box(0.20, 0.17, 0.24, M.blank, 0, 1.605, 0.03, tableGroup); blank.name='blank';
   edges(blank, 0x5c6a78, 0.45);
-  box(0.18,0.012,0.14, new THREE.MeshStandardMaterial({color:0x6e7b88, roughness:.5, metalness:.6}), 0,1.724,0.03,tableGroup);
+  box(0.15,0.012,0.11, new THREE.MeshStandardMaterial({color:0x6e7b88, roughness:.5, metalness:.6}), 0,1.696,0.03,tableGroup);
 
   /* 立柱 + 主轴箱：真机立柱在后方，主轴头沿立柱上下（Z） */
   const column = box(0.58, 2.05, 0.62, M.dark, 0, 2.02, -0.62);
-  box(0.66, 0.10, 0.70, M.dark, 0, 3.06, -0.62);
-  box(0.64, 0.30, 0.68, M.darker, 0, 3.22, -0.62);
+  box(0.66, 0.10, 0.70, M.white2, 0, 3.06, -0.62);
+  box(0.64, 0.30, 0.68, M.white2, 0, 3.22, -0.62);
+  box(0.34, 0.11, 0.018, M.darker, 0, 3.22, -0.967);
+  box(0.018, 0.12, 0.02, M.blue, 0.335, 3.22, -0.965);
   box(0.62, 0.72, 0.06, M.white2, 0, 2.82, -0.94);
+  box(0.68, 0.50, 0.72, M.white2, 0, 2.86, -0.62);
+  box(0.70, 0.06, 0.74, M.white, 0, 2.63, -0.62);
 
   const spindle = new THREE.Group(); spindle.position.set(0, 2.33, -0.06); machine.add(spindle);
   box(0.44, 0.46, 0.40, M.dark, 0, 0, 0, spindle);         // 主轴箱（深灰铸铁）
@@ -478,20 +565,37 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   const tool = cyl(0.012,0.012,0.18,M.metal,0,-0.61,0,spindle,16);
   /* 主轴箱上的小标牌 */
   addLabel('BT40', 0.14, 0.04, 0, 0.16, 0.205, spindle, '#123047', '#dbe8f4');
+  /* 主轴箱侧面护罩 + 配重筒 + 线缆 */
+  box(0.035, 0.34, 0.36, M.metalDark, -0.238, 0.02, 0, spindle);
+  box(0.035, 0.34, 0.36, M.metalDark,  0.238, 0.02, 0, spindle);
+  box(0.18, 0.10, 0.16, M.darker, 0, 0.30, 0, spindle);
+  cyl(0.035,0.035,0.20,M.metal,0,0.36,0,spindle,16);
+  const cable=new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0.14,0.34,-0.05), new THREE.Vector3(0.30,0.46,-0.15),
+    new THREE.Vector3(0.22,0.30,-0.28), new THREE.Vector3(0.06,0.12,-0.28)
+  ]);
+  const cableMesh=new THREE.Mesh(new THREE.TubeGeometry(cable,20,0.012,6,false), M.rubber);
+  cableMesh.castShadow=true; spindle.add(cableMesh);
 
   /* 右侧操作箱：FANUC 面板独立于门 */
   const panelGroup = new THREE.Group(); panelGroup.position.set(0.96, 2.02, 1.055); machine.add(panelGroup);
-  box(0.42,0.64,0.07,M.dark,0,0,0,panelGroup);
-  box(0.38,0.60,0.02,M.darker,0,0,0.040,panelGroup);
+  box(0.50,0.72,0.08,M.dark,0,0,0,panelGroup);
+  box(0.46,0.68,0.02,M.darker,0,0,0.045,panelGroup);
   const screenTex = makeScreenTexture();
   const screenMat = new THREE.MeshBasicMaterial({map:screenTex, toneMapped:false});
-  const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.31,0.43), screenMat);
-  screen.position.set(0,0.07,0.052); panelGroup.add(screen);
-  for (let r=0;r<3;r++) for(let c=0;c<5;c++){
-    box(0.025,0.02,0.012, r===2&&c===4?M.red:(r===0?M.green:M.metalDark), -0.10+c*0.05, -0.20-r*0.035, 0.032, panelGroup);
+  const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.25,0.39), screenMat);
+  screen.position.set(-0.105,0.10,0.057); panelGroup.add(screen);
+  /* FANUC 右侧键盘区 */
+  box(0.205,0.30,0.016,M.metalDark,0.135,-0.055,0.052,panelGroup);
+  for(let r=0;r<6;r++) for(let c=0;c<4;c++){
+    box(0.030,0.024,0.012, (r===0&&c===3)?M.red:M.metal, 0.070+c*0.045, 0.050-r*0.045, 0.063, panelGroup);
   }
-  box(0.33,0.035,0.012,M.blue,0,-0.16,0.052,panelGroup);
-  for(let i=0;i<5;i++) box(0.30,0.014,0.012,M.darker,0.96,1.52+i*0.045,1.078);
+  /* 屏幕下软键 / 大急停 / 手轮旋钮 */
+  for(let i=0;i<5;i++) box(0.030,0.022,0.012,M.metalDark,-0.19+i*0.043,-0.135,0.063,panelGroup);
+  cyl(0.038,0.038,0.020,M.red,0.135,-0.245,0.065,panelGroup,18).rotation.x=Math.PI/2;
+  cyl(0.026,0.026,0.030,M.metal,0.135,-0.245,0.080,panelGroup,14).rotation.x=Math.PI/2;
+  box(0.46,0.018,0.010,M.blue,0,0.292,0.055,panelGroup);
+  for(let i=0;i<5;i++) box(0.40,0.014,0.012,M.darker,0.96,1.48+i*0.045,1.080);
 
   /* 顶部排风 / 电缆桥架 */
   box(0.42, 0.10, 0.50, M.dark, 0, 2.73, -0.62);
@@ -543,6 +647,20 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   box(0.035,0.28,0.02,M.metal,0.92,1.72,-1.285);
   addLabel('⚠ 高压', 0.16, 0.035, -0.55, 1.40, -1.285, machine, '#ffb15c', 'transparent');
 
+  /* 后部排屑器 / 冷却液箱（转到背面和侧面能看到） */
+  box(0.44, 0.22, 0.56, M.dark, 0.92, 0.56, -0.98);
+  box(0.40, 0.04, 0.52, M.metalDark, 0.92, 0.69, -0.98);
+  box(0.56, 0.16, 0.40, M.darker, -0.78, 0.42, -0.99);
+  cyl(0.075,0.075,0.10,M.metalDark,-0.78,0.52,-0.99,machine,16);
+  addLabel('排屑器', 0.20, 0.028, 0.92, 0.58, -1.265, machine, '#9fb0c4', 'transparent');
+  addLabel('切削液', 0.18, 0.025, -0.78, 0.45, -1.205, machine, '#8fa4b9', 'transparent');
+  /* 后门缝 / 铰链 */
+  box(0.014,0.80,0.018,M.metalDark,-0.17,1.93,-1.305);
+  box(0.014,0.80,0.018,M.metalDark, 0.28,1.93,-1.305);
+  for(const hy of [1.63,2.25]) for(const hx of [-0.54,0.72]){
+    const rh=cyl(0.012,0.012,0.10,M.metal,hx,hy,-1.30,machine,10); rh.rotation.z=Math.PI/2;
+  }
+
   /* 品牌 / 标牌：真机品牌在左侧箱体，不在门上 */
   const brandLabel = addLabel('VMC850', 0.62, 0.14, -0.99, 2.12, 1.075, machine, '#1d70b8', 'transparent');
   brandLabel.rotation.z = -Math.PI/2;
@@ -558,11 +676,11 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   /* toolpath preview */
   /* 与 O0001 对应的 3D 刀路：X/Y 在工作台平面，Z 有下刀/抬刀 */
   const pathPts = [
-    new THREE.Vector3(-0.090, 1.702, -0.050),
-    new THREE.Vector3( 0.090, 1.712, -0.050),
-    new THREE.Vector3( 0.090, 1.702,  0.050),
-    new THREE.Vector3(-0.090, 1.712,  0.050),
-    new THREE.Vector3(-0.090, 1.702, -0.050)
+    new THREE.Vector3(-0.055, 1.690, -0.040),
+    new THREE.Vector3( 0.055, 1.700, -0.040),
+    new THREE.Vector3( 0.055, 1.690,  0.040),
+    new THREE.Vector3(-0.055, 1.700,  0.040),
+    new THREE.Vector3(-0.055, 1.690, -0.040)
   ];
   const pathGeo = new THREE.BufferGeometry().setFromPoints(pathPts);
   const pathLine = new THREE.Line(pathGeo, new THREE.LineBasicMaterial({color:0xff7a1a, transparent:true, opacity:0.55, depthTest:false}));
@@ -856,30 +974,40 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   function zoomBy(d){
     const r=orbitRange();
     radius = clamp(radius + d, r.rMin, r.rMax);
+    phi = clamp(phi, orbitRange().pMin, orbitRange().pMax);
     camAnim=null; updateCamera();
   }
-  zoomInBtn.addEventListener('click',()=>zoomBy(view==='inside'?-0.18:-0.65));
-  zoomOutBtn.addEventListener('click',()=>zoomBy(view==='inside'?0.18:0.65));
+  zoomInBtn.addEventListener('click',()=>zoomBy(view!=='outside'?-0.12:-0.65));
+  zoomOutBtn.addEventListener('click',()=>zoomBy(view!=='outside'?0.12:0.65));
   zoomResetBtn.addEventListener('click',()=>setView(view));
   viewOutsideBtn.addEventListener('click',()=>setView('outside'));
   viewInsideBtn.addEventListener('click',()=>setView('inside'));
+  const viewInsideSideBtn=$('#viewInsideSide');
+  if(viewInsideSideBtn) viewInsideSideBtn.addEventListener('click',()=>setView('insideSide'));
 
   /* canvas orbit + 双指缩放 */
   const pointers = new Map();
   let pinch = null;
   let orbit=null;
+  const orbitVel={t:0,p:0};
+  let lastTap=0, lastTapX=0, lastTapY=0;
   function beginOrbit(e){
     if(pointers.size !== 1) return;
-    orbit={x:e.clientX,y:e.clientY,theta,phi};
+    orbit={x:e.clientX,y:e.clientY,theta,phi,lastX:e.clientX,lastY:e.clientY,lastT:e.timeStamp};
   }
   canvas.addEventListener('pointerdown',(e)=>{
     camAnim=null;
+    const now=e.timeStamp||performance.now();
+    if(e.pointerType==='touch' && now-lastTap<320 && Math.hypot(e.clientX-lastTapX,e.clientY-lastTapY)<18){
+      lastTap=0; setView('outside'); return;
+    }
+    lastTap=now; lastTapX=e.clientX; lastTapY=e.clientY;
     try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
     pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
     if(pointers.size===2){
       const [a,b]=Array.from(pointers.values());
       pinch={dist:Math.hypot(a.x-b.x,a.y-b.y),radius};
-      orbit=null;
+      orbit=null; orbitVel.t=0; orbitVel.p=0;
     } else if(pointers.size===1){
       beginOrbit(e);
     }
@@ -890,21 +1018,28 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
     if(pointers.size>=2 && pinch){
       const [a,b]=Array.from(pointers.values());
       const d=Math.hypot(a.x-b.x,a.y-b.y);
-      if(d>8){ const r=orbitRange(); radius=clamp(pinch.radius*pinch.dist/d,r.rMin,r.rMax); updateCamera(); }
+      if(d>8){ const r=orbitRange(); radius=clamp(pinch.radius*pinch.dist/d,r.rMin,r.rMax); phi=clamp(phi,orbitRange().pMin,orbitRange().pMax); updateCamera(); }
       return;
     }
     if(!orbit) return;
-    theta=orbit.theta-(e.clientX-orbit.x)*0.007;
-    phi=clamp(orbit.phi-(e.clientY-orbit.y)*0.006,orbitRange().pMin,orbitRange().pMax);
+    const now=e.timeStamp||performance.now();
+    const dt=Math.max(16,now-(orbit.lastT||now))/1000;
+    const dx=e.clientX-orbit.lastX, dy=e.clientY-orbit.lastY;
+    theta=theta-dx*0.007;
+    phi=clamp(phi-dy*0.006,orbitRange().pMin,orbitRange().pMax);
+    orbitVel.t = (-dx*0.007)/dt;
+    orbitVel.p = (-dy*0.006)/dt;
+    orbit.lastX=e.clientX; orbit.lastY=e.clientY; orbit.lastT=now;
     updateCamera();
   });
   const endOrbit=(e)=>{
     pointers.delete(e.pointerId);
     if(pointers.size===0){ orbit=null; pinch=null; canvas.style.cursor='grab'; }
-    else if(pointers.size===1){ pinch=null; const p=Array.from(pointers.values())[0]; orbit={x:p.x,y:p.y,theta,phi}; }
+    else if(pointers.size===1){ pinch=null; const p=Array.from(pointers.values())[0]; orbit={x:p.x,y:p.y,theta,phi,lastX:p.x,lastY:p.y,lastT:e.timeStamp}; orbitVel.t=0; orbitVel.p=0; }
   };
   canvas.addEventListener('pointerup',endOrbit); canvas.addEventListener('pointercancel',endOrbit);
-  canvas.addEventListener('wheel',(e)=>{ e.preventDefault(); camAnim=null; const r=orbitRange(); radius=clamp(radius+e.deltaY*(view==='inside'?0.0006:0.002),r.rMin,r.rMax); updateCamera(); },{passive:false});
+  canvas.addEventListener('dblclick',(e)=>{ e.preventDefault(); setView('outside'); });
+  canvas.addEventListener('wheel',(e)=>{ e.preventDefault(); camAnim=null; const r=orbitRange(); radius=clamp(radius+e.deltaY*(view!=='outside'?0.00035:0.002),r.rMin,r.rMax); phi=clamp(phi,orbitRange().pMin,orbitRange().pMax); updateCamera(); },{passive:false});
 
   /* resize */
   function resize(){
@@ -937,10 +1072,9 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
     const targetL=state.door?-0.94:-0.305, targetR=state.door?0.94:0.305;
     doorL.position.x += (targetL-dl)*Math.min(1,dt*9);
     doorR.position.x += (targetR-dr)*Math.min(1,dt*9);
-    const isInside = view==='inside';
-    doorL.visible = !state.door && !isInside; doorR.visible = !state.door && !isInside;
-    frontBeam.visible = !isInside;
-    saddle.visible = !isInside;
+    doorL.visible = !state.door; doorR.visible = !state.door;
+    frontBeam.visible = true;
+    saddle.visible = true;
     /* spindle */
     if(state.spindle && !state.estop){ tool.rotation.y += dt*18; }
     /* 三轴联动：X/Y 工作台 + Z 主轴同时插补 */
@@ -965,10 +1099,18 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
         }
       }
       pathDot.visible=true; pathLine.material.opacity=0.95;
-      pathDot.position.set(-state.x*0.001, 1.72 + state.z*0.001, -state.y*0.001);
+      pathDot.position.set(-state.x*0.001, 1.705 + state.z*0.001, -state.y*0.001);
     } else {
       pathDot.visible=false; pathLine.material.opacity=0.45;
     }
+    if(!orbit && !pinch && !camAnim && (Math.abs(orbitVel.t)>0.004 || Math.abs(orbitVel.p)>0.004)){
+      theta += orbitVel.t*dt;
+      phi = clamp(phi + orbitVel.p*dt, orbitRange().pMin, orbitRange().pMax);
+      const decay=Math.pow(0.82,dt*60);
+      orbitVel.t*=decay; orbitVel.p*=decay; updateCamera();
+    }
+    const dh=$('#doorHint');
+    if(dh) dh.classList.toggle('fade', !(view==='outside' && Math.cos(theta)>0.12));
     renderer.render(scene,camera);
     requestAnimationFrame(animate);
   }
