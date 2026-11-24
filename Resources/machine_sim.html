@@ -118,6 +118,13 @@ html.embedded #topbar{display:flex!important}
 #zoomBtns{position:absolute;right:12px;top:62px;z-index:4;display:flex;flex-direction:column;gap:6px;pointer-events:auto}
 #zoomBtns button{width:34px;height:34px;border-radius:9px;border:1px solid #334153;background:rgba(17,25,35,.82);color:#dbe7f5;font-size:15px;font-weight:600;backdrop-filter:blur(10px);box-shadow:0 6px 18px rgba(0,0,0,.28)}
 #zoomBtns button:active{transform:scale(.96);background:#223142}
+
+#viewBtns{position:absolute;right:12px;top:198px;z-index:4;display:flex;flex-direction:column;gap:6px;pointer-events:auto}
+#viewBtns button{min-width:62px;height:30px;padding:0 10px;border-radius:8px;border:1px solid #334153;background:rgba(17,25,35,.82);color:#9fb0c4;font-size:12px;font-weight:600;backdrop-filter:blur(10px);box-shadow:0 6px 18px rgba(0,0,0,.24)}
+#viewBtns button.on{border-color:#1d70b8;background:#12365a;color:#d8ecff}
+#viewBtns button:active{transform:scale(.96)}
+
+body.inside #doorHint{display:none!important;}
 </style>
 </head>
 <body>
@@ -146,6 +153,10 @@ html.embedded #topbar{display:flex!important}
       <button id="zoomIn" aria-label="放大">＋</button>
       <button id="zoomOut" aria-label="缩小">－</button>
       <button id="zoomReset" aria-label="复位视角">⟲</button>
+    </div>
+    <div id="viewBtns">
+      <button id="viewOutside" class="on">外部</button>
+      <button id="viewInside">加工视角</button>
     </div>
 
     <div id="modechip">
@@ -235,7 +246,7 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   const $$ = (s) => Array.from(document.querySelectorAll(s));
   const state = {
     door:false, mode:'handle', axis:'Z', mult:100,
-    x:0, y:0, z:0, spindle:false, hold:false, single:false, cycle:false,
+    x:0, y:0, z:0, spindle:false, hold:false, single:false, cycle:false, view:'outside',
     setupStep:0, hintStep:0, toolpathT:0, estop:false
   };
   const clamp = (v,a,b)=>Math.min(b,Math.max(a,v));
@@ -244,7 +255,7 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   /* ---------- renderer / scene ---------- */
   const canvas = $('#scene');
   const renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true, powerPreference:'high-performance'});
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 3));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -253,13 +264,40 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
 
   const scene = new THREE.Scene();
   scene.fog = new THREE.Fog(0x0b1119, 8, 20);
-  const camera = new THREE.PerspectiveCamera(40, 1, 0.08, 100);
+  const camera = new THREE.PerspectiveCamera(40, 1, 0.05, 100);
   const target = new THREE.Vector3(0, 1.62, 0);
   let theta = 0.38, phi = 1.36, radius = 7.25;
+  let view = 'outside', camAnim = null;
+  const VIEWS = {
+    outside: { target:[0, 1.62, 0], theta:0.38, phi:1.36, radius:7.25 },
+    inside:  { target:[0, 1.55, 0.05], theta:0.12, phi:1.02, radius:1.60 }
+  };
   function updateCamera(){
     const sp = Math.sin(phi), cp = Math.cos(phi);
     camera.position.set(target.x + radius*sp*Math.sin(theta), target.y + radius*cp, target.z + radius*sp*Math.cos(theta));
     camera.lookAt(target);
+  }
+  function orbitRange(){
+    return view==='inside' ? {rMin:0.55, rMax:2.2, pMin:0.42, pMax:1.55}
+                           : {rMin:3.4, rMax:12.0, pMin:0.15, pMax:1.55};
+  }
+  function setView(name){
+    const preset = VIEWS[name]; if(!preset) return;
+    view = name;
+    camAnim = {
+      t:0, dur:0.55,
+      from:{ target: target.clone(), theta, phi, radius },
+      to:{ target:new THREE.Vector3(...preset.target), theta:preset.theta, phi:preset.phi, radius:preset.radius }
+    };
+    document.body.classList.toggle('inside', name==='inside');
+    const ob = $('#viewOutside'), ib = $('#viewInside');
+    if(ob) ob.classList.toggle('on', name==='outside');
+    if(ib) ib.classList.toggle('on', name==='inside');
+    camera.fov = name==='inside' ? 60 : 40;
+    camera.updateProjectionMatrix();
+    if(typeof setHint === 'function') setHint(name==='inside'
+      ? '<b>加工视角</b> 刀尖 / 毛坯近景 · 双指可继续缩放'
+      : '<b>外部视角</b> 单指 360° 旋转 · 双指缩放');
   }
   updateCamera();
 
@@ -268,7 +306,7 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   const key = new THREE.DirectionalLight(0xffffff, 2.0);
   key.position.set(3.4, 6.2, 4.6);
   key.castShadow = true;
-  key.shadow.mapSize.set(1024,1024);
+  key.shadow.mapSize.set(2048,2048);
   key.shadow.camera.left = -4; key.shadow.camera.right = 4;
   key.shadow.camera.top = 4; key.shadow.camera.bottom = -4;
   key.shadow.camera.near = 0.5; key.shadow.camera.far = 14;
@@ -283,6 +321,12 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   const top = new THREE.PointLight(0xffffff, 0.65, 4.5, 2);
   top.position.set(0, 2.65, 1.2);
   scene.add(top);
+  const work = new THREE.PointLight(0xffe8c8, 2.2, 3.4, 2);
+  work.position.set(0, 2.48, 0.18);
+  scene.add(work);
+  const backFill = new THREE.DirectionalLight(0xcfe0ff, 1.15);
+  backFill.position.set(-1.2, 3.4, -6.0);
+  scene.add(backFill);
 
   /* materials */
   const M = {
@@ -324,6 +368,19 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
     p.position.set(x,y,z); p.rotation.set(rx,ry,rz); p.receiveShadow = true; parent.add(p); return p;
   }
 
+  /* 圆角钣金件：减少“纯方块”感，边缘有真实倒角 */
+  function roundPanel(w,h,d,r,mat,x,y,z,parent=machine){
+    const hw=w/2, hh=h/2;
+    const sh=new THREE.Shape();
+    sh.moveTo(-hw+r,-hh); sh.lineTo(hw-r,-hh); sh.quadraticCurveTo(hw,-hh,hw,-hh+r);
+    sh.lineTo(hw,hh-r); sh.quadraticCurveTo(hw,hh,hw-r,hh);
+    sh.lineTo(-hw+r,hh); sh.quadraticCurveTo(-hw,hh,-hw,hh-r);
+    sh.lineTo(-hw,-hh+r); sh.quadraticCurveTo(-hw,-hh,-hw+r,-hh);
+    const g=new THREE.ExtrudeGeometry(sh,{depth:d,bevelEnabled:true,bevelThickness:0.012,bevelSize:0.012,bevelSegments:2,curveSegments:8});
+    g.translate(0,0,-d/2);
+    const m=new THREE.Mesh(g,mat); m.position.set(x,y,z); m.castShadow=true; m.receiveShadow=true; parent.add(m); return m;
+  }
+
   /* floor */
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(16,16), new THREE.MeshStandardMaterial({color:0x0d141c, roughness:0.72, metalness:0.12}));
   floor.rotation.x = -Math.PI/2; floor.position.y = -0.002; floor.receiveShadow = true; scene.add(floor);
@@ -339,18 +396,18 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   const W = 2.50, D = 2.16;
 
   /* 底座 / 床身：黑色铸铁底座，宽、矮、重 */
-  box(W, 0.56, D, M.darker, 0, 0.28, 0);
+  roundPanel(W, 0.56, D, 0.035, M.darker, 0, 0.28, 0);
   box(W-0.04, 0.10, D-0.04, M.dark, 0, 0.58, 0);
   /* 下层白色钣金：底黑上白，黑色底座占整机约 20% 高度 */
-  box(W-0.06, 0.86, D-0.08, M.white, 0, 1.00, 0);
+  roundPanel(W-0.06, 0.86, D-0.08, 0.025, M.white, 0, 1.00, 0);
   /* 底部脚垫 */
   [[-1.08,-0.88],[1.08,-0.88],[-1.08,0.88],[1.08,0.88]].forEach(([x,z])=>{
     cyl(0.055,0.07,0.16,M.dark,x,0.08,z,machine,16);
   });
 
   /* 左右两侧独立箱体：真机是“左品牌板 + 中防护门 + 右操作箱” */
-  box(0.54, 1.52, 2.02, M.white, -0.96, 2.08, 0);
-  box(0.54, 1.52, 2.02, M.white, 0.96, 2.08, 0);
+  roundPanel(0.54, 1.52, 2.02, 0.028, M.white, -0.96, 2.08, 0);
+  roundPanel(0.54, 1.52, 2.02, 0.028, M.white, 0.96, 2.08, 0);
   /* 左侧品牌板 */
   box(0.02, 1.46, 1.94, M.white2, -1.24, 2.08, 0);
   box(0.02, 1.46, 1.94, M.white2, 1.24, 2.08, 0);
@@ -371,7 +428,7 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   box(0.10, 1.36, 0.10, M.blue, -0.66, 2.06, 1.035);
   box(0.10, 1.36, 0.10, M.blue, 0.66, 2.06, 1.035);
   box(1.38, 0.10, 0.10, M.blue, 0, 2.58, 1.035);
-  box(1.38, 0.10, 0.10, M.dark, 0, 1.38, 1.035);
+  const frontBeam = box(1.38, 0.10, 0.10, M.dark, 0, 1.38, 1.035);
 
   /* 前门：两扇，门宽约为总宽的一半，不再是整面墙 */
   const doorL = new THREE.Group(), doorR = new THREE.Group();
@@ -391,18 +448,18 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   buildDoor(doorL); buildDoor(doorR);
 
   /* 工作台 / 鞍座 / 虎钳：按 1000×500 工作台比例 */
-  const tableGroup = new THREE.Group(); machine.add(tableGroup);
-  box(1.30, 0.14, 0.82, M.dark, 0, 1.24, 0, tableGroup);       // 鞍座
-  box(1.00, 0.12, 0.52, M.table, 0, 1.35, 0.02, tableGroup);   // 工作台
+  const tableGroup = new THREE.Group(); tableGroup.name='tableGroup'; machine.add(tableGroup);
+  const saddle = box(1.30, 0.14, 0.82, M.dark, 0, 1.24, 0, tableGroup); saddle.name='saddle';       // 鞍座
+  const tableTop = box(1.00, 0.12, 0.52, M.table, 0, 1.35, 0.02, tableGroup); tableTop.name='tableTop';   // 工作台
   for (const x of [-0.34,-0.17,0,0.17,0.34]) box(0.022,0.012,0.48,M.darker,x,1.416,0.02,tableGroup);
   /* 虎钳 */
-  box(0.50, 0.10, 0.42, M.metalDark, 0, 1.47, 0.03, tableGroup);
+  const viseBase = box(0.50, 0.10, 0.42, M.metalDark, 0, 1.47, 0.03, tableGroup); viseBase.name='viseBase';
   box(0.50, 0.22, 0.075, M.metal, 0, 1.61, -0.13, tableGroup);
   box(0.50, 0.22, 0.075, M.metal, 0, 1.61, 0.20, tableGroup);
   box(0.08, 0.12, 0.28, M.metalDark, 0, 1.55, 0.31, tableGroup);
   cyl(0.02,0.02,0.26,M.metal,0,1.55,0.42, tableGroup,16).rotation.x = Math.PI/2;
   /* 毛坯 100×100×50 左右视觉比例 */
-  const blank = box(0.34, 0.20, 0.30, M.blank, 0, 1.62, 0.03, tableGroup);
+  const blank = box(0.34, 0.20, 0.30, M.blank, 0, 1.62, 0.03, tableGroup); blank.name='blank';
   edges(blank, 0x5c6a78, 0.45);
   box(0.18,0.012,0.14, new THREE.MeshStandardMaterial({color:0x6e7b88, roughness:.5, metalness:.6}), 0,1.724,0.03,tableGroup);
 
@@ -412,9 +469,9 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   box(0.64, 0.30, 0.68, M.darker, 0, 3.22, -0.62);
   box(0.62, 0.72, 0.06, M.white2, 0, 2.82, -0.94);
 
-  const spindle = new THREE.Group(); spindle.position.set(0, 2.30, -0.06); machine.add(spindle);
-  box(0.44, 0.52, 0.40, M.dark, 0, 0, 0, spindle);         // 主轴箱（深灰铸铁）
-  box(0.48, 0.10, 0.44, M.blue, 0, 0.27, 0, spindle);      // 顶部蓝盖
+  const spindle = new THREE.Group(); spindle.position.set(0, 2.33, -0.06); machine.add(spindle);
+  box(0.44, 0.46, 0.40, M.dark, 0, 0, 0, spindle);         // 主轴箱（深灰铸铁）
+  box(0.48, 0.08, 0.44, M.blue, 0, 0.23, 0, spindle);      // 顶部蓝盖
   box(0.36, 0.08, 0.34, M.dark, 0, -0.26, 0, spindle);
   cyl(0.085,0.085,0.16,M.metal,0,-0.34,0,spindle,24);      // 主轴鼻端
   cyl(0.045,0.020,0.14,M.metalDark,0,-0.48,0,spindle,24);  // 刀柄
@@ -434,6 +491,7 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
     box(0.025,0.02,0.012, r===2&&c===4?M.red:(r===0?M.green:M.metalDark), -0.10+c*0.05, -0.20-r*0.035, 0.032, panelGroup);
   }
   box(0.33,0.035,0.012,M.blue,0,-0.16,0.052,panelGroup);
+  for(let i=0;i<5;i++) box(0.30,0.014,0.012,M.darker,0.96,1.52+i*0.045,1.078);
 
   /* 顶部排风 / 电缆桥架 */
   box(0.42, 0.10, 0.50, M.dark, 0, 2.73, -0.62);
@@ -465,6 +523,26 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   box(1.25, 0.18, 0.24, M.dark, 0, 0.66, 1.10);
   box(1.18, 0.02, 0.18, M.metalDark, 0, 0.76, 1.11);
 
+  /* 后部电柜 / 背面细节：保证 360° 转到背面不是空壳 */
+  box(2.30, 1.34, 0.05, M.white2, 0, 2.02, -1.085);
+  box(0.72, 1.02, 0.26, M.white, -0.55, 1.86, -1.16);
+  box(0.58, 0.72, 0.22, M.white2, 0.58, 1.78, -1.15);
+  for (let i=0;i<8;i++){
+    box(0.46, 0.018, 0.012, M.darker, -0.55, 1.48+i*0.055, -1.295);
+    box(0.36, 0.018, 0.012, M.darker, 0.58, 1.52+i*0.055, -1.275);
+  }
+  box(0.08, 1.02, 0.08, M.metalDark, -1.10, 1.86, -1.12);
+  box(0.08, 1.02, 0.08, M.metalDark, 1.10, 1.86, -1.12);
+  addLabel('电气柜', 0.22, 0.035, -0.55, 2.42, -1.30, machine, '#7d95ab', 'transparent');
+  addLabel('切削液 / 排屑', 0.28, 0.03, 0.58, 2.16, -1.27, machine, '#7d95ab', 'transparent');
+
+  /* 后部风扇 + 后门把手 + 后部警示 */
+  const rearFan = cyl(0.16,0.16,0.035,M.dark,0.58,2.20,-1.285,machine,28);
+  rearFan.rotation.x = Math.PI/2;
+  for(let i=0;i<4;i++) box(0.24,0.012,0.008,M.metalDark,0.58,2.20,-1.305) ;
+  box(0.035,0.28,0.02,M.metal,0.92,1.72,-1.285);
+  addLabel('⚠ 高压', 0.16, 0.035, -0.55, 1.40, -1.285, machine, '#ffb15c', 'transparent');
+
   /* 品牌 / 标牌：真机品牌在左侧箱体，不在门上 */
   const brandLabel = addLabel('VMC850', 0.62, 0.14, -0.99, 2.12, 1.075, machine, '#1d70b8', 'transparent');
   brandLabel.rotation.z = -Math.PI/2;
@@ -472,14 +550,19 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   addLabel('FANUC 0i-MF', 0.30, 0.045, 0.96, 2.36, 1.095, machine, '#cfe4f7', 'transparent');
   addLabel('三轴立式加工中心', 0.30, 0.04, -0.96, 1.76, 1.075, machine, '#8aa0b5', 'transparent');
   addLabel('⚠ 关门运行', 0.18, 0.04, -0.31, 2.42, 1.08, doorL, '#ffcf66', 'transparent');
+  /* 左侧安全警示色块 + 规格铭牌 */
+  const warnCols=[0xf2b53c,0xf2b53c,0xd83a3a,0xd83a3a,0x35d38b,0x1d70b8];
+  warnCols.forEach((c,i)=>box(0.045,0.045,0.010,new THREE.MeshStandardMaterial({color:c,roughness:.45,metalness:.15}), -0.76, 2.42-i*0.085, 1.075));
+  addLabel('1000×500 · 800/500/500', 0.50, 0.030, -0.96, 1.66, 1.075, machine, '#9db3c8', 'transparent');
 
   /* toolpath preview */
+  /* 与 O0001 对应的 3D 刀路：X/Y 在工作台平面，Z 有下刀/抬刀 */
   const pathPts = [
-    new THREE.Vector3(-0.12, 1.727, -0.10),
-    new THREE.Vector3( 0.12, 1.385, -0.09),
-    new THREE.Vector3( 0.12, 1.385,  0.19),
-    new THREE.Vector3(-0.12, 1.385,  0.19),
-    new THREE.Vector3(-0.12, 1.385, -0.09)
+    new THREE.Vector3(-0.090, 1.702, -0.050),
+    new THREE.Vector3( 0.090, 1.712, -0.050),
+    new THREE.Vector3( 0.090, 1.702,  0.050),
+    new THREE.Vector3(-0.090, 1.712,  0.050),
+    new THREE.Vector3(-0.090, 1.702, -0.050)
   ];
   const pathGeo = new THREE.BufferGeometry().setFromPoints(pathPts);
   const pathLine = new THREE.Line(pathGeo, new THREE.LineBasicMaterial({color:0xff7a1a, transparent:true, opacity:0.55, depthTest:false}));
@@ -506,8 +589,8 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
 
   /* ---------- textures ---------- */
   function makeScreenTexture(){
-    const c=document.createElement('canvas'); c.width=512; c.height=680;
-    const g=c.getContext('2d');
+    const c=document.createElement('canvas'); c.width=1024; c.height=1360;
+    const g=c.getContext('2d'); g.scale(2,2);
     g.fillStyle='#06110d'; g.fillRect(0,0,512,680);
     g.strokeStyle='#1d4b3a'; g.lineWidth=2; g.strokeRect(12,12,488,656);
     g.fillStyle='#7ff0bf'; g.font='600 26px ui-monospace,Menlo,monospace';
@@ -532,16 +615,16 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
     g.fillText('M03 S5000', 34, 468);
     g.fillText('G43 H01 Z20.', 34, 498);
     g.fillStyle='#2f6b54'; g.fillText('READY', 34, 610);
-    const tex=new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace; tex.anisotropy=4; return tex;
+    const tex=new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace; tex.anisotropy=Math.min(8, renderer.capabilities.getMaxAnisotropy()); return tex;
   }
 
   function addLabel(text, w, h, x, y, z, parent, fg='#eaf2fb', bg='#0b2a46'){
-    const c=document.createElement('canvas'); c.width=512; c.height=Math.max(64, Math.round(512*h/w));
+    const c=document.createElement('canvas'); c.width=1024; c.height=Math.max(128, Math.round(1024*h/w));
     const g=c.getContext('2d'); g.clearRect(0,0,c.width,c.height);
     if(bg!=='transparent'){ g.fillStyle=bg; g.fillRect(0,0,c.width,c.height); }
     g.fillStyle=fg; g.font='700 '+Math.round(c.height*0.52)+'px -apple-system,PingFang SC,sans-serif';
     g.textAlign='center'; g.textBaseline='middle'; g.fillText(text,c.width/2,c.height/2+1);
-    const tex=new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace; tex.anisotropy=4;
+    const tex=new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace; tex.anisotropy=Math.min(8, renderer.capabilities.getMaxAnisotropy());
     const mat=new THREE.MeshBasicMaterial({map:tex, transparent:true, toneMapped:false});
     const p=new THREE.Mesh(new THREE.PlaneGeometry(w,h),mat); p.position.set(x,y,z); parent.add(p); return p;
   }
@@ -558,6 +641,7 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   const doorBtn=$('#doorBtn'), hint=$('#hint'), wheelLabel=$('#wheelLabel');
   const toast=$('#toast'), prog=$('#prog'), progCode=$('#progCode'), setup=$('#setup');
   const zoomInBtn=$('#zoomIn'), zoomOutBtn=$('#zoomOut'), zoomResetBtn=$('#zoomReset');
+  const viewOutsideBtn=$('#viewOutside'), viewInsideBtn=$('#viewInside');
 
   function renderDRO(){
     droX.textContent=fmt(state.x); droY.textContent=fmt(state.y); droZ.textContent=fmt(state.z);
@@ -616,7 +700,7 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   function updateMachine(){
     const s=0.001; // 1 mm = 1 mm（真机比例，行程 800/500/500）
     tableGroup.position.set(state.x*s, 0, state.y*s);
-    spindle.position.y = 2.30 + state.z*s;
+    spindle.position.y = 2.33 + state.z*s;
     /* 软限位：Z 向上不要穿出机床顶 */
     spindle.position.y = Math.min(spindle.position.y, 2.56);
   }
@@ -769,10 +853,16 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   }));
 
   /* 缩放按钮 */
-  function zoomBy(d){ radius = clamp(radius + d, 4.4, 10.0); updateCamera(); }
-  zoomInBtn.addEventListener('click',()=>zoomBy(-0.65));
-  zoomOutBtn.addEventListener('click',()=>zoomBy(0.65));
-  zoomResetBtn.addEventListener('click',()=>{ radius=7.25; theta=0.38; phi=1.36; updateCamera(); });
+  function zoomBy(d){
+    const r=orbitRange();
+    radius = clamp(radius + d, r.rMin, r.rMax);
+    camAnim=null; updateCamera();
+  }
+  zoomInBtn.addEventListener('click',()=>zoomBy(view==='inside'?-0.18:-0.65));
+  zoomOutBtn.addEventListener('click',()=>zoomBy(view==='inside'?0.18:0.65));
+  zoomResetBtn.addEventListener('click',()=>setView(view));
+  viewOutsideBtn.addEventListener('click',()=>setView('outside'));
+  viewInsideBtn.addEventListener('click',()=>setView('inside'));
 
   /* canvas orbit + 双指缩放 */
   const pointers = new Map();
@@ -783,6 +873,7 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
     orbit={x:e.clientX,y:e.clientY,theta,phi};
   }
   canvas.addEventListener('pointerdown',(e)=>{
+    camAnim=null;
     try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
     pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
     if(pointers.size===2){
@@ -799,12 +890,12 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
     if(pointers.size>=2 && pinch){
       const [a,b]=Array.from(pointers.values());
       const d=Math.hypot(a.x-b.x,a.y-b.y);
-      if(d>8){ radius=clamp(pinch.radius*pinch.dist/d,4.4,10.0); updateCamera(); }
+      if(d>8){ const r=orbitRange(); radius=clamp(pinch.radius*pinch.dist/d,r.rMin,r.rMax); updateCamera(); }
       return;
     }
     if(!orbit) return;
     theta=orbit.theta-(e.clientX-orbit.x)*0.007;
-    phi=clamp(orbit.phi-(e.clientY-orbit.y)*0.006,0.72,1.42);
+    phi=clamp(orbit.phi-(e.clientY-orbit.y)*0.006,orbitRange().pMin,orbitRange().pMax);
     updateCamera();
   });
   const endOrbit=(e)=>{
@@ -813,7 +904,7 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
     else if(pointers.size===1){ pinch=null; const p=Array.from(pointers.values())[0]; orbit={x:p.x,y:p.y,theta,phi}; }
   };
   canvas.addEventListener('pointerup',endOrbit); canvas.addEventListener('pointercancel',endOrbit);
-  canvas.addEventListener('wheel',(e)=>{ e.preventDefault(); radius=clamp(radius+e.deltaY*0.002,4.4,10.0); updateCamera(); },{passive:false});
+  canvas.addEventListener('wheel',(e)=>{ e.preventDefault(); camAnim=null; const r=orbitRange(); radius=clamp(radius+e.deltaY*(view==='inside'?0.0006:0.002),r.rMin,r.rMax); updateCamera(); },{passive:false});
 
   /* resize */
   function resize(){
@@ -830,12 +921,26 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   let doorLerp=0, doorTargetPos=0;
   function animate(){
     const dt=Math.min(clock.getDelta(),0.05);
+    /* 视角切换：外部 ↔ 加工内部，平滑过渡 */
+    if(camAnim){
+      camAnim.t = Math.min(1, camAnim.t + dt/camAnim.dur);
+      const e = camAnim.t*camAnim.t*(3-2*camAnim.t);
+      target.lerpVectors(camAnim.from.target, camAnim.to.target, e);
+      theta = camAnim.from.theta + (camAnim.to.theta-camAnim.from.theta)*e;
+      phi   = camAnim.from.phi   + (camAnim.to.phi-camAnim.from.phi)*e;
+      radius= camAnim.from.radius+ (camAnim.to.radius-camAnim.from.radius)*e;
+      updateCamera();
+      if(camAnim.t>=1) camAnim=null;
+    }
     /* door slide */
     const dl=doorL.position.x, dr=doorR.position.x;
     const targetL=state.door?-0.94:-0.305, targetR=state.door?0.94:0.305;
     doorL.position.x += (targetL-dl)*Math.min(1,dt*9);
     doorR.position.x += (targetR-dr)*Math.min(1,dt*9);
-    doorL.visible = !state.door; doorR.visible = !state.door;
+    const isInside = view==='inside';
+    doorL.visible = !state.door && !isInside; doorR.visible = !state.door && !isInside;
+    frontBeam.visible = !isInside;
+    saddle.visible = !isInside;
     /* spindle */
     if(state.spindle && !state.estop){ tool.rotation.y += dt*18; }
     /* 三轴联动：X/Y 工作台 + Z 主轴同时插补 */
@@ -860,7 +965,7 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
         }
       }
       pathDot.visible=true; pathLine.material.opacity=0.95;
-      pathDot.position.set(-state.x*0.001, 1.69 + state.z*0.001, -state.y*0.001);
+      pathDot.position.set(-state.x*0.001, 1.72 + state.z*0.001, -state.y*0.001);
     } else {
       pathDot.visible=false; pathLine.material.opacity=0.45;
     }
@@ -874,7 +979,7 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
   setTimeout(()=>{ $('#doorHint').classList.remove('show'); }, 3200);
 
   /* expose minimal API for automated demo/screens */
-  window.__vmc = { state, toggleDoor, jog, setSpindle, updateMode, setWheelAngle, renderer, scene, camera };
+  window.__vmc = { state, toggleDoor, jog, setSpindle, updateMode, setWheelAngle, renderer, scene, camera, setView, setTarget:(x,y,z)=>{ target.set(x,y,z); updateCamera(); }, setFov:(f)=>{ camera.fov=f; camera.updateProjectionMatrix(); }, setOrbit:(t,p,r)=>{ camAnim=null; theta=t; phi=p; radius=r; updateCamera(); } };
 })();
 </script>
 </body>
