@@ -1,20 +1,20 @@
 {
   "android": {
-    "versionCode": 76,
-    "versionName": "2.9.37",
+    "versionCode": 77,
+    "versionName": "2.9.38",
     "package": "com.sqc.macrogen",
-    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.9.37/MacroGen-3D-2.9.37-76-legacy.apk",
-    "size": 7496298,
-    "sha256": "d7d799808fbab5416ca9583e1575389aeee79ba963c19bf79d83cd4d733cfb67",
-    "changelog": "增加加工中心模拟，有问题反馈"
+    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.9.38/MacroGen-3D-2.9.38-77-legacy.apk",
+    "size": 7500394,
+    "sha256": "196502d23c689b75dc5e88af7075f07da7a78428c37531b6ecb1cd42742fadbd",
+    "changelog": "新增启动主页（3D 工作台 / 加工中心模拟 / 检查更新）；工作台返回键改为回主页；增加加工中心模拟，有问题反馈"
   },
   "android3d": {
-    "versionCode": 76,
-    "versionName": "2.9.37",
+    "versionCode": 77,
+    "versionName": "2.9.38",
     "package": "com.sqc.macrogen3d",
-    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.9.37/MacroGen-3D-2.9.37-76.apk",
-    "size": 7496298,
-    "sha256": "40dc5022f6f39431182215bfbbd843c2fcc33485333cee026d71a243f685e335",
-    "changelog": "增加加工中心模拟，有问题反馈"
+    "url": "https://github.com/sqc4293298sqc/MacroGen/releases/download/v2.9.38/MacroGen-3D-2.9.38-77.apk",
+    "size": 7500394,
+    "sha256": "c1ad0c0874cce13733c697d44d9ad0ccadf924bdd5cd901c95f548be2d7fd898",
+    "changelog": "新增启动主页（3D 工作台 / 加工中心模拟 / 检查更新）；工作台返回键改为回主页；增加加工中心模拟，有问题反馈"
   }
 }
