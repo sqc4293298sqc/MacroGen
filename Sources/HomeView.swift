@@ -49,6 +49,14 @@ struct HomeView: View {
                              tint: Color(red: 0.10, green: 0.55, blue: 0.50))
                     }
                     .buttonStyle(.plain)
+
+                    NavigationLink {
+                        MachineSimScreen()
+                    } label: {
+                        Tile(title: "加工中心模拟", icon: "gearshape.2",
+                             tint: Color(red: 0.10, green: 0.55, blue: 0.50))
+                    }
+                    .buttonStyle(.plain)
                 }
 
                 group("查询 · 工具")
