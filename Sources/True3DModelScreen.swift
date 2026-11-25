@@ -2285,12 +2285,13 @@ struct True3DModelScreen: View {
     }
 
     private func assemblyColor(_ index: Int) -> UIColor {
+        // 浅色零件更接近 CAD 工作台习惯，也让黑色边线有足够对比度。
         let palette: [UIColor] = [
-            UIColor(red: 0.46, green: 0.58, blue: 0.70, alpha: 1),
-            UIColor(red: 0.78, green: 0.52, blue: 0.30, alpha: 1),
-            UIColor(red: 0.34, green: 0.62, blue: 0.48, alpha: 1),
-            UIColor(red: 0.68, green: 0.45, blue: 0.62, alpha: 1),
-            UIColor(red: 0.70, green: 0.65, blue: 0.34, alpha: 1)
+            UIColor(red: 0.84, green: 0.86, blue: 0.88, alpha: 1),
+            UIColor(red: 0.88, green: 0.72, blue: 0.48, alpha: 1),
+            UIColor(red: 0.55, green: 0.75, blue: 0.62, alpha: 1),
+            UIColor(red: 0.76, green: 0.60, blue: 0.78, alpha: 1),
+            UIColor(red: 0.82, green: 0.78, blue: 0.50, alpha: 1)
         ]
         return palette[abs(index) % palette.count]
     }
@@ -2405,23 +2406,26 @@ struct True3DModelScreen: View {
             holder.position = SCNVector3(Float(comp.x), Float(comp.y), Float(comp.z))
             holder.eulerAngles.z = Float(comp.rotationZ * .pi / 180)
             let material = SCNMaterial()
-            material.lightingModel = .physicallyBased
+            material.lightingModel = .blinn
             material.diffuse.contents = assemblyColor(comp.colorIndex)
-            material.metalness.contents = 0.18
-            material.roughness.contents = 0.48
+            material.specular.contents = UIColor(white: 0.22, alpha: 1)
+            material.shininess = 0.18
             let geometry = partResult.mesh.sceneKitGeometry()
             geometry.materials = [material]
             holder.addChildNode(SCNNode(geometry: geometry))
             let wireMaterial = SCNMaterial()
             wireMaterial.lightingModel = .constant
-            wireMaterial.diffuse.contents = UIColor(red: 0.10, green: 0.15, blue: 0.20, alpha: 0.72)
+            wireMaterial.diffuse.contents = UIColor(red: 0.07, green: 0.09, blue: 0.11, alpha: 0.96)
             wireMaterial.fillMode = .lines
             wireMaterial.isDoubleSided = true
+            wireMaterial.readsFromDepthBuffer = true
+            wireMaterial.writesToDepthBuffer = false
             let wire = partResult.mesh.sceneKitGeometry()
             wire.materials = [wireMaterial]
             let wireNode = SCNNode(geometry: wire)
             wireNode.name = "wireOverlay"
-            wireNode.scale = SCNVector3(1.002, 1.002, 1.002)
+            wireNode.scale = SCNVector3(1.004, 1.004, 1.004)
+            wireNode.renderingOrder = 20
             wireNode.isHidden = !showWire
             holder.addChildNode(wireNode)
             root.addChildNode(holder)
@@ -6255,7 +6259,7 @@ struct True3DModelScreen: View {
             mesh: result.mesh,
             stats: result.stats,
             shape: result.shape,
-            materialColor: UIColor(red: 0.52, green: 0.54, blue: 0.57, alpha: 1),
+            materialColor: UIColor(red: 0.84, green: 0.86, blue: 0.88, alpha: 1),
             isPreview: false
         )
     }
@@ -6265,7 +6269,7 @@ struct True3DModelScreen: View {
             mesh: preview.mesh,
             stats: preview.stats,
             shape: preview.shape,
-            materialColor: UIColor(red: 0.20, green: 0.47, blue: 0.92, alpha: 1),
+            materialColor: UIColor(red: 0.40, green: 0.62, blue: 0.90, alpha: 1),
             isPreview: true
         )
     }
@@ -6310,24 +6314,27 @@ struct True3DModelScreen: View {
         newScene.rootNode.addChildNode(modelRoot)
         let geometry = flatShadedGeometry(mesh)
         let material = SCNMaterial()
-        material.lightingModel = .physicallyBased
+        material.lightingModel = .blinn
         material.diffuse.contents = materialColor
-        material.metalness.contents = 0.08
-        material.roughness.contents = 0.55
+        material.specular.contents = UIColor(white: 0.18, alpha: 1)
+        material.shininess = 0.16
         geometry.materials = [material]
         let solidNode = SCNNode(geometry: geometry)
         solidNode.name = isPreview ? "previewSolid" : "solid"
         modelRoot.addChildNode(solidNode)
         let wireMaterial = SCNMaterial()
         wireMaterial.lightingModel = .constant
-        wireMaterial.diffuse.contents = UIColor(red: 0.10, green: 0.15, blue: 0.20, alpha: 0.72)
+        wireMaterial.diffuse.contents = UIColor(red: 0.07, green: 0.09, blue: 0.11, alpha: 0.96)
         wireMaterial.fillMode = .lines
         wireMaterial.isDoubleSided = true
+        wireMaterial.readsFromDepthBuffer = true
+        wireMaterial.writesToDepthBuffer = false
         let wireGeometry = brepLineGeometry(shape: shape)
         wireGeometry.materials = [wireMaterial]
         let wireNode = SCNNode(geometry: wireGeometry)
         wireNode.name = "wireOverlay"
-        wireNode.scale = SCNVector3(1.002, 1.002, 1.002)
+        wireNode.scale = SCNVector3(1.004, 1.004, 1.004)
+        wireNode.renderingOrder = 20
         wireNode.isHidden = !showWire
         modelRoot.addChildNode(wireNode)
         let box = mesh.boundingBox
