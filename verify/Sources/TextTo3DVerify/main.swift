@@ -1,6 +1,12 @@
 import Foundation
 import OCCTSwift
 
+// True3DModel.swift 的轻量验证副本只需要这个节点类型；完整定义在 App 的
+// True3DModelDocument.swift 里，这里不引入文档/工程依赖。
+struct True3DTreeNode: Identifiable, Equatable, Sendable {
+    var id = UUID()
+}
+
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data(("FAIL: " + message + "\n").utf8))
     exit(1)
