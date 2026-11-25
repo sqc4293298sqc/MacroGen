@@ -9,6 +9,7 @@ struct TextTo3DScreen: View {
     @State private var errorText: String?
     @State private var cloudResult: CloudCADJobStatus?
     @State private var cloudStepURL: URL?
+    @State private var cloudParams: True3DParams?
     @State private var cloudBusy = false
     @State private var cloudProgress = ""
     @State private var cloudErrorText: String?
@@ -69,7 +70,7 @@ struct TextTo3DScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(isPresented: $show3D) {
             if let cloudStepURL {
-                True3DModelScreen(initialSTEPURL: cloudStepURL) {
+                True3DModelScreen(initialParams: cloudParams, initialSTEPURL: cloudStepURL) {
                     show3D = false
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
                         dismiss()
@@ -364,6 +365,7 @@ struct TextTo3DScreen: View {
         errorText = nil
         cloudResult = nil
         cloudStepURL = nil
+        cloudParams = nil
         cloudErrorText = nil
         cloudProgress = "正在提交…"
         cloudBusy = true
@@ -378,6 +380,7 @@ struct TextTo3DScreen: View {
                 cloudProgress = "下载 STEP…"
                 let url = try await CloudCADClient.downloadSTEP(path: stepPath)
                 cloudStepURL = url
+                cloudParams = status.drawing?.true3DParams()
                 cloudResult = status
                 cloudProgress = ""
             } catch {
@@ -393,6 +396,7 @@ struct TextTo3DScreen: View {
         errorText = nil
         cloudResult = nil
         cloudStepURL = nil
+        cloudParams = nil
         cloudErrorText = nil
         let result = LocalTextTo3DParser.parse(prompt)
         switch result {

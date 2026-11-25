@@ -74,6 +74,7 @@ struct True3DModelScreen: View {
     @SwiftUI.Environment(\.dismiss) private var dismiss
     private let onBackToHome: (() -> Void)?
     private let initialSTEPURL: URL?
+    private let initialSTEPParams: True3DParams?
     private struct FeatureOption: Identifiable {
         let id: Int
         let label: String
@@ -222,7 +223,15 @@ struct True3DModelScreen: View {
     ) {
         self.onBackToHome = onBackToHome
         self.initialSTEPURL = initialSTEPURL
+        self.initialSTEPParams = initialParams
         if initialSTEPURL != nil {
+            if let initialParams {
+                var p = initialParams
+                if p.projectName.isEmpty || p.projectName == "未命名工程" {
+                    p.projectName = "云端文字模型"
+                }
+                _params = State(initialValue: p)
+            }
             _hasModel = State(initialValue: false)
             _stage = State(initialValue: .model)
             _message = State(initialValue: "正在导入云端 STEP…")
@@ -256,9 +265,8 @@ struct True3DModelScreen: View {
 
     private func handleStageChange(_ newStage: True3DWorkbenchStage) {
         if importedPart != nil, newStage == .operation || newStage == .machine {
-            error = "STEP 模型暂不支持 CAM 工序；请先导出 STEP/STL，或退出 STEP"
-            stage = .model
-            return
+            error = nil
+            notice = "STEP 模型按 3D 等高线生成刀路；孔/腔/槽请从建模树选择对应特征。"
         }
         if newStage == .model, !hasModel, importedPart == nil {
             notice = "建模区为空；请先在草图里画轮廓并应用到建模"
@@ -370,7 +378,7 @@ struct True3DModelScreen: View {
             if !didInitialBuild {
                 didInitialBuild = true
                 if let initialSTEPURL {
-                    importSTEP(initialSTEPURL)
+                    importSTEP(initialSTEPURL, camParams: initialSTEPParams)
                     return
                 }
                 if hasModel || importedPart != nil {
@@ -2206,7 +2214,7 @@ struct True3DModelScreen: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            Text("参数化基础体、孔/凸台/型腔命令在 STEP 模型下会禁用。R1 下一刀接边选择与圆角预览。")
+            Text("参数化基础体、孔/凸台/型腔命令在 STEP 模型下会禁用；STEP 仍可进工序做 3D 等高线加工，孔/腔/槽按云端 drawing 映射。")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -3300,11 +3308,14 @@ struct True3DModelScreen: View {
         var parameters = cam
         parameters.operations = enabled
         let modelResult = result
+        // 导入的 STEP 用 App 里的参数化毛坯/特征描述来排孔腔工序；
+        // 真实几何仍用 STEP 的 result.shape 做截面和校验。
+        let camModel = importedPart == nil ? modelResult.params : params
         let programNo = cam.programNo
         Task {
             do {
                 let generated = try await Task.detached(priority: .userInitiated) {
-                    try True3DCAM.generate(result: modelResult, model: modelResult.params, cam: parameters)
+                    try True3DCAM.generate(result: modelResult, model: camModel, cam: parameters)
                 }.value
                 let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 let url = dir.appendingPathComponent("MacroGen-3D-\(programNo).nc")
@@ -6717,6 +6728,7 @@ struct True3DModelScreen: View {
                 id: modelDocumentID,
                 name: importedPart.name,
                 sourceKind: .importedStep,
+                params: params,
                 importedName: importedPart.name,
                 importedFileName: fileName,
                 importedUnitInMeters: importedPart.unitInMeters,
@@ -6799,7 +6811,7 @@ struct True3DModelScreen: View {
                     }
                     self.importedPart = part
                     self.hasModel = true
-                    self.params = stored.params ?? True3DParams()
+                    self.params = stored.params ?? Self.stockParams(for: part)
                     self.modelOperations = stored.operations
                     self.cam = stored.cam ?? True3DCAMParams()
                     self.operations = (stored.cam?.operations.isEmpty == false)
@@ -6843,7 +6855,25 @@ struct True3DModelScreen: View {
         }
     }
 
-    private func importSTEP(_ url: URL) {
+    private static func stockParams(for part: True3DImportedPart) -> True3DParams {
+        var params = True3DParams()
+        params.projectName = part.name
+        params.features = []
+        params.edgeMode = .none
+        if let bounds = part.shape.bounds {
+            params.width = max(bounds.max.x - bounds.min.x, 1)
+            params.depth = max(bounds.max.y - bounds.min.y, 1)
+            // CAM 以模型顶面为 Z0 参考；导入 STEP 常见 Z 从 0 开始。
+            params.height = max(bounds.max.z, 1)
+        } else if part.stats.valid {
+            params.width = max(part.stats.sizeX, 1)
+            params.depth = max(part.stats.sizeY, 1)
+            params.height = max(part.stats.sizeZ, 1)
+        }
+        return params
+    }
+
+    private func importSTEP(_ url: URL, camParams: True3DParams? = nil) {
         guard !importBusy else { return }
         importMode = .step
         importBusy = true
@@ -6869,6 +6899,9 @@ struct True3DModelScreen: View {
                 self.modelOperations = []
                 self.modelDocumentID = UUID()
                 self.selectedFeatureID = nil
+                self.params = camParams ?? Self.stockParams(for: part)
+                self.operations = Self.defaultOperations()
+                self.cam.operations = self.operations
                 self.result = nil
                 self.scene = SCNScene()
                 self.stage = .model

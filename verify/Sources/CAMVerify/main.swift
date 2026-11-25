@@ -657,4 +657,69 @@ if featureFailures > 0 {
     fail("feature matrix: \(featureFailures) cases failed")
 }
 
+// 云端文字生成的 STEP：真实 B-Rep 导入后，用 drawing 映射出的参数化模型排 CAM。
+// 这一段覆盖用户反馈的“STEP 模型不能进工序”。
+do {
+    let url = URL(fileURLWithPath: "fixtures/cloud_text.step")
+    let shape = try Shape.loadSTEP(from: url)
+    guard shape.isValid, shape.faceCount > 0 else {
+        fail("imported-step: invalid STEP")
+    }
+    guard let mesh = shape.mesh(linearDeflection: 0.18, angularDeflection: 0.35) else {
+        fail("imported-step: mesh failed")
+    }
+    let part = True3DImportedPart(name: "cloud_text", shape: shape, mesh: mesh)
+    let document = True3DModelDocument(imported: part)
+    let built = try document.build()
+    guard built.stats.valid, built.stats.volume > 0 else {
+        fail("imported-step: build invalid")
+    }
+
+    var model = True3DParams()
+    model.projectName = "cloud_text"
+    model.width = 120
+    model.depth = 80
+    model.height = 30
+    model.features = []
+    for (x, depth) in [(-30.0, 6.0), (0.0, 12.0), (30.0, 18.0)] {
+        var pocket = True3DFeatureSpec(kind: .rectPocket, x: x, y: 0)
+        pocket.name = "阶梯槽"
+        pocket.width = 30
+        pocket.depthY = 18
+        pocket.depth = depth
+        model.features.append(pocket)
+    }
+
+    var face = True3DOperation(kind: .faceBase)
+    face.toolDia = 16; face.stepDown = 2; face.stepOver = 12
+    var rough = True3DOperation(kind: .rough)
+    rough.toolDia = 8; rough.stepDown = 3; rough.stepOver = 5
+    var finish = True3DOperation(kind: .finish)
+    finish.toolDia = 4; finish.stepDown = 1; finish.stepOver = 2
+    var clear = True3DOperation(kind: .clearInner)
+    clear.toolDia = 3; clear.stepDown = 2; clear.stepOver = 2
+    var cam = True3DCAMParams()
+    cam.operations = [face, rough, finish, clear]
+
+    let path = try True3DCAM.generate(result: built, model: model, cam: cam)
+    guard path.stats.pathCount > 0, path.stats.cutLength > 1 else {
+        fail("imported-step: no CAM paths")
+    }
+    guard path.gcode.contains("G1"), path.gcode.contains("M30") else {
+        fail("imported-step: invalid G-code")
+    }
+    guard !path.gcode.contains("nan"), !path.gcode.contains("inf") else {
+        fail("imported-step: non-finite coordinate")
+    }
+    let xs = path.segments.flatMap { $0.pts.map(\.x) }
+    let ys = path.segments.flatMap { $0.pts.map(\.y) }
+    guard let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max(),
+          minX >= -70, maxX <= 70, minY >= -70, maxY <= 70 else {
+        fail("imported-step: toolpath outside stock bounds")
+    }
+    print("PASS imported-step: faces=\(built.stats.faces) paths=\(path.stats.pathCount) layers=\(path.stats.layerCount) cut=\(String(format: "%.1f", path.stats.cutLength))mm runs=\(path.runs.count)")
+} catch {
+    fail("imported-step: \(error.localizedDescription)")
+}
+
 print("ALL CAM CHECKS PASSED")
