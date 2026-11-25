@@ -482,7 +482,8 @@ enum LocalTextTo3DParser {
         let pattern = firstMatch(#"(\d+)\s*个\s*(?:孔)?\s*(?:d|m|直径)?\s*(\d+(?:\.\d+)?)"#, in: text)
         let count = pattern.flatMap { $0.count >= 3 ? Int($0[1]) : nil } ?? 1
         let dia = pattern.flatMap { $0.count >= 3 ? Double($0[2]) : nil }
-            ?? firstNumber(#"(?:d|直径)\s*(\d+(?:\.\d+)?)"#, in: text)
+            ?? firstNumber(#"(?:中心孔?|孔)\s*(?:d|直径)?\s*(\d+(?:\.\d+)?)"#, in: text)
+            ?? firstNumber(#"(?:d|直径)\s*(\d+(?:\.\d+)?)\s*(?:mm)?\s*(?:的)?\s*(?:通孔|盲孔|孔)"#, in: text)
             ?? 10
         guard count > 0, count <= 24 else {
             throw TextTo3DParseError.invalid("孔数量必须在 1～24 之间")
