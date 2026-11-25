@@ -499,26 +499,13 @@ struct True3DModelDocument: Identifiable, @unchecked Sendable {
             guard !solids.isEmpty else {
                 throw True3DModelError.invalidParameter("当前模型没有可合并的实体")
             }
-            let base: Shape
-            if solids.count > 1 {
-                guard let fused = Shape.fuseAll(solids), fused.isValid else {
-                    throw True3DModelError.featureFailed("合并失败：实体可能没有接触或存在无效面")
-                }
-                base = fused
-            } else {
-                base = shape
+            guard solids.count > 1 else { return shape }
+            // 和 Android 保持一致：只做 fuseAll，不再 unified/simplified。
+            // unified 会把接缝附近的同域面合并，在楔形/斜接处看起来像多出一个倒角。
+            guard let fused = Shape.fuseAll(solids), fused.isValid else {
+                throw True3DModelError.featureFailed("合并失败：实体可能没有接触或存在无效面")
             }
-            let unified = base.unified() ?? base
-            guard unified.isValid else {
-                throw True3DModelError.featureFailed("合并后实体无效，已放弃合并")
-            }
-            // 不再做 simplified：它会把接缝处的小边/小面合并掉，
-            // 在斜接或薄壁处看起来像凭空多了一个倒角。
-            if let before = base.volume, let after = unified.volume,
-               abs(after - before) > max(0.001, before * 0.0001) {
-                return base
-            }
-            return unified
+            return fused
 
         case .moveFace(let points, let normal, let distance):
             guard points.count >= 3 else {
