@@ -210,6 +210,18 @@ struct True3DModelScreen: View {
     @State private var assemblyEditingID: UUID?
     @State private var assemblyError: String?
 
+    /// 从“文字生成”等入口进入时直接带参数建模。
+    init(initialParams: True3DParams? = nil) {
+        guard let initialParams else { return }
+        var p = initialParams
+        if p.projectName.isEmpty || p.projectName == "未命名工程" {
+            p.projectName = "文字生成"
+        }
+        _params = State(initialValue: p)
+        _hasModel = State(initialValue: true)
+        _stage = State(initialValue: .model)
+    }
+
     private var isDirty: Bool {
         guard let result else { return false }
         let builtOperationIDs = result.nodes.compactMap { $0.operationID }

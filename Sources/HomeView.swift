@@ -51,6 +51,14 @@ struct HomeView: View {
                     .buttonStyle(.plain)
 
                     NavigationLink {
+                        TextTo3DScreen()
+                    } label: {
+                        Tile(title: "文字生成", icon: "text.cursor",
+                             tint: Color(red: 0.90, green: 0.42, blue: 0.16))
+                    }
+                    .buttonStyle(.plain)
+
+                    NavigationLink {
                         MachineSimScreen()
                     } label: {
                         Tile(title: "加工中心模拟", icon: "gearshape.2",
