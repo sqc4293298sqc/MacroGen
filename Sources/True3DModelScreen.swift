@@ -43,6 +43,7 @@ private enum True3DImportMode {
 private enum True3DPickMode {
     case edge
     case face
+    case box
 }
 
 private struct True3DFaceSelection {
@@ -595,7 +596,11 @@ struct True3DModelScreen: View {
                 },
                 onOrbitDistanceChanged: { distance in
                     orbitDistance = distance
-                }
+                },
+                onBoxSelect: { view, rect in
+                    selectEdges(in: view, rect: rect)
+                },
+                boxSelectEnabled: pickMode == .box
             )
             .ignoresSafeArea()
 
@@ -796,6 +801,9 @@ struct True3DModelScreen: View {
     }
 
     private var bottomHint: String {
+        if pickMode == .box {
+            return "在模型上拖一个框，框内的边会自动选中"
+        }
         if let face = selectedFace {
             return "已选面 #\(face.faceIndex) · 点左侧命令设置参数"
         }
@@ -909,7 +917,30 @@ struct True3DModelScreen: View {
             }
             .buttonStyle(.plain)
 
-            if let face = selectedFace {
+            Button {
+                pickMode = .box
+                clearEdgeSelection()
+                selectedFace = nil
+                scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
+                notice = "框选：在模型上拖一个框，框住要选的边"
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "rectangle.dashed").font(.system(size: 11, weight: .semibold))
+                    Text("框选").font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(pickMode == .box ? SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85) : SwiftUI.Color.secondary)
+                .padding(.horizontal, 8)
+                .frame(height: 28)
+                .background(pickMode == .box ? SwiftUI.Color(red: 0.12, green: 0.42, blue: 0.85).opacity(0.12) : SwiftUI.Color.clear, in: Capsule())
+            }
+            .buttonStyle(.plain)
+
+            if pickMode == .box {
+                Text("拖框选边")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else if let face = selectedFace {
                 Text("面 #\(face.faceIndex) · Z \(fmt(face.point.z))")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
@@ -2473,9 +2504,9 @@ struct True3DModelScreen: View {
 
     private func addAxisGizmo(to parent: SCNNode, size: Double, center: SCNVector3) {
         let length = Float(min(max(size * 0.40, 22), 52))
-        let shaftRadius: CGFloat = 1.25
-        let headRadius: CGFloat = 3.1
-        let headHeight: CGFloat = 8.0
+        let shaftRadius: CGFloat = 0.55
+        let headRadius: CGFloat = 2.8
+        let headHeight: CGFloat = 7.5
         let group = SCNNode()
         group.name = "axisGizmo"
         group.position = center
@@ -2512,14 +2543,9 @@ struct True3DModelScreen: View {
         func label(_ text: String, _ color: UIColor, _ position: SCNVector3) {
             let side: CGFloat = 96
             let image = UIGraphicsImageRenderer(size: CGSize(width: side, height: side)).image { context in
-                let circle = UIBezierPath(ovalIn: CGRect(x: 6, y: 6, width: side - 12, height: side - 12))
-                UIColor.white.withAlphaComponent(0.94).setFill()
-                circle.fill()
-                color.setStroke()
-                circle.lineWidth = 5
-                circle.stroke()
+                // 只画彩色字母，不加白底圆圈；和 Android 的轴标签一致，避免看起来像大圆牌。
                 let attributes: [NSAttributedString.Key: Any] = [
-                    .font: UIFont.systemFont(ofSize: 52, weight: .heavy),
+                    .font: UIFont.systemFont(ofSize: 48, weight: .heavy),
                     .foregroundColor: color
                 ]
                 let string = text as NSString
@@ -2529,7 +2555,7 @@ struct True3DModelScreen: View {
                     withAttributes: attributes
                 )
             }
-            let plane = SCNPlane(width: 11.0, height: 11.0)
+            let plane = SCNPlane(width: 9.5, height: 9.5)
             let material = SCNMaterial()
             material.lightingModel = .constant
             material.diffuse.contents = image
@@ -2564,7 +2590,7 @@ struct True3DModelScreen: View {
         head(zColor, SCNVector3(0, 0, length + Float(headHeight * 0.42)), SCNVector3(Float.pi / 2, 0, 0))
         label("Z", zColor, SCNVector3(-1, -1, length + 11))
 
-        let origin = SCNSphere(radius: 2.1)
+        let origin = SCNSphere(radius: 1.5)
         origin.materials = [overlayMaterial(UIColor(red: 0.20, green: 0.23, blue: 0.28, alpha: 1))]
         let originNode = SCNNode(geometry: origin)
         originNode.renderingOrder = 39
@@ -4325,6 +4351,10 @@ struct True3DModelScreen: View {
             notice = "当前模型没有可合并的实体"
             return
         }
+        guard solids.count > 1 else {
+            notice = "当前模型只有 1 个实体，无需合并"
+            return
+        }
         pushModelUndo()
         if showFeatureDrawer { cancelFeatureDrawer() }
         if showMoveDrawer { cancelMoveDrawer() }
@@ -5674,6 +5704,81 @@ struct True3DModelScreen: View {
         }
     }
 
+    /// 框选：把落在屏幕矩形内的 3D 边全部选中，和 Android 的框选逻辑一致。
+    private func selectEdges(in view: SCNView, rect: CGRect) {
+        guard stage == .model,
+              !isBuilding,
+              !importBusy,
+              !isDirty,
+              let result,
+              let modelRoot = scene.rootNode.childNode(withName: "modelRoot", recursively: false) else { return }
+
+        if filletPreview != nil || isPreviewingFillet {
+            clearFilletPreview(restoreScene: true)
+            view.scene = scene
+            if let camera = scene.rootNode.childNode(withName: "workbenchCamera", recursively: true) {
+                view.pointOfView = camera
+            }
+        }
+
+        let minX = rect.minX, maxX = rect.maxX
+        let minY = rect.minY, maxY = rect.maxY
+        var refs: [True3DEdgeRef] = []
+
+        for edge in result.shape.edges() {
+            let samples = edge.points(count: 24)
+            guard !samples.isEmpty else { continue }
+            var screenPoints: [CGPoint] = []
+            var inside = false
+
+            for sample in samples {
+                let world = modelRoot.convertPosition(
+                    SCNVector3(Float(sample.x), Float(sample.y), Float(sample.z)),
+                    to: nil
+                )
+                let projected = view.projectPoint(world)
+                guard projected.z >= 0, projected.z <= 1 else { continue }
+                let point = CGPoint(x: CGFloat(projected.x), y: CGFloat(projected.y))
+                screenPoints.append(point)
+                if point.x >= minX, point.x <= maxX, point.y >= minY, point.y <= maxY {
+                    inside = true
+                    break
+                }
+            }
+
+            if !inside, !screenPoints.isEmpty {
+                let midX = screenPoints.reduce(CGFloat(0)) { $0 + $1.x } / CGFloat(screenPoints.count)
+                let midY = screenPoints.reduce(CGFloat(0)) { $0 + $1.y } / CGFloat(screenPoints.count)
+                inside = midX >= minX && midX <= maxX && midY >= minY && midY <= maxY
+            }
+            if inside {
+                refs.append(True3DEdgeRef.make(edge: edge, in: result.shape))
+            }
+        }
+
+        let unique = Array(Set(refs)).sorted { $0.edgeIndex < $1.edgeIndex }
+        selectedEdges = unique
+        selectedEdge = unique.last
+        selectedFace = nil
+        scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
+        selectedFeatureID = nil
+        error = nil
+        pickMode = .edge
+
+        let shapeEdges = unique.compactMap { result.shape.edge(at: $0.edgeIndex) }
+        highlightSelectedEdges(modelRoot: modelRoot, edges: shapeEdges)
+        if unique.isEmpty {
+            notice = "框内没有边，换个范围再拖"
+        } else {
+            notice = "框选到 \(unique.count) 条边"
+            message = "已框选 \(unique.count) 条边 · 最后一条 #\(unique.last?.edgeIndex ?? 0)"
+        }
+        if showFeatureDrawer, draftFeature?.kind == .edgeFillet || draftFeature?.kind == .edgeChamfer {
+            filletRadius = max(draftFeature?.depth ?? filletRadius, 0.1)
+            scheduleFilletPreview()
+        }
+    }
+
     private func pickEdge(in view: SCNView, at point: CGPoint, viewSize: CGSize) {
         guard stage == .model,
               !isBuilding,
@@ -6877,6 +6982,8 @@ struct True3DSceneView: UIViewRepresentable {
     var onMoveHandleDoubleTap: ((String) -> Void)?
     var onOrbitChanged: ((Double, Double) -> Void)?
     var onOrbitDistanceChanged: ((Double) -> Void)?
+    var onBoxSelect: ((SCNView, CGRect) -> Void)?
+    var boxSelectEnabled: Bool
 
     init(
         scene: SCNScene,
@@ -6887,7 +6994,9 @@ struct True3DSceneView: UIViewRepresentable {
         onMoveHandleDragEnd: ((String) -> Void)? = nil,
         onMoveHandleDoubleTap: ((String) -> Void)? = nil,
         onOrbitChanged: ((Double, Double) -> Void)? = nil,
-        onOrbitDistanceChanged: ((Double) -> Void)? = nil
+        onOrbitDistanceChanged: ((Double) -> Void)? = nil,
+        onBoxSelect: ((SCNView, CGRect) -> Void)? = nil,
+        boxSelectEnabled: Bool = false
     ) {
         self.scene = scene
         self.showWire = showWire
@@ -6898,6 +7007,8 @@ struct True3DSceneView: UIViewRepresentable {
         self.onMoveHandleDoubleTap = onMoveHandleDoubleTap
         self.onOrbitChanged = onOrbitChanged
         self.onOrbitDistanceChanged = onOrbitDistanceChanged
+        self.onBoxSelect = onBoxSelect
+        self.boxSelectEnabled = boxSelectEnabled
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
@@ -6913,6 +7024,10 @@ struct True3DSceneView: UIViewRepresentable {
         var onMoveHandleDoubleTap: ((String) -> Void)?
         var onOrbitChanged: ((Double, Double) -> Void)?
         var onOrbitDistanceChanged: ((Double) -> Void)?
+        var onBoxSelect: ((SCNView, CGRect) -> Void)?
+        var boxSelectEnabled = false
+        private var boxStartPoint: CGPoint?
+        private var boxOverlay: UIView?
         private var moveHandleAxis: String?
         private var moveHandleIsRotate = false
         private var moveHandleNode: SCNNode?
@@ -6936,7 +7051,7 @@ struct True3DSceneView: UIViewRepresentable {
         }
 
         @objc func handleMoveHandlePan(_ gesture: UIPanGestureRecognizer) {
-            guard let view = gesture.view as? SCNView else { return }
+            guard !boxSelectEnabled, let view = gesture.view as? SCNView else { return }
             if gesture.state == .began {
                 guard let info = moveHandleInfo(at: gesture.location(in: view), in: view) else {
                     moveHandleAxis = nil
@@ -7011,21 +7126,87 @@ struct True3DSceneView: UIViewRepresentable {
         }
 
         @objc func handleMoveHandleDoubleTap(_ gesture: UITapGestureRecognizer) {
-            guard let view = gesture.view as? SCNView,
+            guard !boxSelectEnabled, let view = gesture.view as? SCNView,
                   let info = moveHandleInfo(at: gesture.location(in: view), in: view) else { return }
             let axis = info.0.hasPrefix("Rotate") ? "角度" : info.0
             onMoveHandleDoubleTap?(axis)
         }
 
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
-            guard let view = gesture.view as? SCNView else { return }
+            guard !boxSelectEnabled, let view = gesture.view as? SCNView else { return }
             if moveHandleInfo(at: gesture.location(in: view), in: view) != nil { return }
             onPickEdge?(view, gesture.location(in: view), view.bounds.size)
         }
 
+        private func updateBoxOverlay(in view: SCNView, from start: CGPoint, to end: CGPoint) {
+            let rect = CGRect(
+                x: min(start.x, end.x),
+                y: min(start.y, end.y),
+                width: abs(end.x - start.x),
+                height: abs(end.y - start.y)
+            )
+            let overlay: UIView
+            if let existing = boxOverlay {
+                overlay = existing
+            } else {
+                overlay = UIView()
+                overlay.isUserInteractionEnabled = false
+                overlay.backgroundColor = UIColor(red: 0.12, green: 0.42, blue: 0.85, alpha: 0.10)
+                overlay.layer.borderColor = UIColor(red: 0.12, green: 0.42, blue: 0.85, alpha: 0.90).cgColor
+                overlay.layer.borderWidth = 1
+                overlay.layer.cornerRadius = 3
+                view.addSubview(overlay)
+                boxOverlay = overlay
+            }
+            overlay.frame = rect
+            overlay.isHidden = false
+        }
+
+        private func hideBoxOverlay() {
+            boxOverlay?.removeFromSuperview()
+            boxOverlay = nil
+            boxStartPoint = nil
+        }
+
+        func cancelBoxSelection() {
+            hideBoxOverlay()
+        }
+
         @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
-            guard let view = gesture.view as? SCNView,
-                  let scene = view.scene,
+            guard let view = gesture.view as? SCNView else { return }
+            if boxSelectEnabled {
+                switch gesture.state {
+                case .began:
+                    boxStartPoint = gesture.location(in: view)
+                    if let start = boxStartPoint {
+                        updateBoxOverlay(in: view, from: start, to: start)
+                    }
+                case .changed:
+                    if let start = boxStartPoint {
+                        updateBoxOverlay(in: view, from: start, to: gesture.location(in: view))
+                    }
+                case .ended, .cancelled, .failed:
+                    guard let start = boxStartPoint else {
+                        hideBoxOverlay()
+                        return
+                    }
+                    let end = gesture.location(in: view)
+                    let rect = CGRect(
+                        x: min(start.x, end.x),
+                        y: min(start.y, end.y),
+                        width: abs(end.x - start.x),
+                        height: abs(end.y - start.y)
+                    )
+                    hideBoxOverlay()
+                    if gesture.state == .ended, rect.width >= 6, rect.height >= 6 {
+                        onBoxSelect?(view, rect)
+                    }
+                default:
+                    break
+                }
+                return
+            }
+            guard let scene = view.scene,
                   let camera = scene.rootNode.childNode(withName: "workbenchCamera", recursively: true),
                   let target = scene.rootNode.childNode(withName: "cameraTarget", recursively: true) else { return }
             if gesture.state == .began {
@@ -7171,6 +7352,8 @@ struct True3DSceneView: UIViewRepresentable {
         context.coordinator.onMoveHandleDoubleTap = onMoveHandleDoubleTap
         context.coordinator.onOrbitChanged = onOrbitChanged
         context.coordinator.onOrbitDistanceChanged = onOrbitDistanceChanged
+        context.coordinator.onBoxSelect = onBoxSelect
+        context.coordinator.boxSelectEnabled = boxSelectEnabled
         return view
     }
 
@@ -7186,6 +7369,11 @@ struct True3DSceneView: UIViewRepresentable {
         context.coordinator.onMoveHandleDoubleTap = onMoveHandleDoubleTap
         context.coordinator.onOrbitChanged = onOrbitChanged
         context.coordinator.onOrbitDistanceChanged = onOrbitDistanceChanged
+        context.coordinator.onBoxSelect = onBoxSelect
+        context.coordinator.boxSelectEnabled = boxSelectEnabled
+        if !boxSelectEnabled {
+            context.coordinator.cancelBoxSelection()
+        }
         uiView.scene?.rootNode.enumerateChildNodes { node, _ in
             if node.name == "wireOverlay" {
                 node.isHidden = !showWire

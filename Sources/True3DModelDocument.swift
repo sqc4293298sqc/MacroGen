@@ -509,11 +509,16 @@ struct True3DModelDocument: Identifiable, @unchecked Sendable {
                 base = shape
             }
             let unified = base.unified() ?? base
-            let cleaned = unified.simplified(tolerance: 1e-4) ?? unified
-            guard cleaned.isValid else {
+            guard unified.isValid else {
                 throw True3DModelError.featureFailed("合并后实体无效，已放弃合并")
             }
-            return cleaned
+            // 不再做 simplified：它会把接缝处的小边/小面合并掉，
+            // 在斜接或薄壁处看起来像凭空多了一个倒角。
+            if let before = base.volume, let after = unified.volume,
+               abs(after - before) > max(0.001, before * 0.0001) {
+                return base
+            }
+            return unified
 
         case .moveFace(let points, let normal, let distance):
             guard points.count >= 3 else {
