@@ -34,7 +34,7 @@ let cases: [Case] = [
     ),
     Case(
         name: "flange",
-        prompt: "80×80×10，中心Ø30，6个Ø6孔，分布圆Ø60，R1.5",
+        prompt: "80×80×10，法兰，中心Ø30，6个Ø6孔，分布圆Ø60，R1.5",
         expectedFeatures: 7,
         expectedShape: .box
     ),
