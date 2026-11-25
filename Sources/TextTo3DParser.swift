@@ -270,30 +270,37 @@ enum LocalTextTo3DParser {
             throw TextTo3DParseError.invalid("每级槽长太小，请增大槽长或减少级数")
         }
 
+        let cornerRadius: Double
+        if let radius, radius > 0 {
+            guard radius < slotWidth / 2 - 0.001 else {
+                throw TextTo3DParseError.invalid("槽内圆角 R\(f(radius)) 过大，必须小于槽宽的一半")
+            }
+            cornerRadius = radius
+        } else {
+            cornerRadius = 0
+        }
+
+        // 每级用圆角矩形型腔；相邻级向对方多切 R，避免两个圆角在台阶处留下薄壁。
+        let overlap = cornerRadius
         for index in 0..<count {
+            let rawStart = -slotLength / 2 + segmentLength * Double(index)
+            let rawEnd = rawStart + segmentLength
+            let start = index == 0 ? rawStart : rawStart - overlap
+            let end = index == count - 1 ? rawEnd : rawEnd + overlap
             var feature = True3DFeatureSpec(kind: .rectPocket, x: 0, y: 0)
             feature.name = "阶梯槽 \(index + 1)"
-            feature.x = -slotLength / 2 + segmentLength * (Double(index) + 0.5)
+            feature.x = (start + end) / 2
             feature.y = 0
-            feature.width = segmentLength
+            feature.width = end - start
             feature.depthY = slotWidth
             feature.depth = depths[index]
-            feature.cornerRadius = 0
+            feature.cornerRadius = cornerRadius
             params.features.append(feature)
         }
 
         summary.append("阶梯槽：\(count) 级 · 槽宽 \(f(slotWidth)) · 深 \(depths.map(f).joined(separator: "/")) · 长 \(f(slotLength))")
-
-        if let radius, radius > 0 {
-            guard radius < min(base.width, base.depth, base.height) / 2 - 0.001 else {
-                throw TextTo3DParseError.invalid("槽内圆角 R\(f(radius)) 过大")
-            }
-            var fillet = True3DFeatureSpec(kind: .edgeFillet)
-            fillet.name = "槽内圆角"
-            fillet.edgeSelection = .concaveVertical
-            fillet.depth = radius
-            params.features.append(fillet)
-            summary.append("槽内凹边圆角：R\(f(radius))")
+        if cornerRadius > 0 {
+            summary.append("槽内圆角：R\(f(cornerRadius))（每级圆角矩形，台阶处重叠）")
         }
     }
 

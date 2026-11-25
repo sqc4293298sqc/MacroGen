@@ -29,7 +29,7 @@ let cases: [Case] = [
     Case(
         name: "stepped-slot-fillet",
         prompt: "120×80×30，18宽三级阶梯槽，深6/12/18，R2.5",
-        expectedFeatures: 4,
+        expectedFeatures: 3,
         expectedShape: .box
     ),
     Case(
