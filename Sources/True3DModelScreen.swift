@@ -73,6 +73,7 @@ struct True3DAssemblyComponent: Identifiable, Equatable {
 struct True3DModelScreen: View {
     @SwiftUI.Environment(\.dismiss) private var dismiss
     private let onBackToHome: (() -> Void)?
+    private let initialSTEPURL: URL?
     private struct FeatureOption: Identifiable {
         let id: Int
         let label: String
@@ -150,7 +151,7 @@ struct True3DModelScreen: View {
     @State private var error: String?
     @State private var notice: String?
     @State private var message = "点“生成实体”创建 OCCT 实体"
-    @State private var showWire = true
+    @State private var showWire = false
     @State private var showDatumPlane = false
     @State private var renderDark = false
     @State private var stepURL: URL?
@@ -213,9 +214,20 @@ struct True3DModelScreen: View {
     @State private var assemblyEditingID: UUID?
     @State private var assemblyError: String?
 
-    /// 从“文字生成”等入口进入时直接带参数建模。
-    init(initialParams: True3DParams? = nil, onBackToHome: (() -> Void)? = nil) {
+    /// 从“文字生成”等入口进入时直接带参数建模，或直接载入云端 STEP。
+    init(
+        initialParams: True3DParams? = nil,
+        initialSTEPURL: URL? = nil,
+        onBackToHome: (() -> Void)? = nil
+    ) {
         self.onBackToHome = onBackToHome
+        self.initialSTEPURL = initialSTEPURL
+        if initialSTEPURL != nil {
+            _hasModel = State(initialValue: false)
+            _stage = State(initialValue: .model)
+            _message = State(initialValue: "正在导入云端 STEP…")
+            return
+        }
         guard let initialParams else { return }
         var p = initialParams
         if p.projectName.isEmpty || p.projectName == "未命名工程" {
@@ -357,6 +369,10 @@ struct True3DModelScreen: View {
         .task {
             if !didInitialBuild {
                 didInitialBuild = true
+                if let initialSTEPURL {
+                    importSTEP(initialSTEPURL)
+                    return
+                }
                 if hasModel || importedPart != nil {
                     rebuild()
                 } else {
@@ -6192,17 +6208,20 @@ struct True3DModelScreen: View {
         material.diffuse.contents = UIColor(red: 0.20, green: 0.52, blue: 1.0, alpha: 1)
         material.transparency = 0.34
         material.isDoubleSided = true
+        // 面高亮和实体表面几乎共面；如果仍参与深度测试，
+        // 网格三角化的小起伏会把右下角等局部挡在实体后面，看起来像漏选。
+        material.readsFromDepthBuffer = false
         material.writesToDepthBuffer = false
         geometry.materials = [material]
 
         let marker = SCNNode(geometry: geometry)
         marker.name = "selectedFace"
         marker.position = SCNVector3(
-            Float(normal.x * 0.08),
-            Float(normal.y * 0.08),
-            Float(normal.z * 0.08)
+            Float(normal.x * 0.35),
+            Float(normal.y * 0.35),
+            Float(normal.z * 0.35)
         )
-        marker.renderingOrder = 20
+        marker.renderingOrder = 200
         modelRoot.addChildNode(marker)
 
         var lineIndices: [Int32] = []
@@ -6216,6 +6235,8 @@ struct True3DModelScreen: View {
         lineMaterial.lightingModel = .constant
         lineMaterial.diffuse.contents = UIColor(red: 0.08, green: 0.34, blue: 0.90, alpha: 1)
         lineMaterial.isDoubleSided = true
+        lineMaterial.readsFromDepthBuffer = false
+        lineMaterial.writesToDepthBuffer = false
         lineGeometry.materials = [lineMaterial]
         let outlineNode = SCNNode(geometry: lineGeometry)
         outlineNode.name = "selectedFaceOutline"
