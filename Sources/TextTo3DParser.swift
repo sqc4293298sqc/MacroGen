@@ -370,7 +370,7 @@ enum LocalTextTo3DParser {
 
         summary.append("法兰：中心孔 Ø\(f(centerDia)) · \(boltCount) 个 Ø\(f(boltDia)) 螺栓孔 · 分布圆 Ø\(f(pcd))")
 
-        if firstMatch(#"中心孔"#, in: text) == nil {
+        if firstMatch(#"中心"#, in: text) == nil {
             warnings.append("未写中心孔直径，按毛坯短边的 37.5% 取 Ø\(f(centerDia)) mm。")
         }
         if boltMatch == nil {
@@ -481,10 +481,10 @@ enum LocalTextTo3DParser {
     ) throws {
         let pattern = firstMatch(#"(\d+)\s*个\s*(?:孔)?\s*(?:d|m|直径)?\s*(\d+(?:\.\d+)?)"#, in: text)
         let count = pattern.flatMap { $0.count >= 3 ? Int($0[1]) : nil } ?? 1
-        let dia = pattern.flatMap { $0.count >= 3 ? Double($0[2]) : nil }
+        let explicitDia = pattern.flatMap { $0.count >= 3 ? Double($0[2]) : nil }
             ?? firstNumber(#"(?:中心孔?|孔)\s*(?:d|直径)?\s*(\d+(?:\.\d+)?)"#, in: text)
             ?? firstNumber(#"(?:d|直径)\s*(\d+(?:\.\d+)?)\s*(?:mm)?\s*(?:的)?\s*(?:通孔|盲孔|孔)"#, in: text)
-            ?? 10
+        let dia = explicitDia ?? 10
         guard count > 0, count <= 24 else {
             throw TextTo3DParseError.invalid("孔数量必须在 1～24 之间")
         }
@@ -507,7 +507,11 @@ enum LocalTextTo3DParser {
             warnings.append("多孔默认沿 X 轴等距排列，间距 \(f(spacing)) mm，可在 3D 工作台里移动。")
         }
         if pattern == nil {
-            warnings.append("未写孔数量和孔径，默认 1 个 Ø\(f(dia)) 通孔。")
+            if explicitDia == nil {
+                warnings.append("未写孔数量和孔径，默认 1 个 Ø\(f(dia)) 通孔。")
+            } else {
+                warnings.append("未写孔数量，按 1 个 Ø\(f(dia)) 通孔处理。")
+            }
         }
     }
 
