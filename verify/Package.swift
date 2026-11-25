@@ -16,6 +16,13 @@ let package = Package(
                 .product(name: "OCCTSwift", package: "OCCTSwift")
             ],
             path: "Sources/CAMVerify"
+        ),
+        .executableTarget(
+            name: "TextTo3DVerify",
+            dependencies: [
+                .product(name: "OCCTSwift", package: "OCCTSwift")
+            ],
+            path: "Sources/TextTo3DVerify"
         )
     ]
 )

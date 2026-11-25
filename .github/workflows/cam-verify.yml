@@ -36,3 +36,13 @@ jobs:
         env:
           CAM_DEBUG: "1"
         run: swift run -c release CAMVerify --3d-only
+
+      - name: Assemble text-to-3D verification sources
+        run: |
+          mkdir -p verify/Sources/TextTo3DVerify
+          cp Sources/True3DModel.swift verify/Sources/TextTo3DVerify/
+          cp Sources/TextTo3DParser.swift verify/Sources/TextTo3DVerify/
+
+      - name: Run offline text-to-3D verification
+        working-directory: verify
+        run: swift run -c release TextTo3DVerify
