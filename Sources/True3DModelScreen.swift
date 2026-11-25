@@ -1014,6 +1014,13 @@ struct True3DModelScreen: View {
                     withAnimation(.easeOut(duration: 0.2)) { showTreePanel.toggle() }
                 }
                 railItem("square.on.square", "合并") { mergeBodies() }
+                railItem("rectangle.dashed", "框选", highlighted: pickMode == .box) {
+                    pickMode = .box
+                    clearEdgeSelection()
+                    selectedFace = nil
+                    scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
+                    notice = "框选：在模型上拖一个框，框住要选的边"
+                }
                 railItem("eye", "显示", highlighted: showWire) { showWire.toggle() }
                 railItem("ruler", "测量") { showMeasurePanel = true }
                 railItem("waveform.path.ecg", "分析") { showAnalysisPanel = true }
