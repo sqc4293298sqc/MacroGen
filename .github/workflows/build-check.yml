@@ -32,3 +32,33 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             build
+
+  text-to-3d-verify:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Assemble verification sources
+        run: |
+          mkdir -p verify/Sources/TextTo3DVerify
+          cp Sources/True3DModel.swift verify/Sources/TextTo3DVerify/
+          cp Sources/TextTo3DParser.swift verify/Sources/TextTo3DVerify/
+
+      - name: Fetch OCCTSwift 3.0.0 and kernel
+        run: |
+          rm -rf verify/OCCTSwift
+          git clone --depth 1 --branch v3.0.0 https://github.com/SecondMouseAU/OCCTSwift.git verify/OCCTSwift
+          mkdir -p verify/OCCTSwift/Libraries
+          curl -L --retry 3 --retry-delay 3 \
+            -o /tmp/OCCT.xcframework.zip \
+            https://github.com/SecondMouseAU/OCCTSwift/releases/download/v3.0.0/OCCT.xcframework.zip
+          rm -rf /tmp/OCCTUnzip
+          mkdir -p /tmp/OCCTUnzip
+          unzip -q /tmp/OCCT.xcframework.zip -d /tmp/OCCTUnzip
+          cp -R /tmp/OCCTUnzip/OCCT.xcframework verify/OCCTSwift/Libraries/
+
+      - name: Run offline text-to-3D verification
+        working-directory: verify
+        run: swift run -c release TextTo3DVerify
