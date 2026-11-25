@@ -2511,7 +2511,6 @@ struct True3DModelScreen: View {
 
     private func addAxisGizmo(to parent: SCNNode, size: Double, center: SCNVector3) {
         let length = Float(min(max(size * 0.40, 22), 52))
-        let shaftRadius: CGFloat = 0.55
         let headRadius: CGFloat = 2.8
         let headHeight: CGFloat = 7.5
         let group = SCNNode()
@@ -2528,9 +2527,21 @@ struct True3DModelScreen: View {
         }
 
         func shaft(_ color: UIColor, _ position: SCNVector3, _ euler: SCNVector3) {
-            let cylinder = SCNCylinder(radius: shaftRadius, height: CGFloat(length))
-            cylinder.materials = [overlayMaterial(color)]
-            let node = SCNNode(geometry: cylinder)
+            // 安卓 ArrowHelper 的轴线是固定像素细线；iOS 原来用 3D 圆柱，
+            // 相机拉近后会被放大成很粗的箭头。这里改成 line 几何，保持细线。
+            let half = Float(length) / 2
+            let vertices = [
+                SCNVector3(0, -half, 0),
+                SCNVector3(0, half, 0)
+            ]
+            let source = SCNGeometrySource(vertices: vertices)
+            let element = SCNGeometryElement(indices: [Int32(0), Int32(1)], primitiveType: .line)
+            let geometry = SCNGeometry(sources: [source], elements: [element])
+            let material = overlayMaterial(color)
+            material.emission.contents = color
+            material.isDoubleSided = true
+            geometry.materials = [material]
+            let node = SCNNode(geometry: geometry)
             node.position = position
             node.eulerAngles = euler
             node.renderingOrder = 40
@@ -6062,6 +6073,102 @@ struct True3DModelScreen: View {
         return abs(sum.x * normal.x + sum.y * normal.y + sum.z * normal.z) / 2
     }
 
+    /// 选中面高亮不能用“质心扇形”三角化：凹多边形会把右下角/缺口漏掉。
+    /// 这里先投影到面平面，再用 ear clipping 处理任意简单凹多边形。
+    private func triangulateFaceOutline(_ outline: [True3DPoint3D], normal: SIMD3<Double>) -> [Int32] {
+        let count = outline.count
+        guard count >= 3 else { return [] }
+        let normalLength = (normal.x * normal.x + normal.y * normal.y + normal.z * normal.z).squareRoot()
+        guard normalLength > 1e-9 else { return [] }
+        let n = normal / normalLength
+        let reference = abs(n.x) < 0.9 ? SIMD3<Double>(1, 0, 0) : SIMD3<Double>(0, 1, 0)
+        let uRaw = SIMD3<Double>(
+            reference.y * n.z - reference.z * n.y,
+            reference.z * n.x - reference.x * n.z,
+            reference.x * n.y - reference.y * n.x
+        )
+        let uLength = (uRaw.x * uRaw.x + uRaw.y * uRaw.y + uRaw.z * uRaw.z).squareRoot()
+        guard uLength > 1e-9 else { return [] }
+        let u = uRaw / uLength
+        let v = SIMD3<Double>(
+            n.y * u.z - n.z * u.y,
+            n.z * u.x - n.x * u.z,
+            n.x * u.y - n.y * u.x
+        )
+        let points = outline.map {
+            SIMD2<Double>(
+                $0.x * u.x + $0.y * u.y + $0.z * u.z,
+                $0.x * v.x + $0.y * v.y + $0.z * v.z
+            )
+        }
+        func cross(_ a: SIMD2<Double>, _ b: SIMD2<Double>) -> Double {
+            a.x * b.y - a.y * b.x
+        }
+        func fallback() -> [Int32] {
+            var result: [Int32] = []
+            for i in 1..<(count - 1) {
+                result.append(0)
+                result.append(Int32(i))
+                result.append(Int32(i + 1))
+            }
+            return result
+        }
+        var area = 0.0
+        for i in 0..<count {
+            let j = (i + 1) % count
+            area += points[i].x * points[j].y - points[j].x * points[i].y
+        }
+        guard abs(area) > 1e-9 else { return fallback() }
+        var remaining = Array(0..<count)
+        if area < 0 { remaining.reverse() }
+        func isConvex(_ a: Int, _ b: Int, _ c: Int) -> Bool {
+            cross(
+                SIMD2<Double>(points[b].x - points[a].x, points[b].y - points[a].y),
+                SIMD2<Double>(points[c].x - points[b].x, points[c].y - points[b].y)
+            ) > 1e-9
+        }
+        func triangleContains(_ p: SIMD2<Double>, _ a: SIMD2<Double>, _ b: SIMD2<Double>, _ c: SIMD2<Double>) -> Bool {
+            let ab = cross(SIMD2<Double>(b.x - a.x, b.y - a.y), SIMD2<Double>(p.x - a.x, p.y - a.y))
+            let bc = cross(SIMD2<Double>(c.x - b.x, c.y - b.y), SIMD2<Double>(p.x - b.x, p.y - b.y))
+            let ca = cross(SIMD2<Double>(a.x - c.x, a.y - c.y), SIMD2<Double>(p.x - c.x, p.y - c.y))
+            return ab >= -1e-9 && bc >= -1e-9 && ca >= -1e-9
+        }
+        var triangles: [Int32] = []
+        var guardCount = 0
+        while remaining.count > 3 {
+            guardCount += 1
+            if guardCount > count * count { return fallback() }
+            var clipped = false
+            for i in 0..<remaining.count {
+                let a = remaining[(i + remaining.count - 1) % remaining.count]
+                let b = remaining[i]
+                let c = remaining[(i + 1) % remaining.count]
+                guard isConvex(a, b, c) else { continue }
+                var containsOther = false
+                for other in remaining where other != a && other != b && other != c {
+                    if triangleContains(points[other], points[a], points[b], points[c]) {
+                        containsOther = true
+                        break
+                    }
+                }
+                if containsOther { continue }
+                triangles.append(Int32(a))
+                triangles.append(Int32(b))
+                triangles.append(Int32(c))
+                remaining.remove(at: i)
+                clipped = true
+                break
+            }
+            if !clipped { return fallback() }
+        }
+        if remaining.count == 3 {
+            triangles.append(Int32(remaining[0]))
+            triangles.append(Int32(remaining[1]))
+            triangles.append(Int32(remaining[2]))
+        }
+        return triangles
+    }
+
     private func addFaceHighlight(outline: [True3DPoint3D], normal: SIMD3<Double>) {
         scene.rootNode.childNode(withName: "selectedFace", recursively: true)?.removeFromParentNode()
         guard let modelRoot = scene.rootNode.childNode(withName: "modelRoot", recursively: false),
@@ -6076,12 +6183,7 @@ struct True3DModelScreen: View {
             SCNVector3(Float($0.x), Float($0.y), Float($0.z))
         }
         vertices.append(SCNVector3(Float(centroid.x), Float(centroid.y), Float(centroid.z)))
-        var indices: [Int32] = []
-        for i in 0..<outline.count {
-            indices.append(Int32(outline.count))
-            indices.append(Int32(i))
-            indices.append(Int32((i + 1) % outline.count))
-        }
+        let indices = triangulateFaceOutline(outline, normal: normal)
         let source = SCNGeometrySource(vertices: vertices)
         let element = SCNGeometryElement(indices: indices, primitiveType: .triangles)
         let geometry = SCNGeometry(sources: [source], elements: [element])
