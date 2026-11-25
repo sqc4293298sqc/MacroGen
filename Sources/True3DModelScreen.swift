@@ -70,6 +70,8 @@ struct True3DAssemblyComponent: Identifiable, Equatable {
 }
 
 struct True3DModelScreen: View {
+    @Environment(\.dismiss) private var dismiss
+    private let onBackToHome: (() -> Void)?
     private struct FeatureOption: Identifiable {
         let id: Int
         let label: String
@@ -211,7 +213,8 @@ struct True3DModelScreen: View {
     @State private var assemblyError: String?
 
     /// 从“文字生成”等入口进入时直接带参数建模。
-    init(initialParams: True3DParams? = nil) {
+    init(initialParams: True3DParams? = nil, onBackToHome: (() -> Void)? = nil) {
+        self.onBackToHome = onBackToHome
         guard let initialParams else { return }
         var p = initialParams
         if p.projectName.isEmpty || p.projectName == "未命名工程" {
@@ -811,7 +814,11 @@ struct True3DModelScreen: View {
     private var digit3DTopBar: some View {
         HStack(spacing: 8) {
             Button {
-                stage = .sketch
+                if let onBackToHome {
+                    onBackToHome()
+                } else {
+                    dismiss()
+                }
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 15, weight: .semibold))

@@ -3,6 +3,7 @@ import SwiftUI
 /// 本地文字生成 3D：规则解析 → True3DParams → 现有 SceneKit/OCCT 工作台。
 /// 不调用后端、不联网；支持的是常用 CNC 特征，不是任意自然语言。
 struct TextTo3DScreen: View {
+    @Environment(\.dismiss) private var dismiss
     @State private var prompt = "120×80×30，18宽三级阶梯槽，深6/12/18"
     @State private var parsed: TextTo3DParseResult?
     @State private var errorText: String?
@@ -49,7 +50,13 @@ struct TextTo3DScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(isPresented: $show3D) {
             if let parsed {
-                True3DModelScreen(initialParams: parsed.params)
+                True3DModelScreen(initialParams: parsed.params) {
+                    show3D = false
+                    // 先让 3D 工作台退出，再把“文字生成”页一并退回首页。
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                        dismiss()
+                    }
+                }
             } else {
                 Text("没有解析结果")
             }
