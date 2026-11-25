@@ -70,7 +70,7 @@ struct True3DAssemblyComponent: Identifiable, Equatable {
 }
 
 struct True3DModelScreen: View {
-    @Environment(\.dismiss) private var dismiss
+    @SwiftUI.Environment(\.dismiss) private var dismiss
     private let onBackToHome: (() -> Void)?
     private struct FeatureOption: Identifiable {
         let id: Int
