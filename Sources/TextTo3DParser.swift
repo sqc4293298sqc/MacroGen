@@ -290,7 +290,7 @@ enum LocalTextTo3DParser {
             }
             var fillet = True3DFeatureSpec(kind: .edgeFillet)
             fillet.name = "槽内圆角"
-            fillet.edgeSelection = .concave
+            fillet.edgeSelection = .concaveVertical
             fillet.depth = radius
             params.features.append(fillet)
             summary.append("槽内凹边圆角：R\(f(radius))")

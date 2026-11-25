@@ -18,6 +18,7 @@ enum True3DEdgeSelection: String, CaseIterable, Identifiable, Codable {
     case all = "全部边"
     case convex = "凸边"
     case concave = "凹边"
+    case concaveVertical = "凹边竖直"
     case vertical = "竖直边"
     case top = "顶边"
     case bottom = "底边"
@@ -731,6 +732,11 @@ enum True3DKernel {
             return shape.convexEdges()
         case .concave:
             return shape.concaveEdges()
+        case .concaveVertical:
+            return shape.concaveEdges().filter { edge in
+                let p = edge.endpoints
+                return abs(p.start.x - p.end.x) < 1e-6 && abs(p.start.y - p.end.y) < 1e-6
+            }
         case .vertical:
             return shape.edges(parallelTo: SIMD3<Double>(0, 0, 1))
         case .top:
