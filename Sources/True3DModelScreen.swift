@@ -6373,7 +6373,9 @@ struct True3DModelScreen: View {
             )
         }]
         if loops.count > 1 {
+            let outerArea = abs(polygonArea2D(outer))
             for hole in loops.dropFirst() {
+                guard abs(polygonArea2D(hole)) < outerArea - 1.0 else { continue }
                 let centroid = True3DPoint(
                     x: hole.reduce(0) { $0 + $1.x } / Double(hole.count),
                     y: hole.reduce(0) { $0 + $1.y } / Double(hole.count)

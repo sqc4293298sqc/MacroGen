@@ -50,6 +50,7 @@ enum PostProcessor {
         var lines = normalized.components(separatedBy: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+        while let first = lines.first, first == "%" { lines.removeFirst() }
         var mainNo = 1
         if let first = lines.first, first.hasPrefix("O"), first.count > 1,
            let value = Int(first.dropFirst()) {
