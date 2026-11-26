@@ -219,6 +219,7 @@ struct True3DModelScreen: View {
     @State private var bodyMirrorAxis = "X"
     @State private var bodyBooleanBase = 0
     @State private var bodyBooleanTool = 1
+    @State private var bodyOpsEditingID: UUID?
     @State private var showDrawingSheet = false
     @State private var edgeFilterLabel = "单条边"
     @State private var showCamera = false
@@ -3687,6 +3688,13 @@ struct True3DModelScreen: View {
                         systemImage: node.suppressed ? "arrow.uturn.forward" : "minus.circle"
                     )
                 }
+                if canEditBodyOperation(operationID) {
+                    Button {
+                        editBodyOps(operationID: operationID)
+                    } label: {
+                        Label("编辑参数", systemImage: "slider.horizontal.3")
+                    }
+                }
                 Button("删除", role: .destructive) {
                     deleteOperation(operationID)
                 }
@@ -3696,6 +3704,14 @@ struct True3DModelScreen: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.borderless)
+        }
+    }
+
+    private func canEditBodyOperation(_ operationID: UUID) -> Bool {
+        guard let operation = modelOperations.first(where: { $0.id == operationID }) else { return false }
+        switch operation.kind {
+        case .bodyArray, .bodyMirror, .booleanCut, .booleanCommon: return true
+        default: return false
         }
     }
 
@@ -4463,12 +4479,13 @@ struct True3DModelScreen: View {
         rebuild()
     }
 
-    private func openBodyOps(_ mode: True3DBodyOpsMode) {
+    private func openBodyOps(_ mode: True3DBodyOpsMode, editing: UUID? = nil) {
         guard result != nil else {
             notice = "建模区为空，先有实体再做布尔/阵列"
             return
         }
         bodyOpsMode = mode
+        bodyOpsEditingID = editing
         if let solids = result?.shape.solids, !solids.isEmpty {
             bodyBooleanBase = min(bodyBooleanBase, solids.count - 1)
             bodyBooleanTool = min(max(bodyBooleanTool, 0), solids.count - 1)
@@ -4505,9 +4522,41 @@ struct True3DModelScreen: View {
             notice = "正在做布尔交…"
         }
         showBodyOps = false
-        modelOperations.append(op)
+        if let editingID = bodyOpsEditingID,
+           let index = modelOperations.firstIndex(where: { $0.id == editingID }) {
+            modelOperations[index].kind = op.kind
+            modelOperations[index].suppressed = false
+        } else {
+            modelOperations.append(op)
+        }
+        bodyOpsEditingID = nil
         error = nil
         rebuild()
+    }
+
+    private func editBodyOps(operationID: UUID) {
+        guard let operation = modelOperations.first(where: { $0.id == operationID }) else { return }
+        switch operation.kind {
+        case .bodyArray(let rows, let cols, let px, let py):
+            bodyArrayRows = rows
+            bodyArrayCols = cols
+            bodyArrayPitchX = px
+            bodyArrayPitchY = py
+            openBodyOps(.array, editing: operationID)
+        case .bodyMirror(let axis):
+            bodyMirrorAxis = axis
+            openBodyOps(.mirror, editing: operationID)
+        case .booleanCut(let base, let tool):
+            bodyBooleanBase = base
+            bodyBooleanTool = tool
+            openBodyOps(.cut, editing: operationID)
+        case .booleanCommon(let base, let tool):
+            bodyBooleanBase = base
+            bodyBooleanTool = tool
+            openBodyOps(.common, editing: operationID)
+        default:
+            break
+        }
     }
 
     private func bodyOpButton(_ title: String, action: @escaping () -> Void) -> some View {
