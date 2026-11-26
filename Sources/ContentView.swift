@@ -572,7 +572,7 @@ struct ContentView: View {
         } else if spec.mode == .oblique {
             name = "oblique_D\(Int(spec.spiralDia))_H\(Int(spec.depth))_A\(Int(spec.obliqueAngle)).nc"
         } else if spec.mode == .thread {
-            name = "thread_M\(Int(spec.threadDia))_P\(fmt(spec.threadPitch, 2))_N\(spec.holeCount).nc"
+            name = "thread_M\(Int(spec.threadDia))_P\(String(format: "%.2f", spec.threadPitch))_N\(spec.holeCount).nc"
         } else if spec.mode == .key {
             name = "key_L\(Int(spec.keyLength))_W\(Int(spec.keyWidth))_H\(Int(spec.depth)).nc"
         } else if spec.mode == .outer {

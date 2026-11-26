@@ -6267,7 +6267,7 @@ struct True3DModelScreen: View {
     private func projectedFaceLoops(
         normal: SIMD3<Double>,
         origin: SIMD3<Double>,
-        shape: Shape
+        shape: OCCTSwift.Shape
     ) -> [[True3DPoint3D]] {
         let nLen = (normal.x * normal.x + normal.y * normal.y + normal.z * normal.z).squareRoot()
         guard nLen > 1e-9 else { return [] }

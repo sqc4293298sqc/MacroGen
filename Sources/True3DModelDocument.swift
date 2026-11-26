@@ -180,6 +180,14 @@ struct True3DHistoryOperation: Identifiable, Codable, Equatable, Sendable {
             return "绕\(axis)轴 \(fmt(angle))°"
         case .merge:
             return "合并独立实体"
+        case .booleanCut(let base, let tool):
+            return "实体\(base + 1) − 实体\(tool + 1)"
+        case .booleanCommon(let base, let tool):
+            return "实体\(base + 1) ∩ 实体\(tool + 1)"
+        case .bodyArray(let rows, let cols, let px, let py):
+            return "\(rows)×\(cols) · ΔX\(fmt(px)) ΔY\(fmt(py))"
+        case .bodyMirror(let axis):
+            return "沿\(axis.uppercased())=0 镜像"
         }
     }
 
