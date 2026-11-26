@@ -125,6 +125,10 @@ struct True3DHistoryOperation: Identifiable, Codable, Equatable, Sendable {
         case moveFace(points: [True3DPoint3D], normal: True3DPoint3D, distance: Double)
         case rotate(axis: String, angle: Double, copy: Bool)
         case merge
+        case booleanCut(base: Int, tool: Int)
+        case booleanCommon(base: Int, tool: Int)
+        case bodyArray(rows: Int, cols: Int, pitchX: Double, pitchY: Double)
+        case bodyMirror(axis: String)
     }
 
     var id: UUID
@@ -148,6 +152,11 @@ struct True3DHistoryOperation: Identifiable, Codable, Equatable, Sendable {
         case .moveFace: return "移动面"
         case .rotate(_, _, let copy): return copy ? "旋转拷贝" : "旋转体"
         case .merge: return "合并"
+        case .booleanCut(let base, let tool): return "实体\(base + 1) − 实体\(tool + 1)"
+        case .booleanCommon(let base, let tool): return "实体\(base + 1) ∩ 实体\(tool + 1)"
+        case .bodyArray(let rows, let cols, let px, let py):
+            return "\(rows)×\(cols) · ΔX\(fmt(px)) ΔY\(fmt(py))"
+        case .bodyMirror(let axis): return "沿\(axis.uppercased())=0 镜像"
         }
     }
 
@@ -415,6 +424,10 @@ struct True3DModelDocument: Identifiable, @unchecked Sendable {
         case .moveFace: return .feature
         case .rotate: return .feature
         case .merge: return .feature
+        case .booleanCut: return .feature
+        case .booleanCommon: return .feature
+        case .bodyArray: return .feature
+        case .bodyMirror: return .feature
         }
     }
 
@@ -641,6 +654,93 @@ struct True3DModelDocument: Identifiable, @unchecked Sendable {
                 return combined
             }
             return moved
+
+        case .booleanCut(let base, let tool):
+            let solids = shape.solids
+            guard base >= 0, base < solids.count, tool >= 0, tool < solids.count, base != tool else {
+                throw True3DModelError.invalidParameter("布尔减的基准/工具实体序号无效")
+            }
+            guard let result = solids[base].subtracting(solids[tool]), result.isValid else {
+                throw True3DModelError.featureFailed("布尔减失败：两实体可能没有交集或存在无效面")
+            }
+            let others = solids.enumerated().filter { $0.offset != base && $0.offset != tool }.map { $0.element }
+            if others.isEmpty { return result }
+            guard let compound = Shape.compound([result] + others) else {
+                throw True3DModelError.featureFailed("布尔减结果组合失败")
+            }
+            return compound
+
+        case .booleanCommon(let base, let tool):
+            let solids = shape.solids
+            guard base >= 0, base < solids.count, tool >= 0, tool < solids.count, base != tool else {
+                throw True3DModelError.invalidParameter("布尔交的基准/工具实体序号无效")
+            }
+            guard let result = solids[base].intersection(solids[tool]), result.isValid else {
+                throw True3DModelError.featureFailed("布尔交失败：两实体可能没有公共体积")
+            }
+            let others = solids.enumerated().filter { $0.offset != base && $0.offset != tool }.map { $0.element }
+            if others.isEmpty { return result }
+            guard let compound = Shape.compound([result] + others) else {
+                throw True3DModelError.featureFailed("布尔交结果组合失败")
+            }
+            return compound
+
+        case .bodyArray(let rows, let cols, let pitchX, let pitchY):
+            let solids = shape.solids
+            guard !solids.isEmpty else {
+                throw True3DModelError.invalidParameter("当前模型没有可阵列的实体")
+            }
+            let r = max(1, min(8, rows))
+            let c = max(1, min(8, cols))
+            guard r * c * solids.count <= 48 else {
+                throw True3DModelError.invalidParameter("实体副本最多 48 个，请减小行/列数")
+            }
+            guard pitchX > 0.01 || pitchY > 0.01 else {
+                throw True3DModelError.invalidParameter("阵列间距必须大于 0")
+            }
+            var copies: [Shape] = []
+            for solid in solids {
+                for row in 0..<r {
+                    for col in 0..<c {
+                        if row == 0 && col == 0 { continue }
+                        guard let moved = solid.translated(
+                            by: SIMD3<Double>(Double(col) * pitchX, Double(row) * pitchY, 0)
+                        ) else {
+                            throw True3DModelError.featureFailed("体阵列平移失败")
+                        }
+                        copies.append(moved)
+                    }
+                }
+            }
+            if copies.isEmpty { return shape }
+            guard let compound = Shape.compound(solids + copies) else {
+                throw True3DModelError.featureFailed("体阵列组合失败")
+            }
+            return compound
+
+        case .bodyMirror(let axis):
+            let solids = shape.solids
+            guard !solids.isEmpty else {
+                throw True3DModelError.invalidParameter("当前模型没有可镜像的实体")
+            }
+            let normal: SIMD3<Double>
+            switch axis.uppercased() {
+            case "X": normal = SIMD3<Double>(1, 0, 0)
+            case "Y": normal = SIMD3<Double>(0, 1, 0)
+            default:
+                throw True3DModelError.invalidParameter("体镜像轴必须是 X/Y")
+            }
+            var copies: [Shape] = []
+            for solid in solids {
+                guard let mirrored = solid.mirrored(planeNormal: normal) else {
+                    throw True3DModelError.featureFailed("体镜像失败")
+                }
+                copies.append(mirrored)
+            }
+            guard let compound = Shape.compound(solids + copies) else {
+                throw True3DModelError.featureFailed("体镜像组合失败")
+            }
+            return compound
         }
     }
 

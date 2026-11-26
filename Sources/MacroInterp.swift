@@ -48,6 +48,10 @@ final class MacroInterp {
 
     private var vars: [Int: Double] = [:]
     private var px: Double = 0, py: Double = 0, pz: Double = 0
+    // G52 局部坐标偏移 / G68 坐标旋转：只改显示坐标，不改变程序里的局部坐标
+    private var shiftX: Double = 0, shiftY: Double = 0, shiftZ: Double = 0
+    private var rotAngle: Double = 0
+    private var rotCX: Double = 0, rotCY: Double = 0
     private var motion: Int = 0
     private var path = SimPath()
     private var lines: [String] = []
@@ -280,6 +284,7 @@ final class MacroInterp {
         var gm = -1
         var canned = -1
         var anyG = false
+        var g52 = false, g68 = false, g69 = false
 
         for w in words(s) {
             switch w.letter {
@@ -288,6 +293,9 @@ final class MacroInterp {
                 anyG = true
                 if g == 0 || g == 1 || g == 2 || g == 3 { gm = g }
                 else if g == 81 || g == 82 || g == 83 || g == 84 { canned = g }
+                else if g == 52 { g52 = true }
+                else if g == 68 { g68 = true }
+                else if g == 69 { g69 = true }
             case "X": nx = eval(w.expr); hasX = true
             case "Y": ny = eval(w.expr); hasY = true
             case "Z": nz = eval(w.expr); hasZ = true
@@ -320,7 +328,25 @@ final class MacroInterp {
             return
         }
 
-        // G52 / G28 / G43 / G40 / G80 / G17 这类设定语句不画线
+        // G52 / G68 / G69 是坐标系设定，不能当成运动段画线
+        if g52 {
+            if hasX { shiftX = nx }
+            if hasY { shiftY = ny }
+            if hasZ { shiftZ = nz }
+            return
+        }
+        if g68 {
+            rotCX = hasX ? nx + shiftX : px + shiftX
+            rotCY = hasY ? ny + shiftY : py + shiftY
+            if hasR, !cr.isNaN { rotAngle = cr }
+            return
+        }
+        if g69 {
+            rotAngle = 0
+            return
+        }
+
+        // G28 / G43 / G40 / G80 / G17 这类设定语句不画线
         if anyG && gm < 0 { return }
         let mode = gm >= 0 ? gm : motion
         if gm >= 0 { motion = gm }
@@ -375,11 +401,25 @@ final class MacroInterp {
         return out
     }
 
+    /// 把程序局部坐标映射到机床坐标：先 G52 平移，再 G68 绕中心旋转。
+    private func map(_ x: Double, _ y: Double, _ z: Double) -> (Double, Double, Double) {
+        let lx = x + shiftX, ly = y + shiftY, lz = z + shiftZ
+        guard abs(rotAngle) > 1e-9 else { return (lx, ly, lz) }
+        let a = rotAngle * .pi / 180
+        let dx = lx - rotCX, dy = ly - rotCY
+        return (rotCX + dx * cos(a) - dy * sin(a),
+                rotCY + dx * sin(a) + dy * cos(a),
+                lz)
+    }
+
     private func add(_ p: SimPoint) {
-        path.pts.append(p)
-        path.minX = min(path.minX, p.x); path.maxX = max(path.maxX, p.x)
-        path.minY = min(path.minY, p.y); path.maxY = max(path.maxY, p.y)
-        path.minZ = min(path.minZ, p.z); path.maxZ = max(path.maxZ, p.z)
+        let m = map(p.x, p.y, p.z)
+        var q = p
+        q.x = m.0; q.y = m.1; q.z = m.2
+        path.pts.append(q)
+        path.minX = min(path.minX, q.x); path.maxX = max(path.maxX, q.x)
+        path.minY = min(path.minY, q.y); path.maxY = max(path.maxY, q.y)
+        path.minZ = min(path.minZ, q.z); path.maxZ = max(path.maxZ, q.z)
     }
 
     /// G2 顺时针 / G3 逆时针，I/J 为起点到圆心矢量，R 为半径

@@ -43,6 +43,36 @@ enum PostProcessor {
         return out.joined(separator: "\n") + "\n"
     }
 
+    /// 把一个完整宏程序拆成 FANUC M98 主程序 + 子程序。
+    /// 主程序只负责调用；子程序保留原来的变量、WHILE/IF/GOTO 和刀路。
+    static func m98Bundle(_ code: String, subprogramNo: Int = 9001) -> (main: String, sub: String) {
+        let normalized = code.replacingOccurrences(of: "\r\n", with: "\n")
+        var lines = normalized.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        var mainNo = 1
+        if let first = lines.first, first.hasPrefix("O"), first.count > 1,
+           let value = Int(first.dropFirst()) {
+            mainNo = value
+            lines.removeFirst()
+        }
+        while let last = lines.last, last == "M30" || last == "M02" || last == "%" {
+            lines.removeLast()
+        }
+        let subNo = max(1, min(9999, subprogramNo))
+        var main: [String] = []
+        main.append("O\(mainNo)")
+        main.append("( M98 子程序调用 · 子程序 O\(subNo) )")
+        main.append("( 主程序只调用，子程序保留宏变量/WHILE/IF/GOTO )")
+        main.append("M98 P\(subNo)")
+        main.append("M30")
+        var sub: [String] = []
+        sub.append("O\(subNo)")
+        sub.append(contentsOf: lines)
+        sub.append("M99")
+        return (main.joined(separator: "\n") + "\n", sub.joined(separator: "\n") + "\n")
+    }
+
     static func siemens(_ code: String) -> String {
         let expanded = MacroExpander.expand(code)
         var out: [String] = []
@@ -235,7 +265,7 @@ private enum MacroExpander {
                     let end = findEnd(i, to)
                     guard let cond = firstBracket(t, prefix: "WHILE") else { i = end + 1; continue }
                     var n = 0
-                    while condition(cond) && n < 20000 {
+                    while condition(cond) && n < 200000 {
                         run(i + 1, end)
                         n += 1
                     }

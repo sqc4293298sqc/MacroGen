@@ -1155,6 +1155,9 @@ struct True3DGCodeScreen: View {
     var format: ProgramFormat = .gcode
     var runFiles: [URL] = []
     @State private var copied = false
+    @State private var m98MainURL: URL?
+    @State private var m98SubURL: URL?
+    @State private var m98Error: String?
 
     var body: some View {
         True3DCodeTextView(text: code)
@@ -1189,6 +1192,55 @@ struct True3DGCodeScreen: View {
                     }
                 }
             }
+            .safeAreaInset(edge: .bottom) {
+                if format == .macro {
+                    HStack(spacing: 10) {
+                        Button {
+                            generateM98()
+                        } label: {
+                            Label("拆成 M98 主/子程序", systemImage: "arrow.triangle.branch")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .buttonStyle(.bordered)
+                        if let m98MainURL, let m98SubURL {
+                            ShareLink(item: m98MainURL) {
+                                Text("主程序")
+                            }
+                            .font(.system(size: 12, weight: .medium))
+                            ShareLink(item: m98SubURL) {
+                                Text("子程序")
+                            }
+                            .font(.system(size: 12, weight: .medium))
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.ultraThinMaterial)
+                }
+            }
+            .alert("M98 导出失败", isPresented: Binding(
+                get: { m98Error != nil },
+                set: { if !$0 { m98Error = nil } }
+            )) {
+                Button("好", role: .cancel) { m98Error = nil }
+            } message: {
+                Text(m98Error ?? "")
+            }
+    }
+    private func generateM98() {
+        let bundle = PostProcessor.m98Bundle(code)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("MacroGen-M98", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let main = dir.appendingPathComponent("M98-main.nc")
+            let sub = dir.appendingPathComponent("M98-sub.nc")
+            try bundle.main.write(to: main, atomically: true, encoding: .utf8)
+            try bundle.sub.write(to: sub, atomically: true, encoding: .utf8)
+            m98MainURL = main
+            m98SubURL = sub
+        } catch {
+            m98Error = error.localizedDescription
+        }
     }
 }
 

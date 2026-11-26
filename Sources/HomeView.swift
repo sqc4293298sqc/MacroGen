@@ -12,11 +12,16 @@ struct HomeView: View {
         ("方形型腔", "square.dashed", .pocket),
         ("铣飞面", "rectangle.split.3x1", .face),
         ("螺旋铣", "circle.hexagongrid", .spiral),
+        ("非正交螺旋", "arrow.triangle.2.circlepath", .oblique),
+        ("圆周螺纹", "circle.grid.3x3", .thread),
         ("铣键槽", "capsule", .key),
         ("只铣外方形", "square.on.square", .outer),
         ("锥孔", "triangle", .taper),
+        ("锥孔螺旋", "circle.dotted", .taperHelix),
+        ("圆弧面", "circle.bottomhalf.filled", .arcSurface),
         ("内圆倒角", "circle.circle", .innerChamfer),
-        ("外圆倒角", "circle", .odCham)
+        ("外圆倒角", "circle", .odCham),
+        ("R角分层", "circle.dashed", .rCorner)
     ]
 
     var body: some View {

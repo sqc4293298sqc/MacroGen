@@ -5,6 +5,48 @@ struct ContentView: View {
     init(mode: MachiningMode = .pocket) {
         var s = PocketSpec()
         s.mode = mode
+        if mode == .oblique {
+            s.spiralDia = 100
+            s.toolDia = 50
+            s.depth = 80
+            s.stepDown = 0.5
+            s.obliqueAngle = 70
+        }
+        if mode == .thread {
+            s.toolDia = 26
+            s.threadDia = 30
+            s.threadPitch = 3.5
+            s.threadLength = 59.5
+            s.threadTop = 2
+            s.threadRadialStep = 0.5
+            s.holeCount = 8
+            s.holePatternRadius = 100
+            s.holeStartAngle = 22.5
+            s.holeAngleStep = 45
+        }
+        if mode == .taperHelix {
+            s.taperDia = 100
+            s.taperDiaSmall = 60
+            s.taperDepth = 30
+            s.toolDia = 50
+            s.stepDown = 0.2
+            s.taperRatio = 30 / 40
+            s.taperAngle = atan(40 / 30) * 180 / .pi
+        }
+        if mode == .arcSurface {
+            s.arcKind = .inner
+            s.arcTravel = 122
+            s.arcRadius = 25
+            s.arcStraightDepth = 25
+            s.arcSweep = 90
+            s.arcAngleStep = 3
+            s.arcCenterY = -70
+            s.length = 200
+            s.width = 100
+            s.depth = 50
+            s.toolDia = 40
+            s.toolCornerR = 0
+        }
         _spec = State(initialValue: s)
     }
 
@@ -24,12 +66,23 @@ struct ContentView: View {
         switch spec.mode {
         case .pocket: return "ToolpathPocket"
         case .taper: return "ToolpathTaper"
+        case .taperHelix: return "ToolpathTaper"
         case .face: return "ToolpathFace"
         case .spiral: return "ToolpathSpiral"
+        case .oblique: return "ToolpathSpiral"
+        case .thread: return "ToolpathSpiral"
         case .key: return "ToolpathKey"
         case .outer: return "ToolpathOuter"
         case .innerChamfer: return "ToolpathChamfer"
         case .odCham: return "ToolpathODCham"
+        case .rCorner:
+            switch spec.rKind {
+            case .outerCylinder: return "ToolpathODCham"
+            case .hole: return "ToolpathChamfer"
+            case .outerRect: return "ToolpathOuter"
+            case .slot: return "ToolpathKey"
+            }
+        case .arcSurface: return "ToolpathFace"
         }
     }
 
@@ -37,12 +90,23 @@ struct ContentView: View {
         switch spec.mode {
         case .pocket: return "外圈一圈圈向内缩，逐层把腔掏空，最后 G41 精修侧壁"
         case .taper: return "沿锥面连续螺旋下到底，一圈降一层，中途不抬刀"
-        case .face: return "Y 向往复走平行线，一层走满整张面再下一层"
-        case .spiral: return "刀心圆上 G3 连续下降，一圈降一层，中途不抬刀"
+        case .taperHelix: return "刀心半径从大头到小头连续缩小，Z 逐度下降，到底再走一整圈平底"
+        case .face: return "Y 向往复走平行线，一层走满整张面再下一层；斜面按角度逐层偏移"
+        case .spiral: return spec.holeCount > 1 ? "按圆周分布逐孔螺旋下刀，每个孔一圈降一层，孔间抬刀转移" : "刀心圆上 G3 连续下降，一圈降一层，中途不抬刀"
+        case .oblique: return "G68 把孔轴在 XY 平面内旋转，X 逐度进给，YZ 走圆；到底再走一圈平底"
+        case .thread: return "按圆周分布逐孔下刀，先径向进刀，再 G03 螺旋上升一个螺距一圈"
         case .key: return "沿槽长来回走，两端由刀径形成圆弧；槽宽大于刀径时自动分行"
         case .outer: return "贴轮廓外侧顺时针绕，上边中点半圆弧切入/切出，G41 把刀偏在外面"
         case .innerChamfer: return "刀心在孔里连续螺旋下，一圈缩一层，中途不抬刀"
         case .odCham: return "刀在外圆外侧连续螺旋下，一圈向外挪一层，中途不抬刀"
+        case .rCorner:
+            return spec.rKind == .slot
+                ? "槽底内 R 沿 1/4 圆逐层收角，每层走一圈圆角槽"
+                : "沿 1/4 圆按角度分层，每层一整圈/一圈圆角矩形，逐层叠出 R 面"
+        case .arcSurface:
+            return spec.arcKind == .inner
+                ? "X 向往返直线，Y=COS[角度]×R，Z=-(直边深度+SIN[角度]×R)，逐刀叠出内圆弧面"
+                : "X 向往返直线，Y=-SIN[角度]×(刀尖R+R)，Z=-R×(1-COS[角度])，逐刀叠出外圆弧面"
         }
     }
 
@@ -74,6 +138,86 @@ struct ContentView: View {
                     Section("螺旋参数 (mm)") {
                         numRow("圆直径 D", value: $spec.spiralDia)
                         numRow("去量 H", value: $spec.depth)
+                        intRow("孔数", value: $spec.holeCount)
+                        if spec.holeCount > 1 {
+                            numRow("圆周分布半径", value: $spec.holePatternRadius)
+                            numRow("起始角 °", value: $spec.holeStartAngle)
+                            numRow("角步距 °（0=均分）", value: $spec.holeAngleStep)
+                            Text("孔数 > 1 时按 G52 逐孔平移；单孔时分布半径自动按 0 处理")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                if spec.mode == .oblique {
+                    Section("非正交螺旋参数 (mm)") {
+                        numRow("孔径 Ø", value: $spec.spiralDia)
+                        numRow("加工深度 H", value: $spec.depth)
+                        numRow("每圈切深", value: $spec.stepDown)
+                        numRow("孔轴旋转角 °", value: $spec.obliqueAngle)
+                        Text("G68 让孔轴在 XY 平面内旋转；X 每度进给，YZ 走圆，到底再走一圈平底")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("旋转 0° 时孔轴沿 X；70° 就是图例里的斜向孔。上机前用空跑确认 G68 方向")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if spec.mode == .thread {
+                    Section("圆周螺纹参数 (mm)") {
+                        numRow("螺纹直径 M", value: $spec.threadDia)
+                        numRow("螺距 P", value: $spec.threadPitch)
+                        numRow("螺纹长度", value: $spec.threadLength)
+                        numRow("螺纹顶 Z", value: $spec.threadTop)
+                        numRow("径向步距", value: $spec.threadRadialStep)
+                        intRow("孔数", value: $spec.holeCount)
+                        if spec.holeCount > 1 {
+                            numRow("圆周分布半径", value: $spec.holePatternRadius)
+                            numRow("起始角 °", value: $spec.holeStartAngle)
+                            numRow("角步距 °（0=均分）", value: $spec.holeAngleStep)
+                            Text("按 G52 逐孔平移；每个孔先径向进刀，再 G03 螺旋上升一个螺距一圈")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text("径向范围自动按螺纹直径与螺纹刀直径算；默认 8 孔、分布 R100、起始 22.5°")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if spec.mode == .arcSurface {
+                    Section("圆弧面参数 (mm)") {
+                        Picker("圆弧类型", selection: $spec.arcKind) {
+                            ForEach(ArcKind.allCases) { k in
+                                Text(k.rawValue).tag(k)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        numRow("单侧行程", value: $spec.arcTravel)
+                        numRow("圆弧半径 R", value: $spec.arcRadius)
+                        if spec.arcKind == .inner {
+                            numRow("直边深度", value: $spec.arcStraightDepth)
+                        }
+                        numRow("扫掠角度 °", value: $spec.arcSweep)
+                        numRow("角度步距 °", value: $spec.arcAngleStep)
+                        numRow("圆弧轴心 Y 偏移", value: $spec.arcCenterY)
+                        Text("X 从 -行程 走到 +行程，再反向；每刀角度增加一个步距。轴心 Y 偏移会加到工件中心 Y 上")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("图例默认：内圆弧 行程122 / 轴心Y -70 / 刀Ø40 / 直边25；外圆弧 行程127 / 轴心Y -45 / 刀Ø50 / 刀尖R5")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if spec.arcKind == .outer {
+                            Text("外圆弧实际计算半径 = 刀尖 R + 圆弧半径；刀尖 R 在下方「刀具与切削」里填")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("内圆弧暂按刀尖中心走，未补刀尖 R；要精确请用球刀或把 R 补进程序")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
 
@@ -90,6 +234,12 @@ struct ContentView: View {
                         numRow("长 L", value: $spec.length)
                         numRow("宽 W", value: $spec.width)
                         numRow(spec.mode == .face ? "去量 H" : "深 D", value: $spec.depth)
+                        if spec.mode == .face {
+                            numRow("斜面角 °（0=平面）", value: $spec.slopeAngle)
+                            Text("正角向 +Y 下斜，负角向 -Y 下斜；每层 Y 偏移 = 深度 × tan(角度)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
 
@@ -108,7 +258,7 @@ struct ContentView: View {
                     }
                 }
 
-                if spec.mode == .taper {
+                if spec.mode == .taper || spec.mode == .taperHelix {
                     Section("锥孔参数 (mm)") {
                         numRow("大头 D", value: $spec.taperDia)
                         numRow("小头 d", value: Binding(
@@ -127,7 +277,10 @@ struct ContentView: View {
                             get: { spec.taperAngle },
                             set: { self.spec.taperAngle = $0; self.syncTaper(.angle) }
                         ))
-                        Text("大小头定锥度；锥度与角度也可直接改，其余自动换算")
+                        if spec.mode == .taperHelix {
+                            numRow("每圈下刀量", value: $spec.stepDown)
+                        }
+                        Text("大小头定锥度；锥度与角度也可直接改，其余自动换算；锥孔螺旋按每圈下刀量分层")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -160,6 +313,38 @@ struct ContentView: View {
                     }
                 }
 
+                if spec.mode == .rCorner {
+                    Section("R 角类型") {
+                        Picker("类型", selection: $spec.rKind) {
+                            ForEach(RCornerKind.allCases) { k in
+                                Text(k.rawValue).tag(k)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                    Section("R 角参数 (mm)") {
+                        if spec.rKind == .outerCylinder {
+                            numRow("圆柱直径 Ø", value: $spec.rCylinderDia)
+                        } else if spec.rKind == .hole {
+                            numRow("孔径 Ø", value: $spec.rHoleDia)
+                        } else {
+                            numRow("长 L", value: $spec.length)
+                            numRow("宽 W", value: $spec.width)
+                            if spec.rKind == .slot {
+                                numRow("槽深 H", value: $spec.depth)
+                            }
+                        }
+                        numRow("R 角半径", value: $spec.rValue)
+                        numRow("角度步距 °", value: $spec.rAngleStep)
+                        Text("沿 90° 分成若干层，每层走一圈；3° 约 30 层，2° 更光但程序更长")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("刀尖 R 在下方「刀具与切削」里填：平底刀 0，圆鼻刀填刀片 R")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("坐标系") {
                     Picker("工件坐标系", selection: $spec.coord) {
                         ForEach([54, 55, 56, 57, 58, 59], id: \.self) { c in
@@ -168,7 +353,7 @@ struct ContentView: View {
                     }
                     numRow("中心 X", value: $spec.cx)
                     numRow("中心 Y", value: $spec.cy)
-                    Text("中心为孔在该坐标系下的位置，程序用 G52 平移；Z0 = 工件顶面")
+                    Text("中心为工件/孔中心，程序用 G52 平移；Z0 = 工件顶面")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -176,7 +361,7 @@ struct ContentView: View {
                 Section("刀具与切削") {
                     numRow("刀具直径", value: $spec.toolDia)
                     numRow("刀尖 R（平底刀填 0）", value: $spec.toolCornerR)
-                    if spec.mode != .innerChamfer && spec.mode != .odCham {
+                    if spec.mode != .innerChamfer && spec.mode != .odCham && spec.mode != .rCorner && spec.mode != .arcSurface {
                         numRow("每层切深 AP", value: $spec.stepDown)
                     }
                     if spec.mode == .pocket {
@@ -378,10 +563,16 @@ struct ContentView: View {
         let name: String
         if spec.mode == .taper {
             name = "taper_D\(Int(spec.taperDia))d\(Int(spec.taperDiaSmall))_H\(Int(spec.taperDepth)).nc"
+        } else if spec.mode == .taperHelix {
+            name = "taperHelix_D\(Int(spec.taperDia))d\(Int(spec.taperDiaSmall))_H\(Int(spec.taperDepth))_a\(String(format: "%.2f", spec.stepDown)).nc"
         } else if spec.mode == .face {
-            name = "face_L\(Int(spec.length))_W\(Int(spec.width))_H\(Int(spec.depth)).nc"
+            name = "face_L\(Int(spec.length))_W\(Int(spec.width))_H\(Int(spec.depth))_A\(Int(spec.slopeAngle)).nc"
         } else if spec.mode == .spiral {
-            name = "spiral_D\(Int(spec.spiralDia))_H\(Int(spec.depth)).nc"
+            name = "spiral_D\(Int(spec.spiralDia))_H\(Int(spec.depth))_N\(spec.holeCount).nc"
+        } else if spec.mode == .oblique {
+            name = "oblique_D\(Int(spec.spiralDia))_H\(Int(spec.depth))_A\(Int(spec.obliqueAngle)).nc"
+        } else if spec.mode == .thread {
+            name = "thread_M\(Int(spec.threadDia))_P\(fmt(spec.threadPitch, 2))_N\(spec.holeCount).nc"
         } else if spec.mode == .key {
             name = "key_L\(Int(spec.keyLength))_W\(Int(spec.keyWidth))_H\(Int(spec.depth)).nc"
         } else if spec.mode == .outer {
@@ -390,6 +581,11 @@ struct ContentView: View {
             name = "chamfer_D\(Int(spec.chaDia))_A\(Int(spec.chaAngle))_H\(Int(spec.chaDepth)).nc"
         } else if spec.mode == .odCham {
             name = "odcham_D\(Int(spec.odDia))_A\(Int(spec.odAngle))_H\(Int(spec.odDepth)).nc"
+        } else if spec.mode == .rCorner {
+            name = "r\(spec.rKind.rawValue)_R\(Int(spec.rValue))_A\(Int(spec.rAngleStep)).nc"
+        } else if spec.mode == .arcSurface {
+            let kind = spec.arcKind == .inner ? "inner" : "outer"
+            name = "arc_\(kind)_R\(Int(spec.arcRadius))_T\(Int(spec.arcTravel))_A\(Int(spec.arcAngleStep)).nc"
         } else {
             name = "pocket_L\(Int(spec.length))_W\(Int(spec.width))_D\(Int(spec.depth)).nc"
         }

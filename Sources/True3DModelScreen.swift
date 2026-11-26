@@ -54,6 +54,15 @@ private struct True3DFaceSelection {
     var sizeY: Double
 }
 
+private enum True3DBodyOpsMode: String, CaseIterable, Identifiable {
+    case array = "体阵列"
+    case mirror = "体镜像"
+    case cut = "布尔减"
+    case common = "布尔交"
+
+    var id: String { rawValue }
+}
+
 /// 真 3D 工作台：草图 → 建模 → 工序 → 加工 一条线完成。
 struct True3DAssemblyComponent: Identifiable, Equatable {
     var id = UUID()
@@ -201,6 +210,16 @@ struct True3DModelScreen: View {
     @State private var showImporter = false
     @State private var showTreePanel = false
     @State private var showToolbox = false
+    @State private var showBodyOps = false
+    @State private var bodyOpsMode: True3DBodyOpsMode = .array
+    @State private var bodyArrayRows = 2
+    @State private var bodyArrayCols = 2
+    @State private var bodyArrayPitchX: Double = 30
+    @State private var bodyArrayPitchY: Double = 30
+    @State private var bodyMirrorAxis = "X"
+    @State private var bodyBooleanBase = 0
+    @State private var bodyBooleanTool = 1
+    @State private var showDrawingSheet = false
     @State private var edgeFilterLabel = "单条边"
     @State private var showCamera = false
     @State private var showPhotoPicker = false
@@ -350,6 +369,9 @@ struct True3DModelScreen: View {
                         Button { showCamera = true } label: {
                             Label("拍照识别轮廓", systemImage: "camera")
                         }
+                        Button { showDrawingSheet = true } label: {
+                            Label("工程图（三视图）", systemImage: "doc.text.image")
+                        }
                         Divider()
                         Button { saveProject() } label: {
                             Label("保存工程", systemImage: "square.and.arrow.down")
@@ -406,6 +428,17 @@ struct True3DModelScreen: View {
         }
         .sheet(isPresented: $showMeasurePanel) {
             inspectSheet(title: "测量", rows: measurementRows)
+        }
+        .sheet(isPresented: $showBodyOps) {
+            bodyOpsSheet
+        }
+        .sheet(isPresented: $showDrawingSheet) {
+            True3DEngineeringDrawing(
+                projectName: params.projectName.isEmpty ? "未命名工程" : params.projectName,
+                params: params,
+                stats: result?.stats,
+                features: params.features
+            )
         }
         .sheet(isPresented: $showAnalysisPanel) {
             inspectSheet(title: "分析", rows: analysisRows)
@@ -1010,6 +1043,7 @@ struct True3DModelScreen: View {
                 railItem("pencil", "草图", highlighted: false) { stage = .sketch }
                 railItem("eye", "基准面", highlighted: showDatumPlane) { toggleDatumPlane() }
                 railItem("arrow.up.to.line", "拉伸", highlighted: pendingFaceExtrude) { beginFaceExtrude() }
+                railItem("square.3.layers.3d", "选面草图") { startFaceSketch() }
                 railItem("arrow.left.and.right.square", "移动面", highlighted: pendingFaceMove) { beginFaceMove() }
                 railItem("arrow.triangle.2.circlepath", "旋转体") { openFeatureDrawer(.revolveBoss) }
                 railItem("arrow.up.and.down.and.arrow.left.and.right", "移动体", highlighted: showMoveDrawer) {
@@ -1887,10 +1921,23 @@ struct True3DModelScreen: View {
                     .buttonStyle(.plain)
                 }
             }
+            Divider().padding(.vertical, 1)
+            Text("实体操作")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 7) {
+                bodyOpButton("体阵列") { openBodyOps(.array) }
+                bodyOpButton("体镜像") { openBodyOps(.mirror) }
+            }
+            HStack(spacing: 7) {
+                bodyOpButton("布尔减") { openBodyOps(.cut) }
+                bodyOpButton("布尔交") { openBodyOps(.common) }
+            }
         }
         .padding(12)
         .frame(width: min(310, UIScreen.main.bounds.width * 0.78))
-        .frame(maxHeight: 520)
+        .frame(maxHeight: 560)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(SwiftUI.Color.white.opacity(0.5), lineWidth: 0.5))
     }
@@ -4172,7 +4219,7 @@ struct True3DModelScreen: View {
                 rows.append(AnyView(numRow("中心 Y", f.y)))
             }
         case .faceBoss:
-            rows.append(AnyView(Text("已选面 #\(f.wrappedValue.faceIndex ?? 0) · 外轮廓 \(f.wrappedValue.faceProfile?.count ?? 0) 点")
+            rows.append(AnyView(Text("已选面 #\(f.wrappedValue.faceIndex ?? 0) · 外轮廓 \(f.wrappedValue.faceProfile?.count ?? 0) 点 · 内环 \(f.wrappedValue.faceHoles?.count ?? 0) 个")
                 .font(.system(size: 11)).foregroundStyle(.secondary)))
             rows.append(AnyView(Text("面中心 X \(fmt(f.wrappedValue.x))  Y \(fmt(f.wrappedValue.y))  Z \(fmt(f.wrappedValue.topZ ?? 0))")
                 .font(.system(size: 10)).foregroundStyle(.secondary)))
@@ -4414,6 +4461,137 @@ struct True3DModelScreen: View {
             : "正在清理合并接缝…"
         error = nil
         rebuild()
+    }
+
+    private func openBodyOps(_ mode: True3DBodyOpsMode) {
+        guard result != nil else {
+            notice = "建模区为空，先有实体再做布尔/阵列"
+            return
+        }
+        bodyOpsMode = mode
+        if let solids = result?.shape.solids, !solids.isEmpty {
+            bodyBooleanBase = min(bodyBooleanBase, solids.count - 1)
+            bodyBooleanTool = min(max(bodyBooleanTool, 0), solids.count - 1)
+            if bodyBooleanTool == bodyBooleanBase, solids.count > 1 {
+                bodyBooleanTool = (bodyBooleanBase + 1) % solids.count
+            }
+        }
+        showBodyOps = true
+    }
+
+    private func applyBodyOps() {
+        guard result != nil else { return }
+        pushModelUndo()
+        let op: True3DHistoryOperation
+        switch bodyOpsMode {
+        case .array:
+            let rows = max(1, min(8, bodyArrayRows))
+            let cols = max(1, min(8, bodyArrayCols))
+            op = True3DHistoryOperation(kind: .bodyArray(
+                rows: rows,
+                cols: cols,
+                pitchX: max(0.01, bodyArrayPitchX),
+                pitchY: max(0.01, bodyArrayPitchY)
+            ))
+            notice = "正在阵列 \(rows)×\(cols) 个体…"
+        case .mirror:
+            op = True3DHistoryOperation(kind: .bodyMirror(axis: bodyMirrorAxis))
+            notice = "正在沿 \(bodyMirrorAxis)=0 镜像实体…"
+        case .cut:
+            op = True3DHistoryOperation(kind: .booleanCut(base: bodyBooleanBase, tool: bodyBooleanTool))
+            notice = "正在做布尔减…"
+        case .common:
+            op = True3DHistoryOperation(kind: .booleanCommon(base: bodyBooleanBase, tool: bodyBooleanTool))
+            notice = "正在做布尔交…"
+        }
+        showBodyOps = false
+        modelOperations.append(op)
+        error = nil
+        rebuild()
+    }
+
+    private func bodyOpButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.primary.opacity(0.78))
+                .frame(maxWidth: .infinity)
+                .frame(height: 34)
+                .background(SwiftUI.Color.white.opacity(0.58), in: RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var bodySolidCount: Int {
+        result?.shape.solids.count ?? 0
+    }
+
+    private var bodyOpsSheet: some View {
+        NavigationStack {
+            Form {
+                Picker("操作", selection: $bodyOpsMode) {
+                    ForEach(True3DBodyOpsMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                switch bodyOpsMode {
+                case .array:
+                    Stepper("行数 \(bodyArrayRows)", value: $bodyArrayRows, in: 1...8)
+                    Stepper("列数 \(bodyArrayCols)", value: $bodyArrayCols, in: 1...8)
+                    TextField("X 间距 (mm)", value: $bodyArrayPitchX, format: .number)
+                        .keyboardType(.decimalPad)
+                    TextField("Y 间距 (mm)", value: $bodyArrayPitchY, format: .number)
+                        .keyboardType(.decimalPad)
+                    Text("当前 \(bodySolidCount) 个实体；副本最多 48 个。阵列只复制，不自动融合。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                case .mirror:
+                    Picker("镜像轴", selection: $bodyMirrorAxis) {
+                        Text("X").tag("X")
+                        Text("Y").tag("Y")
+                    }
+                    .pickerStyle(.segmented)
+                    Text("沿所选坐标的 0 平面镜像全部实体，保留原体并生成副本。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                case .cut, .common:
+                    if bodySolidCount >= 2 {
+                        Picker("基准实体", selection: $bodyBooleanBase) {
+                            ForEach(0..<bodySolidCount, id: \.self) { i in
+                                Text("实体 \(i + 1)").tag(i)
+                            }
+                        }
+                        Picker("工具实体", selection: $bodyBooleanTool) {
+                            ForEach(0..<bodySolidCount, id: \.self) { i in
+                                Text("实体 \(i + 1)").tag(i)
+                            }
+                        }
+                        Text(bodyOpsMode == .cut
+                             ? "结果 = 基准实体 − 工具实体；其余实体保留。"
+                             : "结果 = 基准实体 ∩ 工具实体；其余实体保留。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("需要至少 2 个独立实体。可先做体阵列/体镜像，或导入多实体模型。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("实体操作")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { showBodyOps = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("应用") { applyBodyOps() }
+                        .disabled((bodyOpsMode == .cut || bodyOpsMode == .common) && bodySolidCount < 2)
+                }
+            }
+        }
     }
 
     private func beginFaceExtrude() {
@@ -6082,6 +6260,208 @@ struct True3DModelScreen: View {
             simplified.append(cur)
         }
         return simplified.count >= 3 ? simplified : cleaned
+    }
+
+    /// 把实体上落在所选平面内的边，全部投影到该面的局部坐标系，再首尾相接成闭合环。
+    /// 返回值按面积从大到小排列：第一个是外环，其余是内环（孔）。
+    private func projectedFaceLoops(
+        normal: SIMD3<Double>,
+        origin: SIMD3<Double>,
+        shape: Shape
+    ) -> [[True3DPoint3D]] {
+        let nLen = (normal.x * normal.x + normal.y * normal.y + normal.z * normal.z).squareRoot()
+        guard nLen > 1e-9 else { return [] }
+        let n = normal / nLen
+        let ref = abs(n.z) > 0.9 ? SIMD3<Double>(1, 0, 0) : SIMD3<Double>(0, 0, 1)
+        var u = SIMD3<Double>(
+            ref.y * n.z - ref.z * n.y,
+            ref.z * n.x - ref.x * n.z,
+            ref.x * n.y - ref.y * n.x
+        )
+        let uLen = (u.x * u.x + u.y * u.y + u.z * u.z).squareRoot()
+        guard uLen > 1e-9 else { return [] }
+        u /= uLen
+        let v = SIMD3<Double>(
+            n.y * u.z - n.z * u.y,
+            n.z * u.x - n.x * u.z,
+            n.x * u.y - n.y * u.x
+        )
+
+        struct LocalEdge {
+            var pts: [True3DPoint]
+            var used = false
+        }
+
+        var edges: [LocalEdge] = []
+        let planeTolerance = 0.9
+        for edge in shape.edges() {
+            let sampleCount = max(8, min(128, Int(edge.length * 1.8) + 10))
+            let raw = edge.points(count: sampleCount)
+            guard raw.count >= 2 else { continue }
+            var local: [True3DPoint] = []
+            var maxDistance = 0.0
+            for p in raw {
+                let delta = SIMD3<Double>(p.x - origin.x, p.y - origin.y, p.z - origin.z)
+                let distance = abs(delta.x * n.x + delta.y * n.y + delta.z * n.z)
+                maxDistance = max(maxDistance, distance)
+                let x = delta.x * u.x + delta.y * u.y + delta.z * u.z
+                let y = delta.x * v.x + delta.y * v.y + delta.z * v.z
+                let q = True3DPoint(x: x, y: y)
+                if let last = local.last, hypot(q.x - last.x, q.y - last.y) < 1e-4 { continue }
+                local.append(q)
+            }
+            guard maxDistance <= planeTolerance, local.count >= 2 else { continue }
+            if let first = local.first, let last = local.last,
+               hypot(first.x - last.x, first.y - last.y) < 1e-3 {
+                local.removeLast()
+            }
+            guard local.count >= 2 else { continue }
+            edges.append(LocalEdge(pts: local))
+        }
+
+        func near(_ a: True3DPoint, _ b: True3DPoint) -> Bool {
+            hypot(a.x - b.x, a.y - b.y) < 0.35
+        }
+
+        var loops: [[True3DPoint]] = []
+        for i in edges.indices where !edges[i].used {
+            edges[i].used = true
+            var chain = edges[i].pts
+            var guardCount = 0
+            while guardCount < edges.count {
+                guardCount += 1
+                guard let last = chain.last else { break }
+                if chain.count >= 3, let first = chain.first, near(first, last) { break }
+                var found: Int? = nil
+                var reverse = false
+                for j in edges.indices where !edges[j].used {
+                    if let first = edges[j].pts.first, near(first, last) {
+                        found = j
+                        reverse = false
+                        break
+                    }
+                    if let end = edges[j].pts.last, near(end, last) {
+                        found = j
+                        reverse = true
+                        break
+                    }
+                }
+                guard let j = found else { break }
+                edges[j].used = true
+                var pts = edges[j].pts
+                if reverse { pts.reverse() }
+                if let first = pts.first, near(first, last) { pts.removeFirst() }
+                chain.append(contentsOf: pts)
+            }
+            guard chain.count >= 4, let first = chain.first, let last = chain.last, near(first, last) else {
+                continue
+            }
+            if near(first, last) { chain.removeLast() }
+            let area = abs(polygonArea2D(chain))
+            guard area > 0.5 else { continue }
+            loops.append(chain)
+        }
+
+        guard !loops.isEmpty else { return [] }
+        loops.sort { abs(polygonArea2D($0)) > abs(polygonArea2D($1)) }
+        let outer = loops[0]
+        var result: [[True3DPoint3D]] = [outer.map {
+            True3DPoint3D(
+                x: origin.x + u.x * $0.x + v.x * $0.y,
+                y: origin.y + u.y * $0.x + v.y * $0.y,
+                z: origin.z + u.z * $0.x + v.z * $0.y
+            )
+        }]
+        if loops.count > 1 {
+            for hole in loops.dropFirst() {
+                let centroid = True3DPoint(
+                    x: hole.reduce(0) { $0 + $1.x } / Double(hole.count),
+                    y: hole.reduce(0) { $0 + $1.y } / Double(hole.count)
+                )
+                guard pointInsidePolygon(centroid, polygon: outer) else { continue }
+                result.append(hole.map {
+                    True3DPoint3D(
+                        x: origin.x + u.x * $0.x + v.x * $0.y,
+                        y: origin.y + u.y * $0.x + v.y * $0.y,
+                        z: origin.z + u.z * $0.x + v.z * $0.y
+                    )
+                })
+            }
+        }
+        return result
+    }
+
+    private func polygonArea2D(_ pts: [True3DPoint]) -> Double {
+        guard pts.count >= 3 else { return 0 }
+        var sum = 0.0
+        for i in 0..<pts.count {
+            let a = pts[i]
+            let b = pts[(i + 1) % pts.count]
+            sum += a.x * b.y - b.x * a.y
+        }
+        return sum * 0.5
+    }
+
+    private func pointInsidePolygon(_ p: True3DPoint, polygon: [True3DPoint]) -> Bool {
+        guard polygon.count >= 3 else { return false }
+        var inside = false
+        var j = polygon.count - 1
+        for i in 0..<polygon.count {
+            let a = polygon[i], b = polygon[j]
+            if (a.y > p.y) != (b.y > p.y) {
+                let x = (b.x - a.x) * (p.y - a.y) / ((b.y - a.y) == 0 ? 1e-12 : (b.y - a.y)) + a.x
+                if p.x < x { inside.toggle() }
+            }
+            j = i
+        }
+        return inside
+    }
+
+    /// 从当前选中的平面生成可编辑的“选面草图”：投影全部落在该面上的模型边，
+    /// 外环 + 内环一起写入一个 faceBoss 特征，沿面法向拉伸/切除。
+    private func startFaceSketch() {
+        guard let selectedFace, let result else {
+            notice = "先轻点一个平面，再点“选面草图”"
+            return
+        }
+        guard let face = result.shape.face(at: selectedFace.faceIndex), face.isPlanar else {
+            error = "选面草图只支持平面"
+            return
+        }
+        let loops = projectedFaceLoops(
+            normal: selectedFace.normal,
+            origin: selectedFace.point,
+            shape: result.shape
+        )
+        guard let outer = loops.first, outer.count >= 3 else {
+            error = "这个面上没有投影出闭合边界；换一个平面或先做草图"
+            return
+        }
+        let holes = Array(loops.dropFirst())
+        var draft = True3DFeatureSpec(kind: .faceBoss)
+        draft.name = holes.isEmpty ? "选面草图" : "选面草图（带孔）"
+        draft.x = selectedFace.point.x
+        draft.y = selectedFace.point.y
+        draft.topZ = selectedFace.point.z
+        draft.bossHeight = 5
+        draft.faceProfile = outer
+        draft.faceHoles = holes
+        draft.faceNormal = True3DPoint3D(
+            x: selectedFace.normal.x,
+            y: selectedFace.normal.y,
+            z: selectedFace.normal.z
+        )
+        draft.faceIndex = selectedFace.faceIndex
+        pushModelUndo()
+        params.features.append(draft)
+        selectedFeatureID = draft.id
+        showToolbox = false
+        pendingFaceExtrude = false
+        error = nil
+        rebuild()
+        notice = "选面草图：面 #\(selectedFace.faceIndex) 投影出 1 个外环" +
+            (holes.isEmpty ? "" : " + \(holes.count) 个内环") +
+            "，默认拉伸 5 mm，可在右侧参数里改高度/切除"
     }
 
     private func polygonArea3D(_ points: [True3DPoint3D], normal: SIMD3<Double>) -> Double {

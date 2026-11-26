@@ -20,7 +20,7 @@ struct ToolpathSimView: View {
 
     // 性能：刀路只算一次，不能每帧重算（螺旋一刀流一圈就有 72 段）
     @State private var segs: [TPSeg] = []
-    @State private var outlinePts: [CGPoint] = []
+    @State private var outlineLoops: [[CGPoint]] = []
     @State private var total: Double = 1
     @State private var maxDepth: Double = 1
 
@@ -129,7 +129,7 @@ struct ToolpathSimView: View {
             if segs.isEmpty {
                 let built = ToolpathEngine.build(spec)
                 segs = built
-                outlinePts = ToolpathEngine.outline(spec)
+                outlineLoops = ToolpathEngine.outlineLoops(spec)
                 total = max(1, ToolpathEngine.totalLen(built))
                 maxDepth = max(0.001, built.map { -$0.z }.max() ?? 1)
             }
@@ -144,10 +144,13 @@ struct ToolpathSimView: View {
     // MARK: - 绘制
 
     private func project(_ x: Double, _ y: Double, _ z: Double) -> CGPoint {
+        // 生成程序里的 G52 把局部零点平移到工件中心；预览也跟着平移
+        let xx = x + spec.cx
+        let yy = y + spec.cy
         if iso {
-            return CGPoint(x: (x - y) * 0.866, y: (x + y) * 0.5 + z * 2.0)
+            return CGPoint(x: (xx - yy) * 0.866, y: (xx + yy) * 0.5 + z * 2.0)
         }
-        return CGPoint(x: x, y: y)
+        return CGPoint(x: xx, y: yy)
     }
 
     private var zoomPan: some Gesture {
@@ -178,11 +181,11 @@ struct ToolpathSimView: View {
         let toolR = spec.toolDia / 2
         var pts: [CGPoint] = []
         for s in segs {
-            for p in s.pts { pts.append(project(Double(p.x), Double(p.y), s.z)) }
+            for (i, p) in s.pts.enumerated() { pts.append(project(Double(p.x), Double(p.y), s.z(at: i))) }
         }
-        if !outlinePts.isEmpty {
+        for loop in outlineLoops {
             for z in [0.0, -maxDepth] {
-                for p in outlinePts { pts.append(project(Double(p.x), Double(p.y), z)) }
+                for p in loop { pts.append(project(Double(p.x), Double(p.y), z)) }
             }
         }
         guard !pts.isEmpty else { return }
@@ -230,13 +233,14 @@ struct ToolpathSimView: View {
 
         // 工件轮廓（顶面 + 底面）
         func strokeOutline(_ z: Double, _ color: Color) {
-            guard outlinePts.count > 1 else { return }
-            ctx.stroke(Path { p in
-                p.move(to: screen(project(Double(outlinePts[0].x), Double(outlinePts[0].y), z)))
-                for q in outlinePts.dropFirst() {
-                    p.addLine(to: screen(project(Double(q.x), Double(q.y), z)))
-                }
-            }, with: .color(color), lineWidth: 1)
+            for loop in outlineLoops where loop.count > 1 {
+                ctx.stroke(Path { p in
+                    p.move(to: screen(project(Double(loop[0].x), Double(loop[0].y), z)))
+                    for q in loop.dropFirst() {
+                        p.addLine(to: screen(project(Double(q.x), Double(q.y), z)))
+                    }
+                }, with: .color(color), lineWidth: 1)
+            }
         }
         strokeOutline(0, Color(red: 0.69, green: 0.73, blue: 0.78))
         if iso {
@@ -261,8 +265,8 @@ struct ToolpathSimView: View {
         var preview = Path()
         var lastPv: CGPoint? = nil
         for s in segs where s.pts.count > 1 {
-            for q in s.pts {
-                let qp = screen(project(Double(q.x), Double(q.y), s.z))
+            for (i, q) in s.pts.enumerated() {
+                let qp = screen(project(Double(q.x), Double(q.y), s.z(at: i)))
                 if let lp = lastPv {
                     if abs(qp.x - lp.x) + abs(qp.y - lp.y) >= 1.2 { preview.addLine(to: qp); lastPv = qp }
                 } else { preview.move(to: qp); lastPv = qp }
@@ -284,7 +288,8 @@ struct ToolpathSimView: View {
             let frac = s.len > 0 ? min(1, (need - acc) / s.len) : 0
             let rem = s.len * frac
             var part: [CGPoint] = []
-            if let first = s.pts.first { part.append(first) }
+            var partZ: [Double] = []
+            if let first = s.pts.first { part.append(first); partZ.append(s.z(at: 0)) }
             var run = 0.0
             if s.pts.count > 1 {
                 for i in 1..<s.pts.count {
@@ -292,25 +297,28 @@ struct ToolpathSimView: View {
                     let d = hypot(Double(b.x - a.x), Double(b.y - a.y))
                     if run + d <= rem {
                         part.append(b)
+                        partZ.append(s.z(at: i))
                         run += d
                     } else {
                         let t = d > 0 ? (rem - run) / d : 0
                         part.append(CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t))
+                        let za = s.z(at: i - 1), zb = s.z(at: i)
+                        partZ.append(za + (zb - za) * t)
                         break
                     }
                 }
             }
             if part.count > 1 {
-                let t = min(1, -s.z / maxDepth)
+                let t = min(1, -(partZ.last ?? s.z) / maxDepth)
                 let bi = min(bands - 1, max(0, Int(t * Double(bands))))
-                for q in part {
-                    let qp = screen(project(Double(q.x), Double(q.y), s.z))
+                for (j, q) in part.enumerated() {
+                    let qp = screen(project(Double(q.x), Double(q.y), partZ[j]))
                     if let lp = lastW[bi] {
                         if abs(qp.x - lp.x) + abs(qp.y - lp.y) >= 1.0 { walked[bi].addLine(to: qp); lastW[bi] = qp }
                     } else { walked[bi].move(to: qp); lastW[bi] = qp }
                 }
             }
-            last = (part.last ?? CGPoint.zero, s.z)
+            last = (part.last ?? CGPoint.zero, partZ.last ?? s.z)
             acc += s.len
         }
         for i in 0..<bands where !walked[i].isEmpty {

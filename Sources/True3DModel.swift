@@ -139,6 +139,8 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
     var faceProfile: [True3DPoint3D]? = nil
     var faceNormal: True3DPoint3D? = nil
     var faceIndex: Int? = nil
+    /// 面拉伸/选面草图：外轮廓内的孔边界（模型坐标，mm）。
+    var faceHoles: [[True3DPoint3D]]? = nil
     /// 面拉伸是凸台（false）还是切除（true）。
     var faceCut: Bool? = nil
     /// 旋转 / 拔模角度（度）。
@@ -275,7 +277,8 @@ struct True3DFeatureSpec: Identifiable, Equatable, Codable {
             return "\(profile.count) 点轮廓 深\(fmt(depth))"
         case .faceBoss:
             let op = (faceCut == true) ? "面切除" : "面拉伸"
-            return "\(op) 面 #\(faceIndex ?? 0) · \(faceProfile?.count ?? 0) 点轮廓 H\(fmt(bossHeight))"
+            let holes = faceHoles?.count ?? 0
+            return "\(op) 面 #\(faceIndex ?? 0) · \(faceProfile?.count ?? 0) 点轮廓" + (holes > 0 ? " · \(holes) 个内环" : "") + " H\(fmt(bossHeight))"
         }
     }
 }
@@ -647,13 +650,34 @@ enum True3DKernel {
                   ) else {
                 throw True3DModelError.featureFailed("\(f.name) 失败：所选面轮廓无法拉伸")
             }
+            var tool = prism
+            for hole in f.faceHoles ?? [] {
+                guard hole.count >= 3 else { continue }
+                let shiftedHole = hole.map {
+                    SIMD3<Double>(
+                        $0.x - direction.x * overlap,
+                        $0.y - direction.y * overlap,
+                        $0.z - direction.z * overlap
+                    )
+                }
+                guard let holeWire = Wire.polygon3D(shiftedHole, closed: true),
+                      let holePrism = Shape.extrude(
+                        profile: holeWire,
+                        direction: direction,
+                        length: max(f.bossHeight, 0.1) + overlap
+                      ),
+                      let cutTool = tool.subtracting(holePrism) else {
+                    throw True3DModelError.featureFailed("\(f.name) 失败：内环轮廓无法扣孔")
+                }
+                tool = cutTool
+            }
             if f.faceCut == true {
-                guard let cut = current - prism else {
+                guard let cut = current - tool else {
                     throw True3DModelError.featureFailed("\(f.name) 面切除失败，轮廓可能不在实体上")
                 }
                 return cut
             }
-            guard let fused = current + prism else {
+            guard let fused = current + tool else {
                 throw True3DModelError.featureFailed("\(f.name) 失败：所选面轮廓无法拉伸")
             }
             return fused
