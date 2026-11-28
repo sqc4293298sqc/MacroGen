@@ -509,15 +509,25 @@ enum ToolpathEngine {
         var out: [TPSeg] = []
         let xh = (s.keyLength - s.keyWidth) / 2
         let yh = max(0, s.keyWidth / 2 - s.toolDia / 2)
+        let rowStep = max(0.5, s.toolDia * 0.75)
         var z0 = 0.0
         while true {
             let zz = max(z0 - s.stepDown, -s.depth)
             z0 = zz
-            var pts: [CGPoint] = [CGPoint(x: -xh, y: -yh), CGPoint(x: xh, y: -yh)]
-            pts += arc(cx: xh, cy: 0, r: yh, from: -90, to: 90)
-            pts.append(CGPoint(x: -xh, y: yh))
-            pts += arc(cx: -xh, cy: 0, r: yh, from: 90, to: 270)
-            out.append(TPSeg(cut: true, z: zz, pts: pts, len: xh * 4 + 2 * Double.pi * yh))
+            var pts: [CGPoint] = []
+            var row = yh
+            while row > 0.001 {
+                pts.append(CGPoint(x: -xh, y: -row))
+                pts.append(CGPoint(x: xh, y: -row))
+                pts += arc(cx: xh, cy: 0, r: row, from: -90, to: 90)
+                pts.append(CGPoint(x: -xh, y: row))
+                pts += arc(cx: -xh, cy: 0, r: row, from: 90, to: 270)
+                row -= rowStep
+            }
+            pts.append(CGPoint(x: -xh, y: 0))
+            pts.append(CGPoint(x: xh, y: 0))
+            pts.append(CGPoint(x: -xh, y: 0))
+            out.append(TPSeg(cut: true, z: zz, pts: pts, len: polyLen(pts)))
             if zz <= -s.depth { break }
         }
         return out
